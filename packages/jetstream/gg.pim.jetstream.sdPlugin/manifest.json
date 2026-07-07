@@ -1,0 +1,105 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "gg.pim.jetstream",
+  "Name": "Jetstream",
+  "Version": "0.1.0.0",
+  "Author": "pimmesz",
+  "Description": "Full Claude control on your Stream Deck: a live per-project status board (working / needs you / done), an attention doorbell, usage gauges, and preset headless launches.",
+  "Category": "Jetstream",
+  "CategoryIcon": "imgs/plugin",
+  "Icon": "imgs/plugin",
+  "CodePath": "bin/plugin.js",
+  "Nodejs": {
+    "Version": "20",
+    "Debug": "disabled"
+  },
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.9"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "12"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Actions": [
+    {
+      "UUID": "gg.pim.jetstream.project",
+      "Name": "Project status",
+      "Icon": "imgs/project",
+      "Tooltip": "One project per key: glows with its live Claude status (working / needs you / done). Press to jump into it.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/project"
+        }
+      ],
+      "PropertyInspectorPath": "ui/project.html"
+    },
+    {
+      "UUID": "gg.pim.jetstream.attention",
+      "Name": "Attention",
+      "Icon": "imgs/attention",
+      "Tooltip": "Lights up when any project's Claude needs your input. Press to jump there.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/attention"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.usage",
+      "Name": "Usage gauge",
+      "Icon": "imgs/usage",
+      "Tooltip": "Your Claude subscription's 5-hour and 7-day usage, live.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/usage"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.launch",
+      "Name": "Launch preset",
+      "Icon": "imgs/launch",
+      "Tooltip": "Fire a preset headless `claude -p` prompt in a project. Subscription auth; the API key is stripped.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/launch"
+        }
+      ],
+      "PropertyInspectorPath": "ui/launch.html"
+    },
+    {
+      "UUID": "gg.pim.jetstream.permission",
+      "Name": "Approve / Deny",
+      "Icon": "imgs/permission",
+      "Tooltip": "Approve or deny the oldest pending Claude permission request from the deck. Place one Approve key and one Deny key.",
+      "PropertyInspectorPath": "ui/permission.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/permission"
+        }
+      ]
+    }
+  ]
+}

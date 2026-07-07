@@ -1,0 +1,27 @@
+{
+  "name": "@pimmesz/jetstream-usage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Read Claude/Codex subscription usage into a typed feed (for the Jetstream Stream Deck plugin).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "jetstream-usage-hook": "./dist/hook.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsup src/index.ts src/hook.ts --format esm --dts --clean",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

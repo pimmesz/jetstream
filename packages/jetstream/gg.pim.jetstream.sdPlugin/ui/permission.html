@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { margin: 0; padding: 8px 10px; background: #2d2d2d; color: #d8d8d8;
+         font: 13px -apple-system, "Segoe UI", sans-serif; }
+  .row { display: flex; align-items: center; margin: 8px 0; }
+  label { flex: 0 0 88px; color: #969696; }
+  select { flex: 1; background: #3d3d3d; color: #fff; border: 1px solid #555;
+           border-radius: 4px; padding: 6px 8px; font-size: 13px; }
+  select:focus { outline: none; border-color: #0091ff; }
+  p.hint { color: #7a7a7a; font-size: 11px; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <label for="decision">This key</label>
+    <select id="decision" data-setting="decision">
+      <option value="allow">Approves the request</option>
+      <option value="deny">Denies the request</option>
+    </select>
+  </div>
+  <p class="hint">Acts on the oldest pending Claude permission request. Place one Approve
+  key and one Deny key. If you don't press within ~90s, Claude shows its normal dialog
+  and you decide at the keyboard.</p>
+  <script src="pi.js"></script>
+</body>
+</html>

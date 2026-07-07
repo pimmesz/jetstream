@@ -1,0 +1,3 @@
+# Build artifacts: the bundled plugin code and the packed installable.
+gg.pim.jetstream.sdPlugin/bin/
+*.streamDeckPlugin

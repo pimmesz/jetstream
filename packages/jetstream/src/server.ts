@@ -1,0 +1,108 @@
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+
+export const DEFAULT_PORT = 41321;
+const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * The local hook listener: Claude Code lifecycle hooks POST their payload to
+ * `127.0.0.1:<port>/hook`, and each parsed JSON body is handed to `onPayload`.
+ * Loopback only — never exposed to the network. Payloads are untrusted input:
+ * size-capped, parse failures dropped, and nothing from them is ever executed.
+ */
+export interface HookServerHandlers {
+  /** Fire-and-forget lifecycle events (`/hook`). */
+  onPayload: (raw: unknown) => void;
+  /** Blocking permission requests (`/permission`): resolve with the hook's stdout
+   * (the decision JSON) to answer, or `undefined` to defer to Claude's own dialog.
+   * Omit to disable deck approvals (the endpoint then always defers). */
+  onPermission?: (raw: unknown) => Promise<string | undefined>;
+}
+
+function readBody(req: IncomingMessage, onDone: (body: string | undefined) => void): void {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let settled = false;
+  const finish = (body: string | undefined): void => {
+    if (settled) return;
+    settled = true;
+    onDone(body);
+  };
+  req.on('data', (chunk: Buffer | string) => {
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    bytes += buf.length; // real bytes, not UTF-16 string length
+    if (bytes > MAX_BODY_BYTES) {
+      req.destroy();
+      finish(undefined);
+      return;
+    }
+    chunks.push(buf);
+  });
+  req.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
+  // A client that hangs up before 'end' (aborted/close/error) must still settle,
+  // so a held /permission handler never leaks its slot.
+  req.on('aborted', () => finish(undefined));
+  req.on('close', () => finish(undefined));
+  req.on('error', () => finish(undefined));
+}
+
+export function startHookServer(port: number, handlers: HookServerHandlers): Promise<Server> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('jetstream');
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/hook') {
+        readBody(req, (body) => {
+          if (body !== undefined) {
+            try {
+              handlers.onPayload(JSON.parse(body));
+            } catch {
+              /* not JSON — drop */
+            }
+          }
+          res.writeHead(204);
+          res.end();
+        });
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/permission') {
+        readBody(req, (body) => {
+          const defer = (): void => {
+            res.writeHead(204);
+            res.end();
+          };
+          if (body === undefined || !handlers.onPermission) {
+            defer();
+            return;
+          }
+          let raw: unknown;
+          try {
+            raw = JSON.parse(body);
+          } catch {
+            defer();
+            return;
+          }
+          // Hold the response open until the deck answers (or the plugin times out).
+          handlers
+            .onPermission(raw)
+            .then((decision) => {
+              if (decision === undefined) {
+                defer();
+              } else {
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end(decision);
+              }
+            })
+            .catch(defer);
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    server.on('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve(server));
+  });
+}
