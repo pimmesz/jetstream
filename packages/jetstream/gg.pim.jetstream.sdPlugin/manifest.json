@@ -44,6 +44,20 @@
       "PropertyInspectorPath": "ui/project.html"
     },
     {
+      "UUID": "gg.pim.jetstream.fleet",
+      "Name": "Fleet roll-up",
+      "Icon": "imgs/fleet",
+      "Tooltip": "One always-visible key summarising every project: N working / waiting / done. Colour = the worst state present, so 'is anything waiting on me?' is answerable even when projects outnumber keys.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/fleet"
+        }
+      ]
+    },
+    {
       "UUID": "gg.pim.jetstream.attention",
       "Name": "Attention",
       "Icon": "imgs/attention",
@@ -84,7 +98,8 @@
           "Image": "imgs/launch"
         }
       ],
-      "PropertyInspectorPath": "ui/launch.html"
+      "PropertyInspectorPath": "ui/launch.html",
+      "SupportedInMultiActions": true
     },
     {
       "UUID": "gg.pim.jetstream.permission",
@@ -98,6 +113,21 @@
       "States": [
         {
           "Image": "imgs/permission"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.settings",
+      "Name": "Jetstream settings",
+      "Icon": "imgs/settings",
+      "Tooltip": "Plugin settings: colour-blind theme, escalation, long-press, refresh. Press to toggle high-contrast colours.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/settings"
         }
       ]
     }

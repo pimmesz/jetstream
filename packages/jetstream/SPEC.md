@@ -8,16 +8,24 @@ it works for the interactive sessions you actually run all day, not just headles
 
 Standalone — no afterburner required; afterburner is just one of the projects on the board.
 
-Status: **BUILT.** The three cores (`usage`, `claude`, `status`) are unit-tested, and the Elgato
-plugin bundles, passes `streamdeck validate`, and packs to `gg.pim.jetstream.streamDeckPlugin`.
-Remaining: on-device verification (install on a real Stream Deck), the hooks install on a real
-`~/.claude/settings.json`, the macOS jump-to-terminal UX, and the Windows path — see Open items.
+Status: **BUILT (v1.2).** Cores + plugin unit-tested (71 tests), passes `streamdeck validate`, packs.
+v1.1 added deck **Approve/Deny** + **interrupt**; v1.2 added **colour-blind glyphs + high-contrast
+theme**, a **Settings** key (global settings: theme / escalation / long-press / usage-refresh),
+**escalation flash** on the doorbell, **`done Xm`** waiting time, **opt-in tool detail**
+(`--tool-detail` → `Bash · 12m`), and **cost** on Launch results. v1.3 added a **Fleet roll-up**
+key, a **diff-size badge** on done keys (`+120/-40 · done Xm`), an **approve-vs-answer split** on
+amber keys (deck-answerable `!` vs keyboard-only `?`), a longer/legible **permission-command line**,
+a labelled **sooner-of 5h/7d reset** on the gauge, and **multi-action support** on Launch. Remaining:
+on-device verification (a real deck + real `~/.claude/settings.json`), the macOS jump-to-terminal UX,
+the Windows path, the terminal onboarding CLI + config-file projects (v1.3 item G, deferred), and the
+deferred Stream Deck+ dials — see Open items.
 
 ## The board (v1 key set)
 
 | Key                    | Face / colour                                                                                        | Press                                                                                             | Backed by                          |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **Project** (one each) | name + live colour: grey none · blue idle · **red working** (+ elapsed) · **amber needs you** · **green done** | switch to it — focus the project's Claude terminal (macOS), else open a terminal at the path running `claude --continue` | `status` reducer ← hooks           |
+| **Project** (one each) | name + live colour: grey none · blue idle · **red working** (+ elapsed) · **amber needs you** (`!` deck-answerable / `?` keyboard) · **green done** (`+120/-40 · done Xm`) | switch to it — focus the project's Claude terminal (macOS), else open a terminal at the path running `claude --continue` | `status` reducer ← hooks           |
+| **Fleet** roll-up      | one always-visible key: `3w 1! 2✓` counts, coloured by the WORST state present (needsInput > working > done) | ack blip (paging the board is later)                                                              | `status.summarize`/`worstStatus`   |
 | **Attention** doorbell | dim; lights **amber** and names the project when ANY project needs input                              | jump to that project                                                                              | `status.needsAttention`            |
 | **Usage** gauge        | 5h / 7d used %, reset countdown, model                                                                | (optional) open `/usage`                                                                           | `usage.resolveUsage`               |
 | **Launch preset**\*    | a canned prompt / skill for a chosen project                                                          | fire headless `claude -p`, stream idle→working→done onto the key                                  | `claude.runClaude`                 |

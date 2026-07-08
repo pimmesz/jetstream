@@ -1,6 +1,6 @@
 import { action, SingletonAction } from '@elgato/streamdeck';
 import { resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
-import { formatReset, keyFace } from '../render';
+import { formatNextReset, keyFace } from '../render';
 
 /**
  * The usage gauge: 5h/7d used % + the sooner reset countdown, from the Jetstream
@@ -23,9 +23,10 @@ export class UsageKey extends SingletonAction {
           color: gaugeColor(feed),
           ...(feed.model ? { top: feed.model } : {}),
           label: feed.fiveHour ? `5h ${Math.round(feed.fiveHour.usedPct)}%` : 'usage',
+          subMax: 22, // room for `7d 84% · resets 3h33m`
           sub: [
             feed.sevenDay ? `7d ${Math.round(feed.sevenDay.usedPct)}%` : '',
-            formatReset(feed.fiveHour?.resetsAt, now),
+            formatNextReset(feed.fiveHour?.resetsAt, feed.sevenDay?.resetsAt, now),
           ]
             .filter(Boolean)
             .join(' · '),

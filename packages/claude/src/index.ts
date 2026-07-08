@@ -100,6 +100,8 @@ export interface RunResult {
   result?: string;
   isError: boolean;
   exitCode: number | null;
+  /** Total USD the run cost, from the result event (headless runs report this). */
+  costUsd?: number;
 }
 
 /** The minimal child-process surface `runClaude` needs — injectable so tests never
@@ -161,7 +163,13 @@ export function runClaude(
       if (!event) return;
       onEvent(event);
       if (event.type === 'result') {
-        final = { isError: event.isError, exitCode: null, sessionId: event.sessionId, result: event.result };
+        final = {
+          isError: event.isError,
+          exitCode: null,
+          sessionId: event.sessionId,
+          result: event.result,
+          ...(event.costUsd !== undefined ? { costUsd: event.costUsd } : {}),
+        };
       }
     };
 

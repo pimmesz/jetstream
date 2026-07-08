@@ -57,4 +57,17 @@ describe('Permissions', () => {
     p.settleHead('allow');
     expect(p.settleHead('allow')).toBe(false);
   });
+
+  it('projectsWithPending maps held requests to project ids (deck-answerable set)', () => {
+    const projects = [
+      { id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' },
+      { id: 'proj', name: 'Proj', path: '/Users/me/proj' },
+      { id: 'idle', name: 'Idle', path: '/Users/me/idle' }, // no pending → excluded
+    ];
+    const p = new Permissions();
+    p.request(req({ cwd: '/Users/me/proj' }));
+    p.request(req({ cwd: '/Users/me/falcon/src' })); // sub-dir still matches falcon
+    p.request(req({ cwd: '/Users/me/unlisted' })); // matches no project → dropped
+    expect(p.projectsWithPending(projects)).toEqual(new Set(['proj', 'falcon']));
+  });
 });

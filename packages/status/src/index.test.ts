@@ -7,8 +7,13 @@ import {
   statusByProject,
   needsAttention,
   colorFor,
+  glyphFor,
+  shouldEscalate,
+  summarize,
+  worstStatus,
   type HookEvent,
   type ProjectConfig,
+  type ProjectStatus,
 } from './index';
 
 const PROJECTS: ProjectConfig[] = [
@@ -58,6 +63,14 @@ describe('matchProject', () => {
   it("does not match a sibling that shares a name prefix", () => {
     expect(matchProject('/Users/me/falcon-two', PROJECTS)).toBeUndefined();
   });
+
+  it('an unconfigured key (empty path) matches NOTHING, not every absolute cwd', () => {
+    const withUnset = [{ id: 'unset', name: '?', path: '' }, ...PROJECTS];
+    expect(matchProject('/Users/me/falcon', withUnset)).toBe('falcon'); // real key still wins
+    expect(matchProject('/some/random/dir', withUnset)).toBeUndefined(); // no phantom scoop
+    // A real root path is intentional (not the same as an unset key) and still matches.
+    expect(matchProject('/some/random/dir', [{ id: 'root', name: 'r', path: '/' }])).toBe('root');
+  });
 });
 
 describe('reduce + statusByProject', () => {
@@ -97,10 +110,83 @@ describe('needsAttention', () => {
   });
 });
 
+const ALL_STATUSES = ['none', 'idle', 'working', 'needsInput', 'done'] as const;
+
 describe('colorFor', () => {
-  it('is defined for every status', () => {
-    for (const status of ['none', 'idle', 'working', 'needsInput', 'done'] as const) {
+  it('is defined for every status in both themes', () => {
+    for (const status of ALL_STATUSES) {
       expect(colorFor(status)).toMatch(/^#[0-9a-f]{6}$/);
+      expect(colorFor(status, 'highContrast')).toMatch(/^#[0-9a-f]{6}$/);
     }
+  });
+
+  it('highContrast swaps the red/green pair (working + done differ from default)', () => {
+    expect(colorFor('working', 'highContrast')).not.toBe(colorFor('working'));
+    expect(colorFor('done', 'highContrast')).not.toBe(colorFor('done'));
+  });
+});
+
+describe('glyphFor', () => {
+  it('gives a distinct non-colour glyph per active status', () => {
+    const glyphs = (['working', 'needsInput', 'done', 'idle'] as ProjectStatus[]).map(glyphFor);
+    expect(new Set(glyphs).size).toBe(glyphs.length); // all distinct
+    expect(glyphFor('none')).toBe('');
+  });
+});
+
+describe('shouldEscalate', () => {
+  it('escalates only once the wait passes the threshold', () => {
+    expect(shouldEscalate(1000, 1000 + 120_000, 120_000)).toBe(true);
+    expect(shouldEscalate(1000, 1000 + 60_000, 120_000)).toBe(false);
+    expect(shouldEscalate(undefined, 999, 120_000)).toBe(false);
+    expect(shouldEscalate(Number.NaN, 999, 120_000)).toBe(false);
+  });
+});
+
+describe('tool detail (opt-in PreToolUse/PostToolUse)', () => {
+  const P: ProjectConfig[] = [{ id: 'p', name: 'P', path: '/w' }];
+  it('surfaces the tool during PreToolUse and clears it after PostToolUse', () => {
+    let s = reduce(initialState(), {
+      event: 'PreToolUse',
+      cwd: '/w',
+      sessionId: 's',
+      at: 1,
+      toolName: 'Bash',
+    });
+    expect(statusByProject(s, P).p).toEqual({ status: 'working', since: 1, tool: 'Bash' });
+    s = reduce(s, { event: 'PostToolUse', cwd: '/w', sessionId: 's', at: 2 });
+    expect(statusByProject(s, P).p).toEqual({ status: 'working', since: 2 });
+  });
+});
+
+describe('summarize / worstStatus (fleet roll-up)', () => {
+  const by = {
+    a: { status: 'working' as const },
+    b: { status: 'working' as const },
+    c: { status: 'needsInput' as const },
+    d: { status: 'done' as const },
+    e: { status: 'idle' as const },
+    f: { status: 'none' as const }, // ignored — no live session
+  };
+
+  it('counts projects by live state, ignoring none', () => {
+    expect(summarize(by)).toEqual({ working: 2, waiting: 1, done: 1, idle: 1 });
+  });
+
+  it('is all-zero for an empty or all-none fleet', () => {
+    expect(summarize({})).toEqual({ working: 0, waiting: 0, done: 0, idle: 0 });
+    expect(summarize({ x: { status: 'none' } })).toEqual({
+      working: 0,
+      waiting: 0,
+      done: 0,
+      idle: 0,
+    });
+  });
+
+  it('worstStatus picks the highest priority present (needsInput > working > done > idle)', () => {
+    expect(worstStatus(by)).toBe('needsInput');
+    expect(worstStatus({ a: { status: 'working' }, b: { status: 'done' } })).toBe('working');
+    expect(worstStatus({ a: { status: 'done' }, b: { status: 'idle' } })).toBe('done');
+    expect(worstStatus({})).toBe('none');
   });
 });

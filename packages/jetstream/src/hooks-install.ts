@@ -44,6 +44,10 @@ function addHook(hooks: Record<string, unknown>, event: string, command: string)
   return true;
 }
 
+/** The higher-overhead tool-detail events (a hook process per tool call), wired only
+ * with the opt-in `--tool-detail` flag. */
+export const TOOL_DETAIL_EVENTS = ['PreToolUse', 'PostToolUse'] as const;
+
 export interface HookCommands {
   /** The silent lifecycle hook (status board), added to HOOK_EVENTS. */
   status: string;
@@ -51,6 +55,9 @@ export interface HookCommands {
   permission?: string;
   /** The statusline hook (usage gauges). Set only if the user has no statusline. */
   usage?: string;
+  /** Opt-in: also wire the status hook to PreToolUse/PostToolUse so keys show the
+   * active tool. Higher overhead — off unless the user asks. */
+  toolDetail?: boolean;
 }
 
 /**
@@ -67,6 +74,11 @@ export function mergeHooks(settings: unknown, commands: HookCommands): MergeResu
 
   for (const event of HOOK_EVENTS) {
     if (addHook(hooks, event, commands.status)) changed = true;
+  }
+  if (commands.toolDetail) {
+    for (const event of TOOL_DETAIL_EVENTS) {
+      if (addHook(hooks, event, commands.status)) changed = true;
+    }
   }
   if (commands.permission && addHook(hooks, 'PermissionRequest', commands.permission)) {
     changed = true;

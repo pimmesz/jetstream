@@ -43,4 +43,12 @@ describe('mergeHooks', () => {
     const { next } = mergeHooks({}, { status: STATUS });
     expect((next.hooks as Record<string, unknown>).PermissionRequest).toBeUndefined();
   });
+
+  it('adds PreToolUse/PostToolUse only with toolDetail', () => {
+    const on = mergeHooks({}, { status: STATUS, toolDetail: true }).next.hooks as Record<string, unknown>;
+    expect(on.PreToolUse).toEqual([{ hooks: [{ type: 'command', command: STATUS }] }]);
+    expect(on.PostToolUse).toEqual([{ hooks: [{ type: 'command', command: STATUS }] }]);
+    const off = mergeHooks({}, { status: STATUS }).next.hooks as Record<string, unknown>;
+    expect(off.PreToolUse).toBeUndefined();
+  });
 });

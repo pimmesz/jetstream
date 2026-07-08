@@ -56,11 +56,15 @@ export class LaunchKey extends SingletonAction<LaunchSettings> {
           /* per-event key updates are a nice-to-have; the result decides the face */
         },
       );
+      const cost =
+        result.costUsd !== undefined && result.costUsd > 0
+          ? `$${result.costUsd.toFixed(result.costUsd < 1 ? 2 : 0)}`
+          : '';
       await ev.action.setImage(
         keyFace({
           color: result.isError ? '#e5484d' : '#30a46c',
           label: this.label(settings),
-          sub: result.isError ? 'failed' : 'done',
+          sub: result.isError ? 'failed' : cost ? `done · ${cost}` : 'done',
         }),
       );
       if (result.isError) await ev.action.showAlert();

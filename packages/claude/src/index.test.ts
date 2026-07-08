@@ -133,6 +133,16 @@ describe('runClaude', () => {
     expect(result).toEqual({ sessionId: 'abc', result: 'ok', isError: false, exitCode: 0 });
   });
 
+  it('carries costUsd from the result event when present', async () => {
+    const { spawnFn, fire } = fakeSpawn(
+      [JSON.stringify({ type: 'result', session_id: 'c', result: 'r', is_error: false, total_cost_usd: 0.0234 })],
+      0,
+    );
+    const pending = runClaude({ prompt: 'x' }, () => {}, { spawnFn, env: {} });
+    fire();
+    expect((await pending).costUsd).toBe(0.0234);
+  });
+
   it('marks isError on a non-zero exit even without a result event', async () => {
     const { spawnFn, fire } = fakeSpawn([], 1);
     const pending = runClaude({ prompt: 'x' }, () => {}, { spawnFn, env: {} });

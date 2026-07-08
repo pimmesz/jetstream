@@ -10,6 +10,7 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
    `ANTHROPIC_API_KEY` unset: Jetstream strips it from anything it spawns so a keypress
    can never silently bill the metered API.
 2. **The plugin**: double-click `gg.pim.jetstream.streamDeckPlugin` (or, later, install
+
    from the Elgato Marketplace). Then wire the Claude hooks once:
 
    ```sh
@@ -21,10 +22,35 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
    first. Restart running `claude` sessions to pick them up.
 
 Drag keys onto your deck: **Project status** (set a name + project path per key;
-short-press jumps to the terminal, **long-press interrupts** the session), **Attention**,
-**Usage gauge**, **Launch preset**, and **Approve / Deny** (place one of each — they answer
-the oldest pending Claude permission request straight from the deck; if you don't press within
-~90s, Claude falls back to its normal dialog).
+short-press jumps to the terminal, **long-press interrupts** the session; done keys show the
+change size, `+120/-40 · done 4m`), **Fleet roll-up** (one always-visible key counting the whole
+fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
+answerable even when projects outnumber keys), **Attention** (flashes if a request goes
+unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`), **Launch preset**
+(now usable inside Stream Deck multi-actions), **Approve / Deny** (place one of each — they answer
+the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude
+falls back to its normal dialog), and **Jetstream settings** (press to toggle colour-blind mode;
+its inspector sets escalation/long-press/refresh). Amber keys distinguish a deck-answerable prompt
+(`!`, `approve?`) from an open question you must type (`?`, `answer`).
+
+Every state also carries a **glyph** (`⋯` working, `!` needs-you, `✓` done), so the board reads
+without relying on colour — and the settings key's high-contrast theme swaps the red/green pair
+for orange/blue.
+
+## Works on any Stream Deck
+
+Nothing is device-specific — you drag as many keys as your device has (Mini 6, MK.2 15, XL 32,
+Neo). There's no layout to pick; each **Project** key holds its own name+path, so everyone's board
+is their own. (Stream Deck **+** dials / touch strip aren't used yet — a future item.)
+
+## Optional: show the active tool
+
+Working keys can show the current tool (`Bash · 12m`) instead of just `working 12m`. It needs the
+higher-overhead `PreToolUse`/`PostToolUse` hooks (a hook process per tool call), so it's opt-in:
+
+```sh
+node "<plugin folder>/bin/hooks-install.js" --tool-detail
+```
 
 ## Which meter does what
 

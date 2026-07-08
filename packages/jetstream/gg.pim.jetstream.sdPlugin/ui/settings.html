@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { margin: 0; padding: 8px 10px; background: #2d2d2d; color: #d8d8d8;
+         font: 13px -apple-system, "Segoe UI", sans-serif; }
+  .row { display: flex; align-items: center; margin: 8px 0; }
+  label { flex: 0 0 128px; color: #969696; }
+  select, input { flex: 1; background: #3d3d3d; color: #fff; border: 1px solid #555;
+                  border-radius: 4px; padding: 6px 8px; font-size: 13px; }
+  select:focus, input:focus { outline: none; border-color: #0091ff; }
+  p.hint { color: #7a7a7a; font-size: 11px; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <label for="theme">Colours</label>
+    <select id="theme" data-key="theme">
+      <option value="default">Default (red / amber / green)</option>
+      <option value="highContrast">High contrast (colour-blind safe)</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="escalateAfterSec">Escalate after (s)</label>
+    <input id="escalateAfterSec" data-key="escalateAfterSec" type="number" min="15" max="3600" />
+  </div>
+  <div class="row">
+    <label for="longPressMs">Long-press (ms)</label>
+    <input id="longPressMs" data-key="longPressMs" type="number" min="200" max="3000" />
+  </div>
+  <div class="row">
+    <label for="usageRefreshSec">Usage refresh (s)</label>
+    <input id="usageRefreshSec" data-key="usageRefreshSec" type="number" min="15" max="3600" />
+  </div>
+  <p class="hint">These apply to the whole plugin. Glyphs mark each state regardless of
+  colour. For per-tool detail on working keys, re-run the installer with
+  <code>--tool-detail</code>.</p>
+  <script>
+    let ws = null;
+    let uuid = null;
+    let settings = {};
+
+    function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent) {
+      uuid = inUUID;
+      ws = new WebSocket('ws://127.0.0.1:' + inPort);
+      ws.onopen = function () {
+        ws.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
+        ws.send(JSON.stringify({ event: 'getGlobalSettings', context: inUUID }));
+      };
+      ws.onmessage = function (e) {
+        var msg = JSON.parse(e.data);
+        if (msg.event === 'didReceiveGlobalSettings') {
+          settings = (msg.payload && msg.payload.settings) || {};
+          populate();
+        }
+      };
+      var fields = document.querySelectorAll('[data-key]');
+      for (var i = 0; i < fields.length; i++) {
+        fields[i].addEventListener('change', save);
+        fields[i].addEventListener('input', save);
+      }
+    }
+
+    function populate() {
+      var fields = document.querySelectorAll('[data-key]');
+      for (var i = 0; i < fields.length; i++) {
+        var v = settings[fields[i].dataset.key];
+        if (v !== undefined && v !== null) fields[i].value = String(v);
+      }
+    }
+
+    function save() {
+      if (!ws || ws.readyState !== 1) return;
+      var next = {};
+      for (var k in settings) next[k] = settings[k];
+      var fields = document.querySelectorAll('[data-key]');
+      for (var i = 0; i < fields.length; i++) {
+        var el = fields[i];
+        next[el.dataset.key] = el.type === 'number' ? Number(el.value) : el.value;
+      }
+      settings = next;
+      ws.send(JSON.stringify({ event: 'setGlobalSettings', context: uuid, payload: next }));
+    }
+  </script>
+</body>
+</html>

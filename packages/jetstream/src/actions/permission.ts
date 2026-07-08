@@ -33,6 +33,9 @@ export class PermissionKey extends SingletonAction<PermissionSettings> {
         ? keyFace({
             color: deny ? '#e5484d' : '#30a46c',
             label: deny ? 'DENY' : 'APPROVE',
+            // E: the pending command needs to be READABLE (`Bash: rm -rf dist/build`), so
+            // give it a longer, smaller line instead of cutting it at ~14 chars.
+            subMax: 24,
             sub: count > 1 ? `${pending.summary} (+${count - 1})` : pending.summary,
           })
         : keyFace({
