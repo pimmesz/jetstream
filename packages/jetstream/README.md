@@ -11,22 +11,27 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
    can never silently bill the metered API.
 2. **The plugin**: double-click `gg.pim.jetstream.streamDeckPlugin` (or, later, install
 
-   from the Elgato Marketplace). Then wire the Claude hooks once:
+   from the Elgato Marketplace). Then run the one-time setup:
 
    ```sh
-   node "<plugin folder>/bin/hooks-install.js"
+   node "<plugin folder>/bin/jetstream.js" setup
    ```
 
-   That adds Jetstream's lifecycle hook (per-project status) and — only if you have no
-   statusline yet — its usage hook to `~/.claude/settings.json`, backing the file up
-   first. Restart running `claude` sessions to pick them up.
+   That wires Jetstream's lifecycle hook (per-project status) and — only if you have no
+   statusline yet — its usage hook into `~/.claude/settings.json` (backing the file up
+   first), then drops a starter `projects.json`. Restart running `claude` sessions to pick
+   them up. Prefer the pieces? `jetstream.js hooks install` does only the hooks (the old
+   `bin/hooks-install.js` still works), and `jetstream.js doctor` is a read-only health
+   check for when the board isn't lighting up.
 
 Drag keys onto your deck: **Project status** (set a name + project path per key;
 short-press jumps to the terminal, **long-press interrupts** the session; done keys show the
 change size, `+120/-40 · done 4m`), **Fleet roll-up** (one always-visible key counting the whole
 fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
 answerable even when projects outnumber keys), **Attention** (flashes if a request goes
-unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`), **Launch preset**
+unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`), **CI / PR status** (one
+always-visible key: the worst CI state across your open `afterburner/` PRs — green / red /
+running — flashing when CI newly fails; needs the `gh` CLI logged in), **Launch preset**
 (now usable inside Stream Deck multi-actions), **Approve / Deny** (place one of each — they answer
 the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude
 falls back to its normal dialog), and **Jetstream settings** (press to toggle colour-blind mode;
@@ -43,13 +48,31 @@ Nothing is device-specific — you drag as many keys as your device has (Mini 6,
 Neo). There's no layout to pick; each **Project** key holds its own name+path, so everyone's board
 is their own. (Stream Deck **+** dials / touch strip aren't used yet — a future item.)
 
+## Config file (optional)
+
+Define your whole fleet in one place instead of a placed key per repo. Jetstream reads
+`$XDG_CONFIG_HOME/jetstream/projects.json` (else `~/.config/jetstream/projects.json`;
+`%APPDATA%\jetstream\projects.json` on Windows) at startup:
+
+```json
+{
+  "projects": [{ "id": "falcon", "name": "Falcon", "path": "/Users/you/falcon" }]
+}
+```
+
+The **Fleet** roll-up and **Attention** doorbell then cover every repo in the file, so placed
+**Project** keys become optional focused jump-to buttons rather than the only way the plugin learns
+your repos. An optional `"settings"` block (`theme`, `longPressMs`, `usageRefreshSec`,
+`escalateAfterSec`) presets the plugin config on a fresh install — the Settings key still wins at
+runtime. Run `jetstream.js doctor` to check the file is parseable.
+
 ## Optional: show the active tool
 
 Working keys can show the current tool (`Bash · 12m`) instead of just `working 12m`. It needs the
 higher-overhead `PreToolUse`/`PostToolUse` hooks (a hook process per tool call), so it's opt-in:
 
 ```sh
-node "<plugin folder>/bin/hooks-install.js" --tool-detail
+node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
 ```
 
 ## Which meter does what

@@ -23,11 +23,17 @@ drives an SD+ dial cockpit). AgentDeck is also a scope cautionary tale (16 surfa
    (#12), riding this repo's PR-only model so Jetstream covers **status → approve → ship**, not just
    monitoring.
 
-## Next Fable batch (v1.3) — cheap, mechanical, gate-verifiable
+## Next Fable batch (v1.3) — SHIPPED
+
+_All six landed in v1.3 (commit `22f791d`, items A–F), except **#1**, which pre-dated v1.3 — it was in
+the original plugin; v1.3 item E only improved its legibility — and **#18**, a deliberate partial (only
+Launch is marked; approve/deny and Settings are intentionally off). The remaining v1.3 piece, **item G**
+(onboarding CLI + config-file projects + doctor), is now built too — see `item-g-cli-and-config.md`.
+The fable tier is exhausted; the genuinely-remaining work is all Opus-tier below._
 
 | #   | Item                                          | What                                                                                                                                             |
 | --- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | **Permission preview** `fable/S`              | Render the pending tool + input (`Bash: rm -rf dist`) on the held key before APPROVE/DENY. Highest value-to-effort — data's already in the hook. |
+| 1   | **Permission preview** `fable/S`              | **(shipped pre-v1.3)** Render the pending tool + input (`Bash: rm -rf dist`) on the held key before APPROVE/DENY — `summarizeTool`/`PendingPermission.summary` were in the original plugin; v1.3 item E only made it more legible. |
 | 3   | **Reset countdown** `fable/S`                 | `resets in 3h 33m` next to the 5h/7d gauge. Drives wait-vs-burn better than the % alone.                                                         |
 | 4   | **Diff-magnitude badge** `fable/S`            | On Stop, `git diff --numstat` in the cwd → badge the green key `+120/-40` so review attention routes to the big changes.                         |
 | 6   | **Fleet roll-up key** `fable/S`               | One always-visible key: `3 working / 1 waiting / 2 done`, colour = worst state, flash on new needs-input — nothing off-page is lost.             |
@@ -40,7 +46,7 @@ drives an SD+ dial cockpit). AgentDeck is also a scope cautionary tale (16 surfa
 | --- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2   | **Always-Allow** `opus/M`                           | Third key: approve + record a **session-scoped** allow rule so repeat-safe prompts auto-answer. A deliberate, bounded relaxation of "every grant is a keypress" — needs scope design. |
 | 5   | **Ack/snooze/re-escalate** `opus/M`                 | PagerDuty semantics for the doorbell: tap=ack, auto re-flash if still blocked, snooze. The keystone the other attention wins build on.                                                |
-| 8   | **CI/PR status key** `opus/M`                       | Poll `gh` for the opened PR's checks → spinner/green/red + flash on failure. Closes "done" → "actually green".                                                                        |
+| 8   | **CI/PR status key** `opus/M`                       | **(built — see `item-8-ci-pr-status.md`)** Poll `gh` for the opened PR's checks → spinner/green/red + flash on failure. Closes "done" → "actually green".                             |
 | 9   | **Attention profile auto-switch** `opus/M`          | On a permission request, `switchToProfile` flips the deck to a big APPROVE/DENY/context page, auto-revert after. Opt-in.                                                              |
 | 11  | **Prompt recipe library** `opus/M`                  | Per-key saved headless launches (prompt+model+tools+mode) — "write tests", "triage CI" — one press each.                                                                              |
 | 12  | **Ship-as-PR** `opus/M`                             | Long-press a done key → commit & push the worktree as an `afterburner/` PR (never a protected branch). Completes status→approve→**ship**.                                             |

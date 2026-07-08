@@ -3,11 +3,13 @@ import { parseHookPayload } from '@pimmesz/jetstream-status';
 import { board } from './state';
 import { permissions } from './permissions';
 import { config } from './config';
+import { readConfigFile } from './projects-config';
 import { DEFAULT_PORT, startHookServer } from './server';
 import { ProjectKey } from './actions/project';
 import { AttentionKey } from './actions/attention';
 import { FleetKey } from './actions/fleet';
 import { UsageKey } from './actions/usage';
+import { CiKey, CI_REFRESH_MS } from './actions/ci';
 import { LaunchKey } from './actions/launch';
 import { PermissionKey } from './actions/permission';
 import { SettingsKey } from './actions/settings';
@@ -16,6 +18,7 @@ const projectKey = new ProjectKey();
 const attentionKey = new AttentionKey();
 const fleetKey = new FleetKey();
 const usageKey = new UsageKey();
+const ciKey = new CiKey();
 const launchKey = new LaunchKey();
 const permissionKey = new PermissionKey();
 const settingsKey = new SettingsKey();
@@ -24,9 +27,18 @@ streamDeck.actions.registerAction(projectKey);
 streamDeck.actions.registerAction(attentionKey);
 streamDeck.actions.registerAction(fleetKey);
 streamDeck.actions.registerAction(usageKey);
+streamDeck.actions.registerAction(ciKey);
 streamDeck.actions.registerAction(launchKey);
 streamDeck.actions.registerAction(permissionKey);
 streamDeck.actions.registerAction(settingsKey);
+
+// Seed the board + settings from the optional projects.json BEFORE anything subscribes or
+// connects: the Fleet roll-up and Attention doorbell then cover the whole fleet without a
+// placed key per repo, and a fresh install can pin theme/timings. Placed Project keys still
+// override/add by id, and a live global-settings edit still wins over the file preset.
+const configFile = readConfigFile();
+board.seed(configFile.projects);
+config.setBase(configFile.settings);
 
 function renderBoard(): void {
   void projectKey.renderAll();
@@ -37,6 +49,7 @@ function renderBoard(): void {
 function renderAll(): void {
   renderBoard();
   void usageKey.refresh();
+  void ciKey.renderAll(); // repaint last CI state (the ci timer re-polls gh; theme change shouldn't)
   void settingsKey.renderAll();
   void permissionKey.renderAll();
 }
@@ -56,6 +69,9 @@ config.subscribe(() => {
   clearInterval(usageTimer);
   usageTimer = setInterval(() => void usageKey.refresh(), config.get().usageRefreshSec * 1000);
 });
+
+// CI/PR status polls gh on a fixed cadence; refresh() no-ops when no CI key is placed.
+setInterval(() => void ciKey.refresh(), CI_REFRESH_MS);
 
 function pidOf(raw: unknown): number | undefined {
   const pid = (raw as { _pid?: unknown })?._pid;

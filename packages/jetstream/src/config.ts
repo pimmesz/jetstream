@@ -25,20 +25,27 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
     : fallback;
 }
 
-/** Merge raw global settings over the defaults, defensively (bad/missing fields fall
- * back to the default). Pure. */
-export function mergeConfig(raw: unknown): JetstreamConfig {
+/** Merge raw settings over a base, defensively (bad/missing fields fall back to the base).
+ * The base defaults to `DEFAULTS`, but the config-file preset can raise it (see
+ * `ConfigStore.setBase`) so a fresh install's file preset isn't erased by an empty or
+ * partial global-settings object. Pure. */
+export function mergeConfig(raw: unknown, base: JetstreamConfig = DEFAULTS): JetstreamConfig {
   const r = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
   return {
-    theme: r.theme === 'highContrast' ? 'highContrast' : 'default',
-    longPressMs: clampInt(r.longPressMs, DEFAULTS.longPressMs, 200, 3000),
-    usageRefreshSec: clampInt(r.usageRefreshSec, DEFAULTS.usageRefreshSec, 15, 3600),
-    escalateAfterSec: clampInt(r.escalateAfterSec, DEFAULTS.escalateAfterSec, 15, 3600),
+    theme: r.theme === 'highContrast' || r.theme === 'default' ? r.theme : base.theme,
+    longPressMs: clampInt(r.longPressMs, base.longPressMs, 200, 3000),
+    usageRefreshSec: clampInt(r.usageRefreshSec, base.usageRefreshSec, 15, 3600),
+    escalateAfterSec: clampInt(r.escalateAfterSec, base.escalateAfterSec, 15, 3600),
   };
 }
 
-/** Live config singleton, refreshed from Stream Deck global settings. */
+/** Live config singleton. Priority is: live global settings (the Settings key) > the
+ * optional `projects.json` preset > `DEFAULTS`. Global settings merge over the preset base,
+ * not straight over DEFAULTS, so a partial/empty global-settings object can't silently
+ * revert the file preset. */
 class ConfigStore {
+  private base: JetstreamConfig = DEFAULTS;
+  private raw: unknown = undefined;
   private value: JetstreamConfig = DEFAULTS;
   private listeners = new Set<() => void>();
 
@@ -46,8 +53,22 @@ class ConfigStore {
     return this.value;
   }
 
+  /** Set the baseline that live global settings merge over: the optional `projects.json`
+   * `settings` preset, itself layered over DEFAULTS. Call once at startup, before the first
+   * `set()`, so a fresh install can pin theme/timings while a runtime Settings-key edit
+   * (a complete global-settings object) still wins. */
+  setBase(preset: unknown): void {
+    this.base = mergeConfig(preset, DEFAULTS);
+    this.recompute();
+  }
+
   set(raw: unknown): void {
-    this.value = mergeConfig(raw);
+    this.raw = raw;
+    this.recompute();
+  }
+
+  private recompute(): void {
+    this.value = mergeConfig(this.raw, this.base);
     for (const listener of this.listeners) listener();
   }
 

@@ -86,6 +86,20 @@
       ]
     },
     {
+      "UUID": "gg.pim.jetstream.ci",
+      "Name": "CI / PR status",
+      "Icon": "imgs/ci",
+      "Tooltip": "One always-visible key: the worst CI state across your open afterburner PRs (green / red / running), flashing when CI newly fails. Needs the `gh` CLI, logged in.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/ci"
+        }
+      ]
+    },
+    {
       "UUID": "gg.pim.jetstream.launch",
       "Name": "Launch preset",
       "Icon": "imgs/launch",

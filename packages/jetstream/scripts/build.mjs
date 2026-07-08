@@ -22,6 +22,7 @@ await build({
   absWorkingDir: tmpdir(),
   entryPoints: {
     plugin: join(pkg, 'src', 'plugin.ts'),
+    jetstream: join(pkg, 'src', 'bin', 'jetstream-cli.ts'),
     'hooks-install': join(pkg, 'src', 'bin', 'hooks-install-cli.ts'),
     'status-hook': join(pkg, '..', 'status', 'src', 'hook.ts'),
     'permission-hook': join(pkg, '..', 'status', 'src', 'permission-hook.ts'),

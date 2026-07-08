@@ -16,16 +16,26 @@ export interface ProjectEntry {
 }
 
 /**
- * The plugin-wide board: the hook-event status state + the registry of visible
- * project keys (actionId → {name, path}). Each visible Project key IS a project;
- * its Stream Deck action id doubles as the ProjectConfig id, so settings edits and
- * key removal keep the board consistent without a separate config file.
+ * The plugin-wide board: the hook-event status state + the project registry. Each visible
+ * Project key registers by its Stream Deck action id (which doubles as the ProjectConfig
+ * id); the optional `projects.json` additionally SEEDS a baseline registry so the Fleet
+ * roll-up and Attention doorbell cover the whole fleet even for repos without a placed key.
+ * Placed keys override/add by id (deck wins in `projects()`).
  */
 export class Board {
   private state: StatusState = initialState();
   private registry = new Map<string, ProjectEntry>();
+  private seeded = new Map<string, ProjectEntry>();
   private sessions = new Map<string, { pid: number; cwd: string }>();
   private listeners = new Set<() => void>();
+
+  /** Seed the baseline registry from the config file (`projects.json`), keyed by each
+   * entry's own id. Called once at startup, before any key registers, so the fleet is
+   * visible without a placed key per repo. A placed Project key still overrides/adds by id. */
+  seed(configs: ProjectConfig[]): void {
+    this.seeded = new Map(configs.map((c) => [c.id, { name: c.name, path: c.path }]));
+    this.emit();
+  }
 
   dispatch(event: HookEvent): void {
     this.state = reduce(this.state, event);
@@ -61,7 +71,9 @@ export class Board {
   }
 
   projects(): ProjectConfig[] {
-    return [...this.registry.entries()].map(([id, p]) => ({ id, name: p.name, path: p.path }));
+    const merged = new Map<string, ProjectEntry>(this.seeded);
+    for (const [id, entry] of this.registry) merged.set(id, entry); // placed keys win by id
+    return [...merged.entries()].map(([id, p]) => ({ id, name: p.name, path: p.path }));
   }
 
   /** Current status per visible project key (keyed by action id). */

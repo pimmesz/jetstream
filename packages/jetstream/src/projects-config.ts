@@ -1,0 +1,110 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import type { ProjectConfig } from '@pimmesz/jetstream-status';
+import type { JetstreamConfig } from './config';
+
+/**
+ * The optional config file the plugin reads at startup to seed its board and settings —
+ * afterburner's "edit a config, run a command" flow. Stream Deck owns the physical layout,
+ * so this NEVER places keys or writes a key's Property Inspector: it seeds the plugin's own
+ * registry (fleet / attention / project matching), and presets the plugin settings.
+ */
+
+/** Where the plugin looks for `projects.json`: `$XDG_CONFIG_HOME/jetstream/projects.json`,
+ * else `~/.config/jetstream/projects.json` (on Windows, `%APPDATA%\jetstream\projects.json`).
+ * `env`/`home` are injectable so the resolver is testable without touching the real env. */
+export function projectsConfigPath(
+  env: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): string {
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  if (xdg) return join(xdg, 'jetstream', 'projects.json');
+  const appData = env.APPDATA?.trim();
+  if (appData && process.platform === 'win32') return join(appData, 'jetstream', 'projects.json');
+  return join(home, '.config', 'jetstream', 'projects.json');
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+/**
+ * Parse the `projects` array out of a `projects.json` string into validated
+ * `ProjectConfig[]`. Deliberately tolerant: bad JSON, a missing/wrong-typed `projects`
+ * array, or malformed entries yield `[]` — this NEVER throws, so a broken config degrades
+ * to "no seeded projects" rather than crashing the plugin at startup. Entries missing
+ * id/name/path are dropped; duplicate ids keep the first.
+ */
+export function parseProjectsConfig(raw: string): ProjectConfig[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const projects = (parsed as { projects?: unknown } | null | undefined)?.projects;
+  if (!Array.isArray(projects)) return [];
+  const seen = new Set<string>();
+  const out: ProjectConfig[] = [];
+  for (const entry of projects) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    if (!isNonEmptyString(e.id) || !isNonEmptyString(e.name) || !isNonEmptyString(e.path)) continue;
+    const id = e.id.trim();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, name: e.name, path: e.path });
+  }
+  return out;
+}
+
+/**
+ * Parse the optional `settings` block out of a `projects.json` string into a partial config
+ * preset. Tolerant — bad JSON or a missing/oddly-typed block yields `{}`. Values are
+ * validated for TYPE only here; range clamping happens where the preset is merged
+ * (`config.setBase` → `mergeConfig`).
+ */
+export function parseSettingsPreset(raw: string): Partial<JetstreamConfig> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  const settings = (parsed as { settings?: unknown } | null | undefined)?.settings;
+  if (typeof settings !== 'object' || settings === null) return {};
+  const s = settings as Record<string, unknown>;
+  const out: Partial<JetstreamConfig> = {};
+  if (s.theme === 'default' || s.theme === 'highContrast') out.theme = s.theme;
+  if (typeof s.longPressMs === 'number') out.longPressMs = s.longPressMs;
+  if (typeof s.usageRefreshSec === 'number') out.usageRefreshSec = s.usageRefreshSec;
+  if (typeof s.escalateAfterSec === 'number') out.escalateAfterSec = s.escalateAfterSec;
+  return out;
+}
+
+export interface ConfigFile {
+  projects: ProjectConfig[];
+  settings: Partial<JetstreamConfig>;
+}
+
+/** Read `projects.json` once at startup (sync — a small read before the plugin connects).
+ * A missing, unreadable, or malformed file yields empty projects + empty preset; never
+ * throws. `path` is injectable for tests. */
+export function readConfigFile(path = projectsConfigPath()): ConfigFile {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return { projects: [], settings: {} };
+  }
+  return { projects: parseProjectsConfig(raw), settings: parseSettingsPreset(raw) };
+}
+
+/** The starter file `jetstream setup` writes when no `projects.json` exists yet. */
+export const PROJECTS_TEMPLATE = `{
+  "projects": [
+    { "id": "example", "name": "Example", "path": "/absolute/path/to/your/repo" }
+  ]
+}
+`;

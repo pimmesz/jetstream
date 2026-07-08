@@ -1,7 +1,11 @@
 # Jetstream v1.3 — Item G: terminal onboarding (CLI + config-file projects)
 
-**Status: DESIGNED, NOT BUILT.** Items A–F of v1.3 shipped; G was deferred as the largest
-piece. This is its self-contained build spec.
+**Status: BUILT (G1–G3).** Items A–F of v1.3 shipped; G was the largest deferred piece and is
+now implemented — CLI consolidation (`jetstream` = `hooks install` / `doctor` / `setup`, with
+`bin/hooks-install.js` kept as a thin alias), config-file projects (`parseProjectsConfig` +
+`board.seed`), and the optional settings preset. Deferred at the G2 stop-condition: the
+`projects.json`↔placed-key merge-by-id (see G2 and Jetstream SPEC "Open items"). On-device
+verification (real deck) is the remaining step. This spec is retained as the build record.
 
 ## Why
 

@@ -15,10 +15,13 @@ theme**, a **Settings** key (global settings: theme / escalation / long-press / 
 (`--tool-detail` → `Bash · 12m`), and **cost** on Launch results. v1.3 added a **Fleet roll-up**
 key, a **diff-size badge** on done keys (`+120/-40 · done Xm`), an **approve-vs-answer split** on
 amber keys (deck-answerable `!` vs keyboard-only `?`), a longer/legible **permission-command line**,
-a labelled **sooner-of 5h/7d reset** on the gauge, and **multi-action support** on Launch. Remaining:
-on-device verification (a real deck + real `~/.claude/settings.json`), the macOS jump-to-terminal UX,
-the Windows path, the terminal onboarding CLI + config-file projects (v1.3 item G, deferred), and the
-deferred Stream Deck+ dials — see Open items.
+a labelled **sooner-of 5h/7d reset** on the gauge, and **multi-action support** on Launch. v1.3
+**item G** added the consolidated **`jetstream` CLI** (`hooks install` / `doctor` / `setup`) and
+**config-file projects** — a `projects.json` that seeds the board's fleet (so Fleet + Attention cover
+repos without a placed key) plus an optional settings preset. Remaining: on-device verification (a real
+deck + real `~/.claude/settings.json`), the macOS jump-to-terminal UX, the Windows path, the
+`projects.json`↔placed-key merge-by-id (deferred — see Open items), and the deferred Stream Deck+ dials
+— see Open items.
 
 ## The board (v1 key set)
 
@@ -28,6 +31,7 @@ deferred Stream Deck+ dials — see Open items.
 | **Fleet** roll-up      | one always-visible key: `3w 1! 2✓` counts, coloured by the WORST state present (needsInput > working > done) | ack blip (paging the board is later)                                                              | `status.summarize`/`worstStatus`   |
 | **Attention** doorbell | dim; lights **amber** and names the project when ANY project needs input                              | jump to that project                                                                              | `status.needsAttention`            |
 | **Usage** gauge        | 5h / 7d used %, reset countdown, model                                                                | (optional) open `/usage`                                                                           | `usage.resolveUsage`               |
+| **CI / PR** status (v2) | worst CI state across open `afterburner/` PRs — green / red / running; flashes on a new failure       | (read-only)                                                                                        | `ci-status` (`gh` poll)            |
 | **Launch preset**\*    | a canned prompt / skill for a chosen project                                                          | fire headless `claude -p`, stream idle→working→done onto the key                                  | `claude.runClaude`                 |
 
 \* optional in v1. Projects are user-configured `{ id, name, path }` — whatever repos you run
@@ -88,8 +92,10 @@ auth (else it bills the API — label loudly). **BUILD VERIFY the metering befor
 - **`packages/jetstream`** — TODO (PHASE 2). The `@elgato/streamdeck` plugin: `<uuid>.sdPlugin` +
   `manifest.json`, one `SingletonAction` per key type (project / attention / usage / launch), the
   **local HTTP hook-listener server** feeding the `status` reducer, key rendering (colour + label +
-  elapsed), the switch/launch actions, and `jetstream hooks install` (writes the global hook +
-  statusline hook into `~/.claude/settings.json`). Depends on the three cores via `workspace:*`.
+  elapsed), the switch/launch actions, the consolidated **`jetstream` CLI** (`hooks install` writes the
+  global hook + statusline hook into `~/.claude/settings.json`; `doctor` is a read-only health check;
+  `setup` does both plus a `projects.json` template), and startup **`projects.json`** seeding of the
+  board's fleet. Depends on the three cores via `workspace:*`.
   Ships via the **Elgato Marketplace** (UUID e.g. `gg.pim.jetstream`), not npm.
 
 afterburner is **not** a dependency — it's just a project path on the board. (`usage` can shell out to
@@ -112,3 +118,8 @@ afterburner's `ci.yml`. Changesets only when a package publishes to npm (deferre
 - The statusline usage payload field names (`rate_limits.five_hour.used_percentage` / `resets_at`).
 - npm scope (`@pimmesz/*` placeholder) + the Elgato plugin UUID + a local server port default
   (`JETSTREAM_PORT`, currently 41321).
+- The `projects.json` ↔ placed-Project-key merge (v1.3 item G stop-condition): `projects.json` seeds a
+  baseline registry keyed by each entry's config id, while placed Project keys register by Stream Deck
+  action id — so a repo with BOTH a config entry and a placed key currently shows as two entries. True
+  union-by-id (deck wins) needs an `id` field on the Project key's Property Inspector + reconciliation
+  in the board; deferred (do not guess merge semantics beyond union-by-id, deck-wins).
