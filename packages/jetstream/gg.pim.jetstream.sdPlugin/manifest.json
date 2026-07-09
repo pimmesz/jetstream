@@ -2,8 +2,9 @@
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "UUID": "gg.pim.jetstream",
   "Name": "Jetstream",
-  "Version": "0.1.0.0",
+  "Version": "1.0.0.0",
   "Author": "pimmesz",
+  "URL": "https://github.com/pimmesz/afterburner/tree/main/packages/jetstream",
   "Description": "Full Claude control on your Stream Deck: a live per-project status board (working / needs you / done), an attention doorbell, usage gauges, and preset headless launches.",
   "Category": "Jetstream",
   "CategoryIcon": "imgs/plugin",
@@ -21,10 +22,6 @@
     {
       "Platform": "mac",
       "MinimumVersion": "12"
-    },
-    {
-      "Platform": "windows",
-      "MinimumVersion": "10"
     }
   ],
   "Profiles": [
