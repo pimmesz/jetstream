@@ -27,6 +27,23 @@
       "MinimumVersion": "10"
     }
   ],
+  "Profiles": [
+    {
+      "Name": "profiles/Jetstream",
+      "DeviceType": 0,
+      "DontAutoSwitchWhenInstalled": true
+    },
+    {
+      "Name": "profiles/Jetstream Mini",
+      "DeviceType": 1,
+      "DontAutoSwitchWhenInstalled": true
+    },
+    {
+      "Name": "profiles/Jetstream XL",
+      "DeviceType": 2,
+      "DontAutoSwitchWhenInstalled": true
+    }
+  ],
   "Actions": [
     {
       "UUID": "gg.pim.jetstream.project",

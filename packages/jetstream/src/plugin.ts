@@ -1,5 +1,8 @@
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 import streamDeck from '@elgato/streamdeck';
 import { parseHookPayload } from '@pimmesz/jetstream-status';
+import { autoWireHooks } from './auto-setup';
 import { board } from './state';
 import { permissions } from './permissions';
 import { config } from './config';
@@ -77,6 +80,13 @@ function pidOf(raw: unknown): number | undefined {
   const pid = (raw as { _pid?: unknown })?._pid;
   return typeof pid === 'number' ? pid : undefined;
 }
+
+// First-launch onboarding: wire the status + permission hooks ourselves so installing the
+// plugin is enough to make the board light up — no terminal `jetstream setup` with a
+// hand-resolved plugin path. Truly first-launch (a config-dir marker makes a later manual
+// hook removal stick), idempotent, and non-fatal (see autoWireHooks); fire-and-forget so
+// it never delays boot. binDir is this file's own dir (bin/), where the hook scripts sit.
+void autoWireHooks({ binDir: dirname(fileURLToPath(import.meta.url)), logger: streamDeck.logger });
 
 // The loopback port must match the hook scripts (separate processes): env or default.
 const port = Number(process.env.JETSTREAM_PORT) || DEFAULT_PORT;

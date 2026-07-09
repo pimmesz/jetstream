@@ -1,8 +1,10 @@
 import { parseArgs } from 'node:util';
+import { createInterface } from 'node:readline/promises';
 import { dirname, join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { installHooks, type HookCommands } from './hooks-install';
 import { runDoctor, formatReport } from './doctor';
+import { runInit } from './init';
 import { projectsConfigPath, PROJECTS_TEMPLATE } from './projects-config';
 
 /**
@@ -17,6 +19,8 @@ Usage:
   node "<plugin>/bin/jetstream.js" <command> [options]
 
 Commands:
+  init                            Guided setup: build projects.json (your whole fleet) +
+                                  settings, wire the Claude hooks, print next steps
   hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
   doctor                          Read-only health check — why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps`;
@@ -51,7 +55,9 @@ async function runHooks(args: string[], binDir: string): Promise<number> {
     const result = await installHooks({ commands: hookCommands(binDir, toolDetail) });
     if (result.changed) {
       console.log(`Jetstream hooks installed into ${result.settingsPath}`);
-      if (result.backupPath) console.log(`(previous settings backed up to ${result.backupPath})`);
+      if (result.backupCreated) {
+        console.log(`(previous settings backed up to ${result.backupPath})`);
+      }
       console.log('Restart any running `claude` sessions to pick them up.');
     } else {
       console.log('Jetstream hooks were already installed — nothing changed.');
@@ -104,6 +110,32 @@ async function runSetup(binDir: string): Promise<number> {
 export async function run(argv: string[], binDir: string): Promise<number> {
   const [command, ...rest] = argv;
   switch (command) {
+    case 'init': {
+      // The one interactive command: a real readline over stdin/stdout. runInit itself
+      // takes injected io, so the wizard is unit-tested without a tty; only this thin
+      // wiring is exercised interactively. Both abort gestures exit cleanly: Ctrl-C
+      // rejects the pending question (ABORT_ERR), and stdin EOF (Ctrl-D / piped input
+      // running out) would leave it pending forever — the close-sentinel race settles it.
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const closed = new Promise<never>((_, reject) =>
+        rl.once('close', () => reject(new Error('input closed'))),
+      );
+      closed.catch(() => {}); // fired by the finally's rl.close() after a normal run
+      try {
+        return await runInit({
+          io: {
+            ask: (q) => Promise.race([rl.question(q), closed]),
+            say: (line) => console.log(line),
+          },
+          commands: hookCommands(binDir, false),
+        });
+      } catch {
+        console.error('\nAborted — nothing further was written.');
+        return 130;
+      } finally {
+        rl.close();
+      }
+    }
     case 'hooks':
       return runHooks(rest, binDir);
     case 'doctor':

@@ -19,6 +19,14 @@ export const DEFAULTS: JetstreamConfig = {
   escalateAfterSec: 120,
 };
 
+/** The accepted range per numeric setting — single-sourced so the init wizard can
+ * validate what mergeConfig would otherwise silently clamp at runtime. */
+export const LIMITS = {
+  longPressMs: { min: 200, max: 3000 },
+  usageRefreshSec: { min: 15, max: 3600 },
+  escalateAfterSec: { min: 15, max: 3600 },
+} as const;
+
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.min(max, Math.max(min, Math.round(value)))
@@ -33,9 +41,9 @@ export function mergeConfig(raw: unknown, base: JetstreamConfig = DEFAULTS): Jet
   const r = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
   return {
     theme: r.theme === 'highContrast' || r.theme === 'default' ? r.theme : base.theme,
-    longPressMs: clampInt(r.longPressMs, base.longPressMs, 200, 3000),
-    usageRefreshSec: clampInt(r.usageRefreshSec, base.usageRefreshSec, 15, 3600),
-    escalateAfterSec: clampInt(r.escalateAfterSec, base.escalateAfterSec, 15, 3600),
+    longPressMs: clampInt(r.longPressMs, base.longPressMs, LIMITS.longPressMs.min, LIMITS.longPressMs.max),
+    usageRefreshSec: clampInt(r.usageRefreshSec, base.usageRefreshSec, LIMITS.usageRefreshSec.min, LIMITS.usageRefreshSec.max),
+    escalateAfterSec: clampInt(r.escalateAfterSec, base.escalateAfterSec, LIMITS.escalateAfterSec.min, LIMITS.escalateAfterSec.max),
   };
 }
 

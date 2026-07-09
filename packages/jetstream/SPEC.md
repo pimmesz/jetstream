@@ -8,7 +8,8 @@ it works for the interactive sessions you actually run all day, not just headles
 
 Standalone — no afterburner required; afterburner is just one of the projects on the board.
 
-Status: **BUILT (v1.2).** Cores + plugin unit-tested (71 tests), passes `streamdeck validate`, packs.
+Status: **BUILT (v1.3+).** Cores + plugin unit-tested (see `pnpm test` for the live count), passes
+`streamdeck validate`, packs.
 v1.1 added deck **Approve/Deny** + **interrupt**; v1.2 added **colour-blind glyphs + high-contrast
 theme**, a **Settings** key (global settings: theme / escalation / long-press / usage-refresh),
 **escalation flash** on the doorbell, **`done Xm`** waiting time, **opt-in tool detail**
@@ -18,7 +19,16 @@ amber keys (deck-answerable `!` vs keyboard-only `?`), a longer/legible **permis
 a labelled **sooner-of 5h/7d reset** on the gauge, and **multi-action support** on Launch. v1.3
 **item G** added the consolidated **`jetstream` CLI** (`hooks install` / `doctor` / `setup`) and
 **config-file projects** — a `projects.json` that seeds the board's fleet (so Fleet + Attention cover
-repos without a placed key) plus an optional settings preset. Remaining: on-device verification (a real
+repos without a placed key) plus an optional settings preset. The plugin also **auto-wires its status + permission hooks on first launch** (`autoWireHooks`:
+a config-dir marker makes it truly once so manual removal sticks; same-script hook entries are
+refreshed across node-runtime changes, never duplicated; non-fatal; the statusline stays CLI-only),
+so a fresh install lights up with no terminal step; the CLI `setup` stays for the `projects.json`
+template and manual re-wiring. On top sits
+**`jetstream init`** (init.ts) — the guided wizard (repos via scan or path-by-path, theme, timings →
+projects.json + hooks) — and an optional **prebuilt key layout** (profile.ts): a generated
+`.streamDeckProfile` (flat `Version:"1.0"` manifest + dependency-free STORE zip, mirroring the profiles
+Elgato's own tutorial plugin ships; DeviceModel codes taken from those artifacts) for Mini/MK.2/XL,
+imported additively via double-click. Remaining: on-device verification (a real
 deck + real `~/.claude/settings.json`), the macOS jump-to-terminal UX, the Windows path, the
 `projects.json`↔placed-key merge-by-id (deferred — see Open items), and the deferred Stream Deck+ dials
 — see Open items.
@@ -89,12 +99,13 @@ auth (else it bills the API — label loudly). **BUILD VERIFY the metering befor
 - **`packages/status`** — BUILT (9 tests). The hero core: `parseHookPayload`, `matchProject`,
   `reduce`, `statusByProject`, `needsAttention`, `colorFor`, + the silent lifecycle hook that POSTs
   to the plugin. Pure reducer + a thin hook. Node built-ins only.
-- **`packages/jetstream`** — TODO (PHASE 2). The `@elgato/streamdeck` plugin: `<uuid>.sdPlugin` +
+- **`packages/jetstream`** — BUILT. The `@elgato/streamdeck` plugin: `<uuid>.sdPlugin` +
   `manifest.json`, one `SingletonAction` per key type (project / attention / usage / launch), the
   **local HTTP hook-listener server** feeding the `status` reducer, key rendering (colour + label +
-  elapsed), the switch/launch actions, the consolidated **`jetstream` CLI** (`hooks install` writes the
+  elapsed), the switch/launch actions, the consolidated **`jetstream` CLI** (`init` — the guided
+  wizard: projects.json + hooks + an optional prebuilt key layout; `hooks install` writes the
   global hook + statusline hook into `~/.claude/settings.json`; `doctor` is a read-only health check;
-  `setup` does both plus a `projects.json` template), and startup **`projects.json`** seeding of the
+  `setup` does hooks + a `projects.json` template), and startup **`projects.json`** seeding of the
   board's fleet. Depends on the three cores via `workspace:*`.
   Ships via the **Elgato Marketplace** (UUID e.g. `gg.pim.jetstream`), not npm.
 

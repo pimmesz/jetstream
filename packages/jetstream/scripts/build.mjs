@@ -10,9 +10,9 @@
 // 2. A createRequire banner: bundling CJS deps into ESM output leaves `require()`
 //    shims that throw "Dynamic require is not supported" at runtime without it.
 import { build } from 'esbuild';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const pkg = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,4 +41,36 @@ await build({
 
 // The .sdPlugin folder has no package.json, so mark bin/ as ESM.
 writeFileSync(join(bin, 'package.json'), `${JSON.stringify({ type: 'module' }, null, 2)}\n`);
-console.log('bundle complete: bin/plugin.js + hooks + {"type":"module"} marker');
+
+// Bundled DEFAULT profiles (manifest `Profiles` array): regenerate the three
+// .streamDeckProfile files from src/profile.ts so the shipped layouts can never
+// drift from the single source of truth. profile.ts is bundled to a temp module
+// first (this script is plain JS; esbuild is already here), then imported.
+// Fixed profile ids + the STORE-only zip writer keep the output byte-reproducible.
+const profileGenOut = join(tmpdir(), `jetstream-profile-gen-${process.pid}.mjs`);
+await build({
+  absWorkingDir: tmpdir(),
+  entryPoints: { gen: join(pkg, 'src', 'profile.ts') },
+  outfile: profileGenOut,
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  logLevel: 'silent',
+});
+const {
+  DECK_MODELS,
+  DEFAULT_PROFILE_IDS,
+  buildDefaultProfile,
+  defaultProfileName,
+  renderProfileArchive,
+} = await import(pathToFileURL(profileGenOut).href);
+const profilesDir = join(pkg, 'gg.pim.jetstream.sdPlugin', 'profiles');
+mkdirSync(profilesDir, { recursive: true });
+for (const deck of DECK_MODELS) {
+  const archive = renderProfileArchive(buildDefaultProfile(deck), DEFAULT_PROFILE_IDS[deck.key]);
+  writeFileSync(join(profilesDir, `${defaultProfileName(deck)}.streamDeckProfile`), archive);
+}
+rmSync(profileGenOut, { force: true });
+
+console.log('bundle complete: bin/plugin.js + hooks + default profiles + {"type":"module"} marker');

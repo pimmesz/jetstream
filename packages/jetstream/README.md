@@ -10,19 +10,35 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
    `ANTHROPIC_API_KEY` unset: Jetstream strips it from anything it spawns so a keypress
    can never silently bill the metered API.
 2. **The plugin**: double-click `gg.pim.jetstream.streamDeckPlugin` (or, later, install
+   from the Elgato Marketplace), then drag a key onto your deck. That's it — on **first
+   launch** (once, recorded in a marker next to `projects.json`) the plugin wires two hooks
+   into `~/.claude/settings.json`, backing the file up first: the **per-project status
+   hook** (lights the board) and the **permission hook** (lets Approve/Deny keys answer
+   Claude's permission prompts from the deck — while the plugin runs, an unanswered prompt
+   falls back to Claude's own dialog after ~90s). No terminal step. Restart any running
+   `claude` sessions to pick the hooks up. Remove the hooks from `settings.json` and they
+   stay removed — re-wire any time with `jetstream setup`. The usage/statusline hook is
+   wired only by the CLI commands below, never automatically.
 
-   from the Elgato Marketplace). Then run the one-time setup:
+   Want the whole board built for you? Run the guided wizard from inside the installed
+   plugin folder:
 
    ```sh
-   node "<plugin folder>/bin/jetstream.js" setup
+   node "<plugin folder>/bin/jetstream.js" init
    ```
 
-   That wires Jetstream's lifecycle hook (per-project status) and — only if you have no
-   statusline yet — its usage hook into `~/.claude/settings.json` (backing the file up
-   first), then drops a starter `projects.json`. Restart running `claude` sessions to pick
-   them up. Prefer the pieces? `jetstream.js hooks install` does only the hooks (the old
-   `bin/hooks-install.js` still works), and `jetstream.js doctor` is a read-only health
-   check for when the board isn't lighting up.
+   `init` asks for your repos (or scans a folder), your theme and timings, writes
+   `projects.json` (see below), wires the hooks — and can **prebuild a ready-made key
+   layout** for your deck (Mini / MK.2 / XL) as a `Jetstream.streamDeckProfile` you
+   double-click to import. The import installs it as a *new* profile on the device you
+   pick in the dialog; your existing layout is never touched. (The layout file mirrors the
+   profile format Elgato's own plugins ship, but treat it as experimental — dragging keys
+   by hand always works.)
+
+   The smaller pieces still exist: `setup` (hooks + a starter `projects.json` template),
+   `hooks install` (only the hooks; the old `bin/hooks-install.js` still works, and
+   `--tool-detail` adds the active-tool hooks), and `doctor` (read-only health check for
+   when the board isn't lighting up).
 
 Drag keys onto your deck: **Project status** (set a name + project path per key;
 short-press jumps to the terminal, **long-press interrupts** the session; done keys show the
@@ -45,12 +61,14 @@ for orange/blue.
 ## Works on any Stream Deck
 
 Nothing is device-specific — you drag as many keys as your device has (Mini 6, MK.2 15, XL 32,
-Neo). There's no layout to pick; each **Project** key holds its own name+path, so everyone's board
-is their own. (Stream Deck **+** dials / touch strip aren't used yet — a future item.)
+Neo). No fixed layout is required — drag keys wherever you like, or let `jetstream init` prebuild
+a starting layout (Mini / MK.2 / XL); each **Project** key holds its own name+path, so everyone's
+board is their own. (Stream Deck **+** dials / touch strip aren't used yet — a future item.)
 
 ## Config file (optional)
 
-Define your whole fleet in one place instead of a placed key per repo. Jetstream reads
+Define your whole fleet in one place instead of a placed key per repo — `jetstream init`
+builds this file for you, or write it by hand. Jetstream reads
 `$XDG_CONFIG_HOME/jetstream/projects.json` (else `~/.config/jetstream/projects.json`;
 `%APPDATA%\jetstream\projects.json` on Windows) at startup:
 
@@ -80,8 +98,21 @@ node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
 - The **usage gauge** shows your interactive 5h/7d subscription windows.
 - **Launch preset** runs headless `claude -p`, which draws the separate Agent-SDK
   allotment — it does **not** move the 5h/7d gauge.
-- Watching status costs nothing; hooks only report lifecycle events locally
-  (`127.0.0.1`, never the network).
+- Watching status costs nothing; the hooks only talk to the plugin locally
+  (`127.0.0.1`, never the network). The status hook reports lifecycle events; the
+  permission hook additionally holds a pending prompt briefly so a deck key can answer
+  it (falling back to Claude's own dialog after ~90s when unanswered).
+
+## Optional: let an AI trigger your keys (Elgato MCP)
+
+Elgato ships an official MCP server (`npm install -g @elgato/mcp-server`, Stream Deck app
+7.4+, enable **MCP Deck** in Preferences → General) that lets an AI assistant trigger
+actions — but only ones you've placed on the dedicated *MCP Actions* profile; your other
+profiles stay private. Jetstream keys work there like any action, so "approve the pending
+Claude prompt" by voice/text is possible. Two caveats: the MCP server can *trigger* keys,
+never build layouts (that's what `jetstream init` is for), and its actions fire without
+per-call confirmation — use the stdio transport, skip the ngrok/HTTP modes, and only place
+keys you'd let an AI press.
 
 ## Develop
 
