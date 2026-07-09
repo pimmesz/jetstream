@@ -13,6 +13,9 @@ export type JetstreamConfig = {
   /** Branch namespace whose open PRs the CI key watches. Defaults to afterburner's, but
    * a non-afterburner user sets their own so the CI key isn't stuck on "no PRs". */
   ciBranchPrefix: string;
+  /** Global model override the Launch keys fall back to when their own `model` is unset,
+   * cycled by the Model key. Plain string (a `claude -p` alias); '' = no override. */
+  launchModel: string;
 };
 
 export const DEFAULTS: JetstreamConfig = {
@@ -21,6 +24,7 @@ export const DEFAULTS: JetstreamConfig = {
   usageRefreshSec: 60,
   escalateAfterSec: 120,
   ciBranchPrefix: 'afterburner/',
+  launchModel: '',
 };
 
 /** The accepted range per numeric setting — single-sourced so the init wizard can
@@ -52,6 +56,7 @@ export function mergeConfig(raw: unknown, base: JetstreamConfig = DEFAULTS): Jet
       typeof r.ciBranchPrefix === 'string' && r.ciBranchPrefix.trim() !== ''
         ? r.ciBranchPrefix.trim()
         : base.ciBranchPrefix,
+    launchModel: typeof r.launchModel === 'string' ? r.launchModel.trim() : base.launchModel,
   };
 }
 

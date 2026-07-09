@@ -37,10 +37,12 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
     expect(checkHooksPresent(JSON.stringify(installed)).status).toBe('ok');
   });
 
-  it('warns when no jetstream hook is present', () => {
+  it('warns (with an in-app hooks fix) when no jetstream hook is present', () => {
     const other = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'my-own-hook' }] }] } };
     expect(hasJetstreamHooks(other)).toBe(false);
-    expect(checkHooksPresent(JSON.stringify(other)).status).toBe('warn');
+    const result = checkHooksPresent(JSON.stringify(other));
+    expect(result.status).toBe('warn');
+    expect(result.fixId).toBe('hooks'); // the checklist offers a one-press install
     expect(checkHooksPresent('{}').status).toBe('warn');
   });
 
@@ -48,7 +50,9 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
     const absent = checkHooksPresent(undefined);
     const corrupt = checkHooksPresent('{ not json');
     expect(absent.status).toBe('warn');
+    expect(absent.fixId).toBe('hooks'); // absent → installing creates it
     expect(corrupt.status).toBe('warn');
+    expect(corrupt.fixId).toBeUndefined(); // corrupt → NOT auto-fixable (install would re-fail the parse)
     expect(corrupt.message).toContain('not valid JSON');
     expect(corrupt.message).not.toEqual(absent.message); // don't send the user to a fix that also fails
   });

@@ -10,8 +10,11 @@ import {
   buildDefaultProfile,
   buildProfile,
   buildZip,
+  buildOpsProfile,
   crc32,
+  deckForDeviceType,
   defaultProfileName,
+  opsProfileName,
   profileForDeviceType,
   renderProfileArchive,
 } from './profile';
@@ -48,6 +51,14 @@ describe('profileForDeviceType', () => {
     expect(profileForDeviceType(7)).toBeUndefined(); // Stream Deck +
     expect(profileForDeviceType(5)).toBeUndefined(); // Pedal
     expect(profileForDeviceType(99)).toBeUndefined();
+  });
+
+  it('deckForDeviceType maps to the DeckModel used by "Build my layout" (else undefined)', () => {
+    expect(deckForDeviceType(0)).toBe(STANDARD);
+    expect(deckForDeviceType(1)).toBe(MINI);
+    expect(deckForDeviceType(2)).toBe(XL);
+    expect(deckForDeviceType(7)).toBeUndefined(); // Stream Deck +
+    expect(deckForDeviceType(99)).toBeUndefined();
   });
 
   it('matches the names declared in the manifest Profiles array', () => {
@@ -89,17 +100,17 @@ describe('buildProfile', () => {
   it('XL overflow spills beyond the centered block but NEVER into the row-0 moat', () => {
     const { manifest, placedProjects } = buildProfile(XL, projects(30));
     const actions = manifest.Actions as Record<string, { UUID: string }>;
-    // 32 slots − 8 fixed (fleet/attention/usage/ci/allow/deny/settings/launch) − 2 moat = 22.
-    expect(placedProjects).toBe(22);
+    // 32 slots − 8 fixed (fleet/attention/usage/ci/allow/deny/settings/launch) − 1 nav − 2 moat = 21.
+    expect(placedProjects).toBe(21);
     expect(actions['4,0']).toBeUndefined();
     expect(actions['5,0']).toBeUndefined();
   });
 
   it('caps project keys at the free slots and reports the overflow', () => {
-    // Standard 5x3 = 15 keys, 7 fixed (fleet/attention/usage/approve/deny/ci/settings) → 8 free.
+    // Standard 5x3 = 15 keys, 7 fixed + 1 nav (→ Ops page) → 7 free.
     const { placedProjects, skippedProjects } = buildProfile(STANDARD, projects(12));
-    expect(placedProjects).toBe(8);
-    expect(skippedProjects).toBe(4);
+    expect(placedProjects).toBe(7);
+    expect(skippedProjects).toBe(5);
   });
 
   it('Mini: essentials only, never project keys — with each slot decision pinned', () => {
@@ -152,10 +163,11 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
   it('XL: fixed board + six UNCONFIGURED project invitations, zero user data', () => {
     const { manifest } = buildDefaultProfile(XL);
     const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    expect(Object.keys(actions)).toHaveLength(14); // 8 fixed + 6 invitations
+    expect(Object.keys(actions)).toHaveLength(15); // 8 fixed + 1 nav + 6 invitations
     for (const slot of ['2,1', '3,1', '4,1', '2,2', '3,2', '4,2']) {
       expect(actions[slot]).toMatchObject({ UUID: 'gg.pim.jetstream.project', Settings: null });
     }
+    expect(actions['0,1']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'ops' } });
     expect(actions['0,3']).toMatchObject({ UUID: 'gg.pim.jetstream.launch', Settings: null });
     expect(actions['4,0']).toBeUndefined(); // the moat ships empty
     expect(actions['5,0']).toBeUndefined();
@@ -167,15 +179,19 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
   it('standard + mini defaults mirror their init layouts with invitations only', () => {
     const std = buildDefaultProfile(STANDARD).manifest;
     const stdActions = std.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    expect(Object.keys(stdActions)).toHaveLength(10); // 7 fixed + 3 invitations
+    expect(Object.keys(stdActions)).toHaveLength(11); // 7 fixed + 1 nav + 3 invitations
     for (const slot of ['1,1', '2,1', '3,1']) {
       expect(stdActions[slot]).toMatchObject({ UUID: 'gg.pim.jetstream.project', Settings: null });
     }
     expect(std.Name).toBe('Jetstream');
 
     const mini = buildDefaultProfile(MINI).manifest;
-    expect(Object.keys(mini.Actions as object)).toHaveLength(6); // essentials fill the Mini
+    // The Mini has no room for a second page, so no nav key — essentials only.
+    expect(Object.keys(mini.Actions as object)).toHaveLength(6);
     expect(mini.Name).toBe('Jetstream Mini');
+    expect(Object.values(mini.Actions as Record<string, { UUID: string }>).map((a) => a.UUID)).not.toContain(
+      'gg.pim.jetstream.nav',
+    );
   });
 
   it('the shipped archives are stable: fixed ids, fixed names, reproducible bytes', () => {
@@ -185,6 +201,46 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
       expect(a.equals(b)).toBe(true);
       expect(defaultProfileName(deck)).toMatch(/^Jetstream( XL| Mini)?$/);
     }
+  });
+});
+
+describe('buildOpsProfile (the shipped controls page)', () => {
+  it('places the control keys + a nav back to the board, zero user data (standard + XL)', () => {
+    for (const deck of [STANDARD, XL]) {
+      const { manifest } = buildOpsProfile(deck);
+      const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
+      const uuids = Object.values(actions).map((a) => a.UUID);
+      expect(actions['0,0']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'board' } });
+      for (const u of [
+        'gg.pim.jetstream.heartbeat',
+        'gg.pim.jetstream.review',
+        'gg.pim.jetstream.model',
+        'gg.pim.jetstream.interruptall',
+        'gg.pim.jetstream.settings',
+      ]) {
+        expect(uuids).toContain(u);
+      }
+      expect(JSON.stringify(manifest)).not.toMatch(/"path"|"name"/); // baked — no user data
+    }
+    expect(opsProfileName(STANDARD)).toBe('Jetstream Ops');
+    expect(opsProfileName(XL)).toBe('Jetstream Ops XL');
+  });
+
+  it('every Ops action + profile is declared in the manifest (so switchToProfile accepts them)', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../gg.pim.jetstream.sdPlugin/manifest.json', import.meta.url), 'utf8'),
+    ) as { Actions: Array<{ UUID: string }>; Profiles: Array<{ Name: string }> };
+    const declared = new Set(manifest.Actions.map((a) => a.UUID));
+    for (const deck of [STANDARD, XL]) {
+      for (const [slot, entry] of Object.entries(
+        buildOpsProfile(deck).manifest.Actions as Record<string, { UUID: string }>,
+      )) {
+        expect(declared, `ops ${deck.key} ${slot} → ${entry.UUID}`).toContain(entry.UUID);
+      }
+    }
+    const profileNames = new Set(manifest.Profiles.map((p) => p.Name));
+    expect(profileNames).toContain('profiles/Jetstream Ops');
+    expect(profileNames).toContain('profiles/Jetstream Ops XL');
   });
 });
 
@@ -204,7 +260,7 @@ describe('zip writer', () => {
   it('archive bytes are reproducible ACROSS runs (pinned digest — catches run-dependent bytes)', () => {
     const built = buildProfile(XL, projects(2));
     const digest = createHash('sha256').update(renderProfileArchive(built, 'fixed-id')).digest('hex');
-    expect(digest).toBe('aff4356285ee20872d7d7ad8ebbefafbe6fc4be823c9860db53f2522a990f288');
+    expect(digest).toBe('b7fdb93e72b0e7ee20db93f2e3827aeebd311a86780a5295670350796b311de5');
   });
 
   it.skipIf(!hasUnzip && !process.env.CI)('a real unzip extracts the archive and the manifest round-trips', () => {

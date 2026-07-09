@@ -11,6 +11,7 @@
     "check": "pnpm typecheck && pnpm test",
     "pack": "streamdeck pack gg.pim.jetstream.sdPlugin",
     "link": "streamdeck link gg.pim.jetstream.sdPlugin",
+    "install:dev": "pnpm build && streamdeck link gg.pim.jetstream.sdPlugin",
     "validate": "streamdeck validate gg.pim.jetstream.sdPlugin"
   },
   "dependencies": {

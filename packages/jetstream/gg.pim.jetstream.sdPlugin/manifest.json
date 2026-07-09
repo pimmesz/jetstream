@@ -42,6 +42,16 @@
       "Name": "profiles/Jetstream XL",
       "DeviceType": 2,
       "DontAutoSwitchWhenInstalled": true
+    },
+    {
+      "Name": "profiles/Jetstream Ops",
+      "DeviceType": 0,
+      "DontAutoSwitchWhenInstalled": true
+    },
+    {
+      "Name": "profiles/Jetstream Ops XL",
+      "DeviceType": 2,
+      "DontAutoSwitchWhenInstalled": true
     }
   ],
   "Actions": [
@@ -159,6 +169,76 @@
       "States": [
         {
           "Image": "imgs/settings"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.nav",
+      "Name": "Page nav",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Switch between the Board (status) and Ops (controls) pages of the bundled two-page Jetstream deck.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/plugin"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.review",
+      "Name": "Review queue",
+      "Icon": "imgs/ci",
+      "Tooltip": "Open afterburner PRs and how many are green (ready). Press to open the top ready PR in your browser. Needs the separate `afterburner` CLI + gh.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/ci"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.heartbeat",
+      "Name": "Afterburner heartbeat",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Is the afterburner engine alive (schedule armed, last cycle, benched tasks)? Long-press to fire a run-once cycle. Needs the separate `afterburner` CLI installed.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/plugin"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.interruptall",
+      "Name": "Stop all",
+      "Icon": "imgs/attention",
+      "Tooltip": "Panic key: one press interrupts (SIGINT) every running Claude session across your fleet. The face shows how many are working.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/attention"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.model",
+      "Name": "Model toggle",
+      "Icon": "imgs/launch",
+      "Tooltip": "Cycle the model your Launch keys use (default → opus → sonnet → haiku). A Launch key's own model still wins.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/launch"
         }
       ]
     },

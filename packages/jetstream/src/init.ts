@@ -1,10 +1,10 @@
-import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { DEFAULTS, LIMITS, type JetstreamConfig } from './config';
 import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos } from './fleet';
 import { installHooks, type HookCommands } from './hooks-install';
+import { defaultOpenFile } from './open-file';
 import { DECK_MODELS, writeProfileFile } from './profile';
 import { parseProjectsConfig, projectsConfigPath } from './projects-config';
 
@@ -233,14 +233,6 @@ async function collectSettings(io: InitIo): Promise<Partial<JetstreamConfig>> {
   );
   if (refresh !== undefined) settings.usageRefreshSec = refresh;
   return settings;
-}
-
-/** The platform's real "open this file" launcher, or undefined where none exists —
- * argv arrays only, never a shell, so the path can't be re-parsed as a command. */
-function defaultOpenFile(): ((path: string) => void) | undefined {
-  if (process.platform === 'darwin') return (path) => execFile('open', [path], () => {});
-  if (process.platform === 'win32') return (path) => execFile('explorer', [path], () => {});
-  return undefined;
 }
 
 export async function runInit(deps: InitDeps): Promise<number> {

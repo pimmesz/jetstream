@@ -2,6 +2,8 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { runClaude } from '@pimmesz/jetstream-claude';
+import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { installHooks, type HookCommands } from './hooks-install';
 import { runDoctor, formatReport } from './doctor';
 import { runInit } from './init';
@@ -21,6 +23,8 @@ Usage:
 Commands:
   init                            Guided setup: build projects.json (your whole fleet) +
                                   settings, wire the Claude hooks, print next steps
+  chat                            Conversational setup: describe your repos in plain English
+                                  and Claude builds your fleet (uses your subscription)
   hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
   doctor                          Read-only health check — why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps`;
@@ -136,10 +140,39 @@ export async function run(argv: string[], binDir: string): Promise<number> {
         rl.close();
       }
     }
+    case 'chat': {
+      // Same interactive readline seam as `init`; runChatSetup takes injected io + agent, so
+      // the loop is unit-tested without a tty or a real `claude`. Here the agent is a one-shot
+      // `claude -p` per turn (subscription auth via sanitizeEnv), carrying the transcript.
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const closed = new Promise<never>((_, reject) =>
+        rl.once('close', () => reject(new Error('input closed'))),
+      );
+      closed.catch(() => {});
+      try {
+        return await runChatSetup({
+          io: {
+            ask: (q) => Promise.race([rl.question(q), closed]),
+            say: (line) => console.log(line),
+          },
+          ask: async (prompt) => {
+            const result = await runClaude({ prompt, appendSystemPrompt: SETUP_SYSTEM }, () => {});
+            return result.isError || !result.result ? null : result.result;
+          },
+        });
+      } catch {
+        console.error('\nAborted — nothing written.');
+        return 130;
+      } finally {
+        rl.close();
+      }
+    }
     case 'hooks':
       return runHooks(rest, binDir);
     case 'doctor':
-      console.log(formatReport(runDoctor()));
+      // `--json` for a copy-pasteable support bundle (also what the in-app "Copy diagnostics"
+      // sends); the default is the human-readable report.
+      console.log(rest.includes('--json') ? JSON.stringify(runDoctor(), null, 2) : formatReport(runDoctor()));
       return 0; // doctor is advisory — always exit 0
     case 'setup':
       return runSetup(binDir);

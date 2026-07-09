@@ -83,6 +83,7 @@ export function parseSettingsPreset(raw: string): Partial<JetstreamConfig> {
   if (typeof s.ciBranchPrefix === 'string' && s.ciBranchPrefix.trim() !== '') {
     out.ciBranchPrefix = s.ciBranchPrefix.trim();
   }
+  if (typeof s.launchModel === 'string') out.launchModel = s.launchModel; // mergeConfig trims it
   return out;
 }
 

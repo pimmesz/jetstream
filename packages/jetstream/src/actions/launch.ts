@@ -1,6 +1,7 @@
 import { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyDownEvent } from '@elgato/streamdeck';
 import { runClaude } from '@pimmesz/jetstream-claude';
+import { config } from '../config';
 import { keyFace } from '../render';
 
 /** A preset headless launch: fire `claude -p` with this key's prompt in its project
@@ -42,11 +43,13 @@ export class LaunchKey extends SingletonAction<LaunchSettings> {
       keyFace({ color: '#e5484d', label: this.label(settings), sub: 'running…' }),
     );
     try {
+      // This key's own model wins; else the global Model-key override (empty = Claude default).
+      const model = settings.model?.trim() || config.get().launchModel;
       const result = await runClaude(
         {
           prompt: settings.prompt,
           cwd: settings.path,
-          ...(settings.model ? { model: settings.model } : {}),
+          ...(model ? { model } : {}),
           ...(settings.permissionMode ? { permissionMode: settings.permissionMode } : {}),
           ...(settings.allowedTools
             ? { allowedTools: settings.allowedTools.split(',').map((t) => t.trim()).filter(Boolean) }

@@ -61,15 +61,23 @@ await build({
 const {
   DECK_MODELS,
   DEFAULT_PROFILE_IDS,
+  OPS_PROFILE_IDS,
   buildDefaultProfile,
+  buildOpsProfile,
   defaultProfileName,
+  opsProfileName,
   renderProfileArchive,
 } = await import(pathToFileURL(profileGenOut).href);
 const profilesDir = join(pkg, 'gg.pim.jetstream.sdPlugin', 'profiles');
 mkdirSync(profilesDir, { recursive: true });
 for (const deck of DECK_MODELS) {
-  const archive = renderProfileArchive(buildDefaultProfile(deck), DEFAULT_PROFILE_IDS[deck.key]);
-  writeFileSync(join(profilesDir, `${defaultProfileName(deck)}.streamDeckProfile`), archive);
+  const board = renderProfileArchive(buildDefaultProfile(deck), DEFAULT_PROFILE_IDS[deck.key]);
+  writeFileSync(join(profilesDir, `${defaultProfileName(deck)}.streamDeckProfile`), board);
+  // The Ops (second) page ships for the Standard + XL only (the Mini stays single-page).
+  if (deck.key !== 'mini') {
+    const ops = renderProfileArchive(buildOpsProfile(deck), OPS_PROFILE_IDS[deck.key]);
+    writeFileSync(join(profilesDir, `${opsProfileName(deck)}.streamDeckProfile`), ops);
+  }
 }
 rmSync(profileGenOut, { force: true });
 

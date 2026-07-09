@@ -34,9 +34,11 @@
   button.rm { background: transparent; color: #e5484d; padding: 2px 6px; font-size: 15px; flex: none; }
   button:hover { filter: brightness(1.1); }
   ul#health { list-style: none; margin: 6px 0; padding: 0; }
-  ul#health li { padding: 3px 2px; font-size: 12px; }
+  ul#health li { display: flex; align-items: center; gap: 6px; padding: 3px 2px; font-size: 12px; }
+  ul#health li span { flex: 1; }
   ul#health .ok { color: #7fce8f; }
   ul#health .warn { color: #ffc98a; }
+  ul#health button.fix { flex: none; padding: 1px 9px; font-size: 11px; background: #b58900; }
 </style>
 </head>
 <body>
@@ -72,12 +74,16 @@
   <p class="hint">Why isn't my board lighting up? Same checks as <code>jetstream doctor</code>.</p>
   <ul id="health"></ul>
   <button id="healthBtn">Re-check</button>
+  <button id="diagBtn">Copy diagnostics</button>
+  <span id="diagMsg" class="hint"></span>
 
   <hr />
   <span class="section">Setup</span>
-  <p class="hint">One-click layout: switch each connected Stream Deck to the bundled
-  Jetstream profile (adds it as a new profile — your own layouts stay).</p>
-  <button id="switchBtn">Switch to Jetstream layout</button>
+  <p class="hint">Build a personalised layout from your fleet (project keys pre-filled) and
+  import it — or switch to the bundled default. Both add a NEW profile; your layouts stay.</p>
+  <button id="buildBtn">Build my layout</button>
+  <p id="buildMsg" class="hint"></p>
+  <button id="switchBtn">Switch to bundled layout</button>
   <p id="profileMsg" class="hint"></p>
   <p class="hint">Per-tool detail wires higher-overhead hooks so keys show the active tool
   (a hook process per tool call). Off by default.</p>
@@ -128,7 +134,9 @@
           else if (p.fleet === 'error') document.getElementById('fleetMsg').textContent = p.message || 'Something went wrong.';
           else if (p.fleet === 'candidates') renderCandidates(p.candidates || []);
           else if (p.health === 'report') renderHealth(p.checks || []);
-          else if (p.profile === 'switched' || p.profile === 'error') endAction('switchBtn', 'profileMsg', 'Switch to Jetstream layout', p.note);
+          else if (p.diag === 'report') copyDiagnostics(p.text || '');
+          else if (p.profile === 'switched' || p.profile === 'error') endAction('switchBtn', 'profileMsg', 'Switch to bundled layout', p.note);
+          else if (p.build === 'done' || p.build === 'error') endAction('buildBtn', 'buildMsg', 'Build my layout', p.note);
           else if (p.hooks === 'installed' || p.hooks === 'error') endAction('toolDetailBtn', 'hooksMsg', 'Enable per-tool detail', p.note);
         }
       };
@@ -147,6 +155,12 @@
       });
       document.getElementById('healthBtn').addEventListener('click', function () {
         sendToPlugin({ health: 'check' });
+      });
+      document.getElementById('diagBtn').addEventListener('click', function () {
+        sendToPlugin({ diag: 'copy' });
+      });
+      document.getElementById('buildBtn').addEventListener('click', function () {
+        if (sendToPlugin({ build: 'layout' })) startAction('buildBtn', 'buildMsg', 'Building…');
       });
       document.getElementById('switchBtn').addEventListener('click', function () {
         // Only enter the busy state if the message actually went out — else a dropped send
@@ -173,7 +187,33 @@
       document.getElementById(msgId).textContent = note || '';
     }
 
-    // Render the read-only doctor checks (✓ ok / ⚠ warn) — textContent only.
+    // Copy the backend's diagnostics text to the clipboard (Clipboard API, with an
+    // execCommand fallback for the older webview). Feedback via textContent only.
+    function copyDiagnostics(text) {
+      var msg = document.getElementById('diagMsg');
+      function done(ok) { msg.textContent = ok ? 'Copied.' : 'Copy failed — select the health list manually.'; }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { fallback(); });
+      } else {
+        fallback();
+      }
+      function fallback() {
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          var ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          done(ok);
+        } catch (e) {
+          done(false);
+        }
+      }
+    }
+
+    // Render the setup checklist (✓ ok / ⚠ warn) — textContent only. A warn carrying a
+    // fixId gets a one-press Fix button; the backend re-runs the checklist so it flips to ✓.
     function renderHealth(checks) {
       var ul = document.getElementById('health');
       ul.textContent = '';
@@ -181,8 +221,33 @@
         var c = checks[i];
         var li = document.createElement('li');
         li.className = c.status === 'ok' ? 'ok' : 'warn';
-        li.textContent = (c.status === 'ok' ? '✓ ' : '⚠ ') + c.message;
+        var text = document.createElement('span');
+        text.textContent = (c.status === 'ok' ? '✓ ' : '⚠ ') + c.message;
+        li.appendChild(text);
+        if (c.status === 'warn' && c.fixId) {
+          var fix = document.createElement('button');
+          fix.className = 'fix';
+          fix.textContent = 'Fix';
+          fix.dataset.fix = c.fixId;
+          fix.addEventListener('click', onFix);
+          li.appendChild(fix);
+        }
         ul.appendChild(li);
+      }
+    }
+
+    // 'fleet' is a client-side fix (focus the add-repo field); everything else dispatches to
+    // the backend, which replies with a fresh checklist.
+    function onFix(ev) {
+      var id = ev.currentTarget.dataset.fix;
+      if (id === 'fleet') {
+        var el = document.getElementById('addPath');
+        if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); }
+        return;
+      }
+      if (sendToPlugin({ fix: id })) {
+        ev.currentTarget.textContent = '…';
+        ev.currentTarget.disabled = true;
       }
     }
 

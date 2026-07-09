@@ -15,6 +15,10 @@ export type CheckStatus = 'ok' | 'warn';
 export interface CheckResult {
   status: CheckStatus;
   message: string;
+  /** When a warning has an in-app fix, the id the Settings inspector acts on: 'hooks'
+   * dispatches to the backend installer, 'fleet' focuses the add-repo field (client-side).
+   * Absent = no one-press fix. */
+  fixId?: 'hooks' | 'fleet';
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -79,12 +83,17 @@ export function checkAnthropicEnv(env: NodeJS.ProcessEnv): CheckResult {
  * send the user to `hooks install`, where the same parse then fails). Pure. */
 export function checkHooksPresent(raw: string | undefined): CheckResult {
   if (raw === undefined) {
-    return { status: 'warn', message: 'no ~/.claude/settings.json — run `jetstream hooks install`' };
+    return {
+      status: 'warn',
+      message: 'no ~/.claude/settings.json — run `jetstream hooks install`',
+      fixId: 'hooks',
+    };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
+    // NOT auto-fixable: installing over a corrupt settings.json would fail the same parse.
     return {
       status: 'warn',
       message: '~/.claude/settings.json is present but not valid JSON — fix or remove it',
@@ -92,7 +101,7 @@ export function checkHooksPresent(raw: string | undefined): CheckResult {
   }
   return hasJetstreamHooks(parsed)
     ? { status: 'ok', message: 'Jetstream hooks present in ~/.claude/settings.json' }
-    : { status: 'warn', message: 'Jetstream hooks not found — run `jetstream hooks install`' };
+    : { status: 'warn', message: 'Jetstream hooks not found — run `jetstream hooks install`', fixId: 'hooks' };
 }
 
 /** Whether `projects.json` (if present) is parseable. `undefined` means the file is absent,

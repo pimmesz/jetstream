@@ -17,6 +17,11 @@ import { LaunchKey } from './actions/launch';
 import { PermissionKey } from './actions/permission';
 import { SettingsKey } from './actions/settings';
 import { FleetDialKey } from './actions/dial';
+import { InterruptAllKey } from './actions/interrupt-all';
+import { ModelKey } from './actions/model';
+import { HeartbeatKey } from './actions/heartbeat';
+import { ReviewKey } from './actions/review';
+import { NavKey } from './actions/nav';
 
 const projectKey = new ProjectKey();
 const attentionKey = new AttentionKey();
@@ -27,6 +32,11 @@ const launchKey = new LaunchKey();
 const permissionKey = new PermissionKey();
 const settingsKey = new SettingsKey();
 const fleetDialKey = new FleetDialKey();
+const interruptAllKey = new InterruptAllKey();
+const modelKey = new ModelKey();
+const heartbeatKey = new HeartbeatKey();
+const reviewKey = new ReviewKey();
+const navKey = new NavKey();
 
 streamDeck.actions.registerAction(projectKey);
 streamDeck.actions.registerAction(attentionKey);
@@ -37,6 +47,11 @@ streamDeck.actions.registerAction(launchKey);
 streamDeck.actions.registerAction(permissionKey);
 streamDeck.actions.registerAction(settingsKey);
 streamDeck.actions.registerAction(fleetDialKey);
+streamDeck.actions.registerAction(interruptAllKey);
+streamDeck.actions.registerAction(modelKey);
+streamDeck.actions.registerAction(heartbeatKey);
+streamDeck.actions.registerAction(reviewKey);
+streamDeck.actions.registerAction(navKey);
 
 // Seed the board + settings from the optional projects.json BEFORE anything subscribes or
 // connects: the Fleet roll-up and Attention doorbell then cover the whole fleet without a
@@ -51,6 +66,7 @@ function renderBoard(): void {
   void attentionKey.renderAll();
   void fleetKey.renderAll();
   void fleetDialKey.renderAll(); // Stream Deck + touchscreen; no-op when no dial is placed
+  void interruptAllKey.renderAll(); // working-count face tracks the board
 }
 
 function renderAll(): void {
@@ -59,6 +75,7 @@ function renderAll(): void {
   void ciKey.renderAll(); // repaint last CI state (the ci timer re-polls gh; theme change shouldn't)
   void settingsKey.renderAll();
   void permissionKey.renderAll();
+  void modelKey.renderAll(); // repaint the model face on a global-settings change
 }
 
 board.subscribe(renderBoard);
@@ -79,6 +96,11 @@ config.subscribe(() => {
 
 // CI/PR status polls gh on a fixed cadence; refresh() no-ops when no CI key is placed.
 setInterval(() => void ciKey.refresh(), CI_REFRESH_MS);
+
+// afterburner heartbeat + review queue: poll the sibling CLI on a slow cadence. Both no-op
+// (never spawn) when no such key is placed, so a board without them costs nothing.
+setInterval(() => void heartbeatKey.refresh(), 60_000);
+setInterval(() => void reviewKey.refresh(), 120_000);
 
 function pidOf(raw: unknown): number | undefined {
   const pid = (raw as { _pid?: unknown })?._pid;

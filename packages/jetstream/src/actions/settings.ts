@@ -1,14 +1,22 @@
+import { lstatSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import streamDeck, { action, SingletonAction } from '@elgato/streamdeck';
 import { board } from '../state';
 import { config, type JetstreamConfig } from '../config';
-import { commandOnPath, defaultDoctorIO, runDoctor } from '../doctor';
+import { commandOnPath, defaultDoctorIO, runDoctor, type CheckResult } from '../doctor';
 import { expandHome, handleFleetMessage, scanForGitRepos, writeFleetFile } from '../fleet';
 import { hookCommands } from '../cli';
 import { installHooks } from '../hooks-install';
-import { profileForDeviceType } from '../profile';
+import { defaultOpenFile } from '../open-file';
+import {
+  deckForDeviceType,
+  defaultProfileName,
+  profileForDeviceType,
+  writeProfileFile,
+  type DeckModel,
+} from '../profile';
 import { readConfigFile, projectsConfigPath } from '../projects-config';
 import { keyFace } from '../render';
 
@@ -27,6 +35,27 @@ function isProfileSwitch(payload: unknown): boolean {
 /** "Enable per-tool detail" pressed in the property inspector? */
 function isToolDetail(payload: unknown): boolean {
   return typeof payload === 'object' && payload !== null && (payload as { hooks?: unknown }).hooks === 'toolDetail';
+}
+
+/** "Build my layout" pressed in the property inspector? */
+function isBuildLayout(payload: unknown): boolean {
+  return typeof payload === 'object' && payload !== null && (payload as { build?: unknown }).build === 'layout';
+}
+
+/** "Copy diagnostics" pressed in the property inspector? */
+function isDiagnostics(payload: unknown): boolean {
+  return typeof payload === 'object' && payload !== null && (payload as { diag?: unknown }).diag === 'copy';
+}
+
+/** A checklist "Fix" button (currently only `fix: 'hooks'`; the 'fleet' fix is client-side). */
+function fixId(payload: unknown): string | undefined {
+  const fix = (payload as { fix?: unknown } | null)?.fix;
+  return typeof fix === 'string' ? fix : undefined;
+}
+
+/** The bin/ dir where the bundled hook scripts sit (this file bundles into bin/plugin.js). */
+function pluginBinDir(): string {
+  return dirname(fileURLToPath(import.meta.url));
 }
 
 /** Doctor IO for the IN-PLUGIN health check. Stream Deck launches the plugin from the GUI
@@ -72,7 +101,11 @@ export class SettingsKey extends SingletonAction {
     // Health check: the same read-only diagnostics as `jetstream doctor`, in-app, so a
     // plugin-first user whose board stays dark gets an answer without a terminal.
     if (isHealthCheck(ev.payload)) {
-      this.reply({ health: 'report', checks: runDoctor(pluginDoctorIO()) });
+      this.reply({ health: 'report', checks: this.pluginHealth() });
+      return;
+    }
+    if (fixId(ev.payload) === 'hooks') {
+      await this.fixHooks();
       return;
     }
     if (isProfileSwitch(ev.payload)) {
@@ -81,6 +114,21 @@ export class SettingsKey extends SingletonAction {
     }
     if (isToolDetail(ev.payload)) {
       await this.enableToolDetail();
+      return;
+    }
+    if (isBuildLayout(ev.payload)) {
+      this.buildProfiles();
+      return;
+    }
+    if (isDiagnostics(ev.payload)) {
+      const checks = runDoctor(pluginDoctorIO());
+      const text = [
+        'Jetstream diagnostics',
+        `platform: ${process.platform}  node: ${process.version}`,
+        '',
+        ...checks.map((c) => `${c.status === 'ok' ? 'OK  ' : 'WARN'} ${c.message}`),
+      ].join('\n');
+      this.reply({ diag: 'report', text });
       return;
     }
     await handleFleetMessage(ev.payload, {
@@ -140,8 +188,7 @@ export class SettingsKey extends SingletonAction {
    * Add-only (like the CLI), so this enables; it doesn't toggle off. Never throws. */
   private async enableToolDetail(): Promise<void> {
     try {
-      const binDir = dirname(fileURLToPath(import.meta.url)); // bundled plugin.js sits in bin/
-      const result = await installHooks({ commands: hookCommands(binDir, true) });
+      const result = await installHooks({ commands: hookCommands(pluginBinDir(), true) });
       this.reply({
         hooks: 'installed',
         note: result.changed
@@ -151,6 +198,91 @@ export class SettingsKey extends SingletonAction {
     } catch (error) {
       this.reply({ hooks: 'error', note: `Couldn't enable: ${errMsg(error)}` });
     }
+  }
+
+  /** "Build my layout": generate a PERSONALIZED .streamDeckProfile (fleet keys pre-filled)
+   * per connected device into ~/Downloads and open each so Stream Deck's import dialog
+   * appears — the terminal-free equivalent of `jetstream init`'s profile step. Additive: the
+   * user picks the device in the dialog; existing layouts are never overwritten. The plugin
+   * backend (Node) may write files; the sandboxed PI can't, so it delegates here. Never throws. */
+  private buildProfiles(): void {
+    const projects = readConfigFile().projects;
+    const decks = new Map<DeckModel['key'], DeckModel>();
+    for (const device of streamDeck.devices) {
+      if (!device.isConnected) continue;
+      const deck = deckForDeviceType(device.type);
+      if (deck) decks.set(deck.key, deck); // dedupe: two identical decks share one profile
+    }
+    if (decks.size === 0) {
+      this.reply({
+        build: 'error',
+        note: 'No supported Stream Deck connected — the dial-only Stream Deck + has no importable layout yet.',
+      });
+      return;
+    }
+    const written: string[] = [];
+    try {
+      const dir = join(homedir(), 'Downloads');
+      for (const deck of decks.values()) {
+        const out = join(dir, `Jetstream ${defaultProfileName(deck)}.streamDeckProfile`);
+        // Never write THROUGH a pre-existing file/symlink at our own target name (writeFileSync
+        // follows symlinks); remove the entry itself first, then write fresh.
+        try {
+          lstatSync(out);
+          unlinkSync(out);
+        } catch {
+          // absent — nothing to remove
+        }
+        writeProfileFile(out, deck, projects);
+        written.push(out);
+      }
+    } catch (error) {
+      this.reply({ build: 'error', note: `Couldn't build the layout: ${errMsg(error)}` });
+      return;
+    }
+    const open = defaultOpenFile();
+    for (const file of written) open?.(file);
+    const base = open
+      ? `Built ${written.length} layout${written.length === 1 ? '' : 's'} in Downloads — approve the import in Stream Deck.`
+      : `Built ${written.length} layout${written.length === 1 ? '' : 's'} in Downloads — double-click to import.`;
+    this.reply({
+      build: 'done',
+      note: projects.length
+        ? base
+        : `${base} (Empty fleet — the layout matches the bundled default until you add repos.)`,
+    });
+  }
+
+  /** The in-app setup checklist: the read-only doctor checks PLUS a fleet check. Empty fleet
+   * = the board stays dark, so it belongs here even though doctor.ts stays fleet-agnostic
+   * (an empty projects.json is legitimately OK for a placed-keys user, per checkProjectsConfig). */
+  private pluginHealth(): CheckResult[] {
+    const count = board.projects().length;
+    const fleet: CheckResult =
+      count > 0
+        ? { status: 'ok', message: `${count} project${count === 1 ? '' : 's'} in your fleet` }
+        : {
+            status: 'warn',
+            message: 'No projects yet — add repos so the Fleet/Attention keys light up',
+            fixId: 'fleet',
+          };
+    return [...runDoctor(pluginDoctorIO()), fleet];
+  }
+
+  /** One-press fix for the 'hooks' checklist item: install the BASE hooks (never the
+   * higher-overhead tool-detail variant), then re-run the checklist so the row flips to ✓
+   * and the settings face's setup counter updates. Never throws. */
+  private async fixHooks(): Promise<void> {
+    try {
+      await installHooks({ commands: hookCommands(pluginBinDir(), false) });
+    } catch (error) {
+      const checks = this.pluginHealth();
+      checks.push({ status: 'warn', message: `Couldn't install hooks: ${errMsg(error)}` });
+      this.reply({ health: 'report', checks });
+      return;
+    }
+    this.reply({ health: 'report', checks: this.pluginHealth() });
+    void this.renderAll();
   }
 
   override async onKeyDown(): Promise<void> {
@@ -166,15 +298,21 @@ export class SettingsKey extends SingletonAction {
 
   async renderAll(): Promise<void> {
     const theme = config.get().theme;
+    // Nudge: while setup is incomplete the face shows "setup N/M" (amber); once every check
+    // passes it falls back to the contrast state. Open the inspector for the fixable list.
+    const checks = this.pluginHealth();
+    const warns = checks.filter((c) => c.status === 'warn').length;
+    const sub =
+      warns > 0
+        ? `setup ${checks.length - warns}/${checks.length}`
+        : theme === 'highContrast'
+          ? 'contrast: on'
+          : 'contrast: off';
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');
       await visible.setImage(
-        keyFace({
-          color: '#3a3a3a',
-          label: 'settings',
-          sub: theme === 'highContrast' ? 'contrast: on' : 'contrast: off',
-        }),
+        keyFace({ color: warns > 0 ? '#b58900' : '#3a3a3a', label: 'settings', sub }),
       );
     }
   }

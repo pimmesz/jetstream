@@ -21,6 +21,13 @@ describe('mergeConfig', () => {
     expect(mergeConfig({ ciBranchPrefix: '  ' }).ciBranchPrefix).toBe('afterburner/'); // blank ignored
     expect(mergeConfig({ ciBranchPrefix: 42 }).ciBranchPrefix).toBe('afterburner/'); // wrong type ignored
   });
+
+  it('carries a trimmed launchModel string, defaulting to no override', () => {
+    expect(mergeConfig({}).launchModel).toBe(''); // no override by default
+    expect(mergeConfig({ launchModel: 'opus' }).launchModel).toBe('opus');
+    expect(mergeConfig({ launchModel: '  sonnet ' }).launchModel).toBe('sonnet');
+    expect(mergeConfig({ launchModel: 99 }).launchModel).toBe(''); // wrong type → base
+  });
 });
 
 describe('mergeConfig with a base preset (G3 file preset)', () => {

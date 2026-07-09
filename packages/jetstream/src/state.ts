@@ -56,6 +56,11 @@ export class Board {
       .map((s) => s.pid);
   }
 
+  /** Every known session PID across the whole fleet (for the interrupt-all panic key). */
+  allPids(): number[] {
+    return [...this.sessions.values()].map((s) => s.pid);
+  }
+
   setProject(actionId: string, entry: ProjectEntry): void {
     this.registry.set(actionId, entry);
     this.emit();

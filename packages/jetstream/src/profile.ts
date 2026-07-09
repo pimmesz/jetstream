@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
+import type { NavSettings } from './actions/nav';
 import type { PermissionSettings } from './actions/permission';
 import type { ProjectSettings } from './actions/project';
 
@@ -100,6 +101,9 @@ function fixedLayout(deck: DeckModel): { slots: Map<string, ProfileAction>; moat
     at(deck.cols - 2, 0, action('Approve', 'gg.pim.jetstream.permission', allow));
     at(deck.cols - 1, 0, action('Deny', 'gg.pim.jetstream.permission', deny));
     at(deck.cols - 1, deck.rows - 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
+    // Page nav to the Ops (controls) page — the two-page bundled deck. Left edge, below the
+    // fleet key; the Mini has no room for a second page so it never gets this.
+    at(0, 1, action('Page: Ops', 'gg.pim.jetstream.nav', { target: 'ops' } satisfies NavSettings));
     // CI fits on row 0 only when Approve/Deny don't already crowd it (the XL).
     if (deck.cols >= 8) {
       at(3, 0, action('CI / PR status', 'gg.pim.jetstream.ci'));
@@ -171,6 +175,14 @@ export const DEFAULT_PROFILE_IDS: Record<DeckModel['key'], string> = {
   xl: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AA003',
 };
 
+/** Stable ids for the shipped OPS (second-page) profiles. The Mini has no Ops page (too few
+ * keys for two pages), so its id is unused — kept so the map is total. */
+export const OPS_PROFILE_IDS: Record<DeckModel['key'], string> = {
+  mini: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AB001',
+  standard: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AB002',
+  xl: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AB003',
+};
+
 /** The profile file name (and manifest display name) per device, mirroring the
  * tutorial plugin's convention ("Tutorial" / "Tutorial Mini" / "Tutorial XL"). */
 export function defaultProfileName(deck: DeckModel): string {
@@ -179,19 +191,33 @@ export function defaultProfileName(deck: DeckModel): string {
   return 'Jetstream';
 }
 
+/** The OPS (second-page) profile name per device — mirrors defaultProfileName with " Ops"
+ * inserted, matching a manifest `Profiles[].Name` so switchToProfile accepts it. */
+export function opsProfileName(deck: DeckModel): string {
+  if (deck.key === 'xl') return 'Jetstream Ops XL';
+  if (deck.key === 'mini') return 'Jetstream Ops Mini';
+  return 'Jetstream Ops';
+}
+
 /** DeviceType (Stream Deck SDK enum) → DeckModel key for the three decks we bundle a
  * profile for. Standard=0, Mini=1, XL=2; every other device (Stream Deck +, Pedal, …)
  * has no bundled profile. */
 const DEVICE_TYPE_KEY: Record<number, DeckModel['key']> = { 0: 'standard', 1: 'mini', 2: 'xl' };
+
+/** The DeckModel for a connected device's DeviceType, or `undefined` when we ship no layout
+ * for it (Stream Deck +, Pedal, …). Lets the in-app "Build my layout" generate the right
+ * personalized profile per connected device. */
+export function deckForDeviceType(type: number): DeckModel | undefined {
+  const key = DEVICE_TYPE_KEY[type];
+  return key ? DECK_MODELS.find((d) => d.key === key) : undefined;
+}
 
 /** The bundled profile name (matching a manifest `Profiles[].Name`, e.g. `profiles/Jetstream`)
  * for a connected device's DeviceType, or `undefined` when no profile ships for it. Used by
  * the in-app "Switch to Jetstream layout" button — the only caller of `switchToProfile`,
  * which requires a name identical to the manifest's. */
 export function profileForDeviceType(type: number): string | undefined {
-  const key = DEVICE_TYPE_KEY[type];
-  if (!key) return undefined;
-  const deck = DECK_MODELS.find((d) => d.key === key);
+  const deck = deckForDeviceType(type);
   return deck ? `profiles/${defaultProfileName(deck)}` : undefined;
 }
 
@@ -218,6 +244,47 @@ export function buildDefaultProfile(deck: DeckModel): BuiltProfile {
     // own bundled profiles do. PreconfiguredName mirrors the manifest Profiles[].Name.
     // NOT set on buildProfile: that's a user-imported (double-click) profile, which
     // isn't plugin-preinstalled and must not be stamped as installed-by-plugin.
+    InstalledByPluginUUID: 'gg.pim.jetstream',
+    PreconfiguredName: `profiles/${name}`,
+    Version: '1.0',
+  };
+  return { manifest, placedProjects: 0, skippedProjects: 0 };
+}
+
+/** The OPS (second) page: the control/action keys that don't fit the status board — the
+ * afterburner heartbeat, review queue, model toggle, stop-all, a strip of Launch invitation
+ * keys, and a nav key back to the board. Standard + XL only (the Mini has no room for a
+ * second page). Everything works with zero config except the Launch keys (invitations). */
+function fixedOpsLayout(deck: DeckModel): Map<string, ProfileAction> {
+  const slots = new Map<string, ProfileAction>();
+  const at = (col: number, row: number, entry: ProfileAction): void => {
+    slots.set(`${col},${row}`, entry);
+  };
+  at(0, 0, action('Page: Board', 'gg.pim.jetstream.nav', { target: 'board' } satisfies NavSettings));
+  at(1, 0, action('Afterburner heartbeat', 'gg.pim.jetstream.heartbeat'));
+  at(2, 0, action('Review queue', 'gg.pim.jetstream.review'));
+  at(3, 0, action('Model toggle', 'gg.pim.jetstream.model'));
+  at(deck.cols - 1, 0, action('Stop all', 'gg.pim.jetstream.interruptall'));
+  at(deck.cols - 1, deck.rows - 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
+  // A row of Launch invitation keys (render "set prompt" until the user configures them).
+  const launchCount = deck.key === 'xl' ? 4 : 3;
+  for (let col = 0; col < launchCount; col++) {
+    at(col, 1, action('Launch preset', 'gg.pim.jetstream.launch'));
+  }
+  return slots;
+}
+
+/**
+ * The bundled OPS profile (manifest `Profiles` array): the controls page of the two-page
+ * deck. Baked at publish time, so it carries no user data — the Launch keys are unconfigured
+ * invitations, everything else is zero-config. Standard + XL only.
+ */
+export function buildOpsProfile(deck: DeckModel): BuiltProfile {
+  const name = opsProfileName(deck);
+  const manifest: Record<string, unknown> = {
+    Actions: Object.fromEntries(fixedOpsLayout(deck)),
+    DeviceModel: deck.model,
+    Name: name,
     InstalledByPluginUUID: 'gg.pim.jetstream',
     PreconfiguredName: `profiles/${name}`,
     Version: '1.0',
