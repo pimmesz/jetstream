@@ -102,6 +102,17 @@ setInterval(() => void ciKey.refresh(), CI_REFRESH_MS);
 setInterval(() => void heartbeatKey.refresh(), 60_000);
 setInterval(() => void reviewKey.refresh(), 120_000);
 
+// After the machine sleeps, the interval timers pause/drift — so the moment it wakes, refresh
+// everything now instead of waiting up to a full poll cycle (a usage window may have reset, CI
+// may have moved, the elapsed timers are stale). Cheap: each refresh no-ops when its key is unplaced.
+streamDeck.system.onSystemDidWakeUp(() => {
+  renderBoard();
+  void usageKey.refresh();
+  void ciKey.refresh();
+  void heartbeatKey.refresh();
+  void reviewKey.refresh();
+});
+
 function pidOf(raw: unknown): number | undefined {
   const pid = (raw as { _pid?: unknown })?._pid;
   return typeof pid === 'number' ? pid : undefined;

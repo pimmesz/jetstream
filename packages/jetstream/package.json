@@ -10,6 +10,7 @@
     "build": "node scripts/build.mjs",
     "check": "pnpm typecheck && pnpm test",
     "pack": "streamdeck pack gg.pim.jetstream.sdPlugin",
+    "repack": "pnpm build && streamdeck validate gg.pim.jetstream.sdPlugin && streamdeck pack gg.pim.jetstream.sdPlugin --force --no-update-check",
     "link": "streamdeck link gg.pim.jetstream.sdPlugin",
     "install:dev": "pnpm build && streamdeck link gg.pim.jetstream.sdPlugin",
     "validate": "streamdeck validate gg.pim.jetstream.sdPlugin"
