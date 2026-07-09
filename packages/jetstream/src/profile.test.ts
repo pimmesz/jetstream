@@ -12,6 +12,7 @@ import {
   buildZip,
   crc32,
   defaultProfileName,
+  profileForDeviceType,
   renderProfileArchive,
 } from './profile';
 
@@ -35,6 +36,27 @@ const hasUnzip = (() => {
     return false;
   }
 })();
+
+describe('profileForDeviceType', () => {
+  it('maps the three bundled device types to their manifest profile names', () => {
+    expect(profileForDeviceType(0)).toBe('profiles/Jetstream'); // Standard / MK.2
+    expect(profileForDeviceType(1)).toBe('profiles/Jetstream Mini');
+    expect(profileForDeviceType(2)).toBe('profiles/Jetstream XL');
+  });
+
+  it('has no bundled profile for other devices (Stream Deck +, Pedal, …)', () => {
+    expect(profileForDeviceType(7)).toBeUndefined(); // Stream Deck +
+    expect(profileForDeviceType(5)).toBeUndefined(); // Pedal
+    expect(profileForDeviceType(99)).toBeUndefined();
+  });
+
+  it('matches the names declared in the manifest Profiles array', () => {
+    const names = [profileForDeviceType(0), profileForDeviceType(1), profileForDeviceType(2)];
+    // Same three names buildDefaultProfile stamps as PreconfiguredName.
+    const stamped = DECK_MODELS.map((d) => `profiles/${defaultProfileName(d)}`);
+    for (const n of names) expect(stamped).toContain(n);
+  });
+});
 
 describe('buildProfile', () => {
   it('XL: fixed keys at their slots, projects fill the rest with name+path settings', () => {

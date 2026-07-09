@@ -14,6 +14,13 @@ describe('mergeConfig', () => {
     expect(mergeConfig({ longPressMs: 99 }).longPressMs).toBe(200); // clamped to min
     expect(mergeConfig({ escalateAfterSec: 99999 }).escalateAfterSec).toBe(3600); // clamped to max
   });
+
+  it('takes a non-empty ciBranchPrefix override, else the default', () => {
+    expect(mergeConfig({}).ciBranchPrefix).toBe('afterburner/'); // default
+    expect(mergeConfig({ ciBranchPrefix: 'feature/' }).ciBranchPrefix).toBe('feature/');
+    expect(mergeConfig({ ciBranchPrefix: '  ' }).ciBranchPrefix).toBe('afterburner/'); // blank ignored
+    expect(mergeConfig({ ciBranchPrefix: 42 }).ciBranchPrefix).toBe('afterburner/'); // wrong type ignored
+  });
 });
 
 describe('mergeConfig with a base preset (G3 file preset)', () => {

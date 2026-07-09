@@ -151,7 +151,7 @@
       "UUID": "gg.pim.jetstream.settings",
       "Name": "Jetstream settings",
       "Icon": "imgs/settings",
-      "Tooltip": "Plugin settings: colour-blind theme, escalation, long-press, refresh. Press to toggle high-contrast colours.",
+      "Tooltip": "Plugin settings + manage your fleet (add/scan repos, no terminal) + a health check + switch to the Jetstream layout. Press to toggle high-contrast colours.",
       "PropertyInspectorPath": "ui/settings.html",
       "Controllers": [
         "Keypad"
@@ -159,6 +159,29 @@
       "States": [
         {
           "Image": "imgs/settings"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.dial",
+      "Name": "Fleet dial",
+      "Icon": "imgs/fleet",
+      "Tooltip": "Stream Deck +: rotate to scan your whole fleet, the touchscreen shows the selected project's live Claude status. Press to jump in; long-press to interrupt.",
+      "Controllers": [
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/fleet.json",
+        "TriggerDescription": {
+          "Rotate": "Scan projects",
+          "Push": "Open · hold to interrupt",
+          "LongTouch": "Interrupt",
+          "Touch": "Open project"
+        }
+      },
+      "States": [
+        {
+          "Image": "imgs/fleet"
         }
       ]
     }

@@ -103,4 +103,22 @@ describe('readConfigFile', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('flags a present-but-unparseable file as corrupt (so a mutation refuses to clobber it)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-cfg-'));
+    const path = join(dir, 'projects.json');
+    // Valid-looking fleet, but truncated JSON — the exact data-loss trap.
+    writeFileSync(path, '{ "projects": [ { "id": "a", "name": "A", "path": "/a" }');
+    try {
+      const cfg = readConfigFile(path);
+      expect(cfg.corrupt).toBe(true);
+      expect(cfg.projects).toEqual([]); // reads empty, but corrupt tells writers to stand down
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a MISSING file is not corrupt (a first add legitimately starts empty)', () => {
+    expect(readConfigFile('/no/such/jetstream/projects.json').corrupt).toBeUndefined();
+  });
 });

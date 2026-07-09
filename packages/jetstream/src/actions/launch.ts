@@ -89,7 +89,10 @@ export class LaunchKey extends SingletonAction<LaunchSettings> {
         keyFace({
           color: configured ? '#0091ff' : '#26262b',
           label: this.label(settings),
-          ...(configured ? {} : { sub: 'set prompt' }),
+          // Name the missing field, not always "set prompt".
+          ...(configured
+            ? {}
+            : { sub: settings.prompt && !settings.path ? 'set path' : 'set prompt' }),
         }),
       );
     }

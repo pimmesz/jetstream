@@ -179,6 +179,22 @@ export function defaultProfileName(deck: DeckModel): string {
   return 'Jetstream';
 }
 
+/** DeviceType (Stream Deck SDK enum) → DeckModel key for the three decks we bundle a
+ * profile for. Standard=0, Mini=1, XL=2; every other device (Stream Deck +, Pedal, …)
+ * has no bundled profile. */
+const DEVICE_TYPE_KEY: Record<number, DeckModel['key']> = { 0: 'standard', 1: 'mini', 2: 'xl' };
+
+/** The bundled profile name (matching a manifest `Profiles[].Name`, e.g. `profiles/Jetstream`)
+ * for a connected device's DeviceType, or `undefined` when no profile ships for it. Used by
+ * the in-app "Switch to Jetstream layout" button — the only caller of `switchToProfile`,
+ * which requires a name identical to the manifest's. */
+export function profileForDeviceType(type: number): string | undefined {
+  const key = DEVICE_TYPE_KEY[type];
+  if (!key) return undefined;
+  const deck = DECK_MODELS.find((d) => d.key === key);
+  return deck ? `profiles/${defaultProfileName(deck)}` : undefined;
+}
+
 /**
  * The DEFAULT profile that ships WITH the plugin (manifest `Profiles` array): the same
  * fixed board as init's, with the preferred project slots as UNCONFIGURED invitation

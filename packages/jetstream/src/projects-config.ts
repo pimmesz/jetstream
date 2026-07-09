@@ -80,23 +80,39 @@ export function parseSettingsPreset(raw: string): Partial<JetstreamConfig> {
   if (typeof s.longPressMs === 'number') out.longPressMs = s.longPressMs;
   if (typeof s.usageRefreshSec === 'number') out.usageRefreshSec = s.usageRefreshSec;
   if (typeof s.escalateAfterSec === 'number') out.escalateAfterSec = s.escalateAfterSec;
+  if (typeof s.ciBranchPrefix === 'string' && s.ciBranchPrefix.trim() !== '') {
+    out.ciBranchPrefix = s.ciBranchPrefix.trim();
+  }
   return out;
 }
 
 export interface ConfigFile {
   projects: ProjectConfig[];
   settings: Partial<JetstreamConfig>;
+  /** True when the file EXISTS but couldn't be read or parsed as JSON. Startup still
+   * degrades to an empty fleet, but an in-app MUTATION (add/remove) must REFUSE to write
+   * when this is set — else it would overwrite a populated fleet it merely failed to read.
+   * Absent on the happy path AND when the file is simply missing (a first add legitimately
+   * starts from empty). */
+  corrupt?: boolean;
 }
 
 /** Read `projects.json` once at startup (sync — a small read before the plugin connects).
- * A missing, unreadable, or malformed file yields empty projects + empty preset; never
- * throws. `path` is injectable for tests. */
+ * A missing file yields empty projects + empty preset. A present-but-unreadable/unparseable
+ * file also yields empty, but flagged `corrupt` so callers that WRITE won't clobber it.
+ * Never throws. `path` is injectable for tests. */
 export function readConfigFile(path = projectsConfigPath()): ConfigFile {
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { projects: [], settings: {} };
+    return { projects: [], settings: {}, corrupt: true }; // present but unreadable — don't clobber
+  }
+  try {
+    JSON.parse(raw);
   } catch {
-    return { projects: [], settings: {} };
+    return { projects: [], settings: {}, corrupt: true }; // present but not JSON — don't clobber
   }
   return { projects: parseProjectsConfig(raw), settings: parseSettingsPreset(raw) };
 }

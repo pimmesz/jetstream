@@ -11,6 +11,32 @@
                   border-radius: 4px; padding: 6px 8px; font-size: 13px; }
   select:focus, input:focus { outline: none; border-color: #0091ff; }
   p.hint { color: #7a7a7a; font-size: 11px; margin: 8px 0 0; }
+  hr { border: none; border-top: 1px solid #444; margin: 14px 0 6px; }
+  .section { display: block; color: #d8d8d8; font-weight: 600; margin: 4px 0; }
+  ul#projects { list-style: none; margin: 6px 0; padding: 0; }
+  ul#projects li { display: flex; align-items: center; gap: 8px; padding: 5px 6px;
+                   background: #333; border: 1px solid #444; border-radius: 4px; margin: 4px 0; }
+  ul#projects .name { font-weight: 600; }
+  ul#projects .path { flex: 1; color: #8a8a8a; font-size: 11px; overflow: hidden;
+                      text-overflow: ellipsis; white-space: nowrap; }
+  ul#projects .empty, ul#candidates .empty { color: #7a7a7a; font-style: italic; }
+  ul#candidates { list-style: none; margin: 4px 0; padding: 0; }
+  ul#candidates li { display: flex; align-items: center; gap: 8px; padding: 4px 6px;
+                     border: 1px dashed #4a4a4a; border-radius: 4px; margin: 3px 0; }
+  ul#candidates .path { flex: 1; color: #b0b0b0; font-size: 11px; overflow: hidden;
+                        text-overflow: ellipsis; white-space: nowrap; }
+  ul#candidates button { padding: 2px 10px; font-size: 12px; flex: none; }
+  ul#candidates button:disabled { background: #3a5a3a; color: #9fd39f; cursor: default; }
+  .add { display: flex; gap: 6px; margin-top: 6px; }
+  .add input#addName { flex: 0 0 96px; }
+  button { background: #0091ff; color: #fff; border: none; border-radius: 4px;
+           padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  button.rm { background: transparent; color: #e5484d; padding: 2px 6px; font-size: 15px; flex: none; }
+  button:hover { filter: brightness(1.1); }
+  ul#health { list-style: none; margin: 6px 0; padding: 0; }
+  ul#health li { padding: 3px 2px; font-size: 12px; }
+  ul#health .ok { color: #7fce8f; }
+  ul#health .warn { color: #ffc98a; }
 </style>
 </head>
 <body>
@@ -33,13 +59,54 @@
     <label for="usageRefreshSec">Usage refresh (s)</label>
     <input id="usageRefreshSec" data-key="usageRefreshSec" type="number" min="15" max="3600" />
   </div>
+  <div class="row">
+    <label for="ciBranchPrefix">CI branch prefix</label>
+    <input id="ciBranchPrefix" data-key="ciBranchPrefix" type="text" placeholder="afterburner/" />
+  </div>
   <p class="hint">These apply to the whole plugin. Glyphs mark each state regardless of
   colour. For per-tool detail on working keys, re-run the installer with
   <code>--tool-detail</code>.</p>
+
+  <hr />
+  <span class="section">Health</span>
+  <p class="hint">Why isn't my board lighting up? Same checks as <code>jetstream doctor</code>.</p>
+  <ul id="health"></ul>
+  <button id="healthBtn">Re-check</button>
+
+  <hr />
+  <span class="section">Setup</span>
+  <p class="hint">One-click layout: switch each connected Stream Deck to the bundled
+  Jetstream profile (adds it as a new profile — your own layouts stay).</p>
+  <button id="switchBtn">Switch to Jetstream layout</button>
+  <p id="profileMsg" class="hint"></p>
+  <p class="hint">Per-tool detail wires higher-overhead hooks so keys show the active tool
+  (a hook process per tool call). Off by default.</p>
+  <button id="toolDetailBtn">Enable per-tool detail</button>
+  <p id="hooksMsg" class="hint"></p>
+
+  <hr />
+  <span class="section">Fleet</span>
+  <p class="hint">Repos the Fleet &amp; Attention keys cover — no per-key setup, no terminal.
+  Saved to <code>projects.json</code>.</p>
+  <ul id="projects"></ul>
+  <div class="add">
+    <input id="addPath" type="text" placeholder="/absolute/path/to/repo" />
+    <input id="addName" type="text" placeholder="name (optional)" />
+    <button id="addBtn">Add</button>
+  </div>
+  <div class="add">
+    <input id="scanDir" type="text" placeholder="…or scan a folder for git repos (e.g. ~/dev)" />
+    <button id="scanBtn">Scan</button>
+  </div>
+  <ul id="candidates"></ul>
+  <p id="fleetMsg" class="hint"></p>
+
   <script>
-    let ws = null;
-    let uuid = null;
-    let settings = {};
+    'use strict';
+    var ACTION = 'gg.pim.jetstream.settings';
+    var ws = null;
+    var uuid = null;
+    var settings = {};
 
     function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent) {
       uuid = inUUID;
@@ -47,18 +114,75 @@
       ws.onopen = function () {
         ws.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
         ws.send(JSON.stringify({ event: 'getGlobalSettings', context: inUUID }));
+        sendToPlugin({ fleet: 'list' });
+        sendToPlugin({ health: 'check' });
       };
       ws.onmessage = function (e) {
         var msg = JSON.parse(e.data);
         if (msg.event === 'didReceiveGlobalSettings') {
           settings = (msg.payload && msg.payload.settings) || {};
           populate();
+        } else if (msg.event === 'sendToPropertyInspector') {
+          var p = msg.payload || {};
+          if (p.fleet === 'projects') renderFleet(p.projects || [], p.note);
+          else if (p.fleet === 'error') document.getElementById('fleetMsg').textContent = p.message || 'Something went wrong.';
+          else if (p.fleet === 'candidates') renderCandidates(p.candidates || []);
+          else if (p.health === 'report') renderHealth(p.checks || []);
+          else if (p.profile === 'switched' || p.profile === 'error') endAction('switchBtn', 'profileMsg', 'Switch to Jetstream layout', p.note);
+          else if (p.hooks === 'installed' || p.hooks === 'error') endAction('toolDetailBtn', 'hooksMsg', 'Enable per-tool detail', p.note);
         }
       };
       var fields = document.querySelectorAll('[data-key]');
       for (var i = 0; i < fields.length; i++) {
         fields[i].addEventListener('change', save);
         fields[i].addEventListener('input', save);
+      }
+      document.getElementById('addBtn').addEventListener('click', addProject);
+      document.getElementById('addPath').addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') addProject();
+      });
+      document.getElementById('scanBtn').addEventListener('click', scanFolder);
+      document.getElementById('scanDir').addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') scanFolder();
+      });
+      document.getElementById('healthBtn').addEventListener('click', function () {
+        sendToPlugin({ health: 'check' });
+      });
+      document.getElementById('switchBtn').addEventListener('click', function () {
+        // Only enter the busy state if the message actually went out — else a dropped send
+        // (socket not open) would leave the button stuck disabled with no reply to reset it.
+        if (sendToPlugin({ profile: 'switch' })) startAction('switchBtn', 'profileMsg', 'Switching…');
+      });
+      document.getElementById('toolDetailBtn').addEventListener('click', function () {
+        if (sendToPlugin({ hooks: 'toolDetail' })) startAction('toolDetailBtn', 'hooksMsg', 'Enabling…');
+      });
+    }
+
+    // Disable a button while its backend action runs; re-enable + show the result note when
+    // the reply lands. textContent only (the note is plugin-authored, but stay consistent).
+    function startAction(btnId, msgId, busyLabel) {
+      var btn = document.getElementById(btnId);
+      btn.disabled = true;
+      btn.textContent = busyLabel;
+      document.getElementById(msgId).textContent = '';
+    }
+    function endAction(btnId, msgId, label, note) {
+      var btn = document.getElementById(btnId);
+      btn.disabled = false;
+      btn.textContent = label;
+      document.getElementById(msgId).textContent = note || '';
+    }
+
+    // Render the read-only doctor checks (✓ ok / ⚠ warn) — textContent only.
+    function renderHealth(checks) {
+      var ul = document.getElementById('health');
+      ul.textContent = '';
+      for (var i = 0; i < checks.length; i++) {
+        var c = checks[i];
+        var li = document.createElement('li');
+        li.className = c.status === 'ok' ? 'ok' : 'warn';
+        li.textContent = (c.status === 'ok' ? '✓ ' : '⚠ ') + c.message;
+        ul.appendChild(li);
       }
     }
 
@@ -81,6 +205,109 @@
       }
       settings = next;
       ws.send(JSON.stringify({ event: 'setGlobalSettings', context: uuid, payload: next }));
+    }
+
+    // PI → plugin. The backend (SettingsKey.onSendToPlugin) reads/writes projects.json
+    // and replies via sendToPropertyInspector — the PI can't touch the filesystem itself.
+    function sendToPlugin(payload) {
+      if (!ws || ws.readyState !== 1) return false;
+      ws.send(JSON.stringify({ event: 'sendToPlugin', action: ACTION, context: uuid, payload: payload }));
+      return true;
+    }
+
+    function addProject() {
+      var pathEl = document.getElementById('addPath');
+      var nameEl = document.getElementById('addName');
+      var path = pathEl.value.trim();
+      if (!path) return;
+      sendToPlugin({ fleet: 'add', path: path, name: nameEl.value.trim() });
+      pathEl.value = '';
+      nameEl.value = '';
+    }
+
+    function scanFolder() {
+      var dir = document.getElementById('scanDir').value.trim();
+      if (!dir) return;
+      sendToPlugin({ fleet: 'scan', dir: dir });
+    }
+
+    // Candidate repos found by the backend scan — each addable in one click. The fleet
+    // list re-renders (via the projects reply) as each is added.
+    function renderCandidates(paths) {
+      var ul = document.getElementById('candidates');
+      ul.textContent = '';
+      if (!paths.length) {
+        var li = document.createElement('li');
+        var span = document.createElement('span');
+        span.className = 'empty';
+        span.textContent = 'No git repos found there.';
+        li.appendChild(span);
+        ul.appendChild(li);
+        return;
+      }
+      for (var i = 0; i < paths.length; i++) {
+        var rowEl = document.createElement('li');
+        var path = document.createElement('span');
+        path.className = 'path';
+        path.textContent = paths[i];
+        path.title = paths[i];
+        var add = document.createElement('button');
+        add.textContent = 'Add';
+        add.dataset.path = paths[i];
+        add.addEventListener('click', function (ev) {
+          // Only mark Added if the message actually went out — a dropped send (socket
+          // closed) must not claim a write that never happened.
+          if (!sendToPlugin({ fleet: 'add', path: ev.currentTarget.dataset.path })) return;
+          ev.currentTarget.textContent = 'Added';
+          ev.currentTarget.disabled = true;
+        });
+        rowEl.appendChild(path);
+        rowEl.appendChild(add);
+        ul.appendChild(rowEl);
+      }
+    }
+
+    // Build the list with textContent/createElement — never innerHTML — so a repo name
+    // or path can't inject markup into the inspector webview.
+    function renderFleet(projects, note) {
+      var ul = document.getElementById('projects');
+      ul.textContent = '';
+      if (!projects.length) {
+        var li = document.createElement('li');
+        var span = document.createElement('span');
+        span.className = 'empty';
+        span.textContent = 'No projects yet — add one below.';
+        li.appendChild(span);
+        ul.appendChild(li);
+      }
+      for (var i = 0; i < projects.length; i++) {
+        var proj = projects[i];
+        var rowEl = document.createElement('li');
+        var name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = proj.name;
+        var path = document.createElement('span');
+        path.className = 'path';
+        path.textContent = proj.path;
+        path.title = proj.path;
+        var rm = document.createElement('button');
+        rm.className = 'rm';
+        rm.textContent = '✕';
+        rm.title = 'Remove';
+        rm.dataset.id = proj.id;
+        rm.addEventListener('click', function (ev) {
+          sendToPlugin({ fleet: 'remove', id: ev.currentTarget.dataset.id });
+        });
+        rowEl.appendChild(name);
+        rowEl.appendChild(path);
+        rowEl.appendChild(rm);
+        ul.appendChild(rowEl);
+      }
+      var msg = document.getElementById('fleetMsg');
+      msg.textContent =
+        note === 'duplicate' ? 'That path is already in the fleet.'
+        : note === 'empty-path' ? 'Enter an absolute path.'
+        : '';
     }
   </script>
 </body>

@@ -1,17 +1,9 @@
 import { execFile } from 'node:child_process';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  realpathSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { DEFAULTS, LIMITS, type JetstreamConfig } from './config';
+import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos } from './fleet';
 import { installHooks, type HookCommands } from './hooks-install';
 import { DECK_MODELS, writeProfileFile } from './profile';
 import { parseProjectsConfig, projectsConfigPath } from './projects-config';
@@ -53,53 +45,6 @@ const yes = (answer: string): boolean => /^y(es)?$/i.test(answer.trim());
  * terminal — a directory named with ANSI escapes must not steer the user's console. */
 const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '');
 
-/** `~` and `~/x` → the user's home; anything else unchanged. resolve() doesn't expand
- * tildes, and people type them. */
-export function expandHome(path: string, home = homedir()): string {
-  if (path === '~') return home;
-  if (path.startsWith('~/')) return join(home, path.slice(2));
-  return path;
-}
-
-/** Resolve symlinks/case aliases so the dedup can't be fooled into duplicate fleet
- * entries for the same repo; a path that doesn't resolve (yet) stays as typed. */
-function canonical(path: string): string {
-  try {
-    return realpathSync.native(path);
-  } catch {
-    return path;
-  }
-}
-
-/** Derive a unique, url-ish project id from a display name: lowercase, runs of
- * non-alphanumerics collapse to '-', uniquified with -2/-3/… against `taken`. */
-export function slugId(name: string, taken: Set<string>): string {
-  const base =
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'project';
-  let id = base;
-  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
-  taken.add(id);
-  return id;
-}
-
-/** Depth-1 children of `dir` that look like git repo roots (a `.git` dir, or a `.git`
- * file — worktrees/submodules). Unreadable dir → []. Sorted for a stable listing. */
-export function scanForGitRepos(dir: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  return entries
-    .map((name) => join(dir, name))
-    .filter((child) => existsSync(join(child, '.git')))
-    .sort();
-}
-
 /** Parse a "1,3,5" style pick against a 1-based list of `count` items. Empty or 'all'
  * selects everything; only fully numeric tokens count (so "1-3" is dropped rather than
  * misread as 1); out-of-range numbers are dropped; duplicates collapse. Returns 0-based
@@ -117,19 +62,6 @@ export function parseSelection(input: string, count: number): number[] {
     out.push(n - 1);
   }
   return out;
-}
-
-/** Render the projects.json init writes: pretty, stable field order, `settings` omitted
- * entirely when every answer kept its default (a clean file documents only choices). */
-export function renderProjectsJson(
-  projects: ProjectConfig[],
-  settings: Partial<JetstreamConfig>,
-): string {
-  const file: Record<string, unknown> = {
-    projects: projects.map(({ id, name, path }) => ({ id, name, path })),
-  };
-  if (Object.keys(settings).length > 0) file.settings = settings;
-  return `${JSON.stringify(file, null, 2)}\n`;
 }
 
 /** Ask for a number, defaulting on Enter. Answers outside [min, max] keep the default
@@ -157,21 +89,19 @@ async function askNumber(
 }
 
 async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]> {
-  const projects: ProjectConfig[] = [];
-  const takenIds = new Set<string>();
-  const takenPaths = new Set<string>();
+  let projects: ProjectConfig[] = [];
+  // addToFleet is the ONE place the add rules live (canonicalize, dedup, id, name
+  // fallback) — shared with the in-app editor so the two paths can't diverge.
   const add = (rawPath: string, rawName: string): void => {
-    const path = canonical(rawPath);
-    // A root path ('/') has an empty basename and a blank answer is possible — an
-    // empty name would be dropped by the plugin's parser, so it falls back.
-    const name = rawName.trim() || 'project';
-    if (takenPaths.has(path)) {
-      io.say(`  (already added: ${safe(path)})`);
+    const result = addToFleet(projects, { path: rawPath, name: rawName });
+    if (result.reason === 'duplicate') {
+      io.say(`  (already added: ${safe(canonical(rawPath))})`);
       return;
     }
-    takenPaths.add(path);
-    projects.push({ id: slugId(name, takenIds), name, path });
-    io.say(`  + ${safe(name)} → ${safe(path)}`);
+    if (result.added) {
+      projects = result.projects;
+      io.say(`  + ${safe(result.added.name)} → ${safe(result.added.path)}`);
+    }
   };
 
   const scanDir = (await io.ask('Folder to scan for git repos (Enter to skip): ')).trim();

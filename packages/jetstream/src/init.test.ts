@@ -3,14 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstallResult } from './hooks-install';
-import {
-  expandHome,
-  parseSelection,
-  renderProjectsJson,
-  runInit,
-  scanForGitRepos,
-  slugId,
-} from './init';
+import { expandHome, renderProjectsJson, scanForGitRepos, slugId } from './fleet';
+import { parseSelection, runInit } from './init';
 import { parseProjectsConfig, parseSettingsPreset } from './projects-config';
 
 const COMMANDS = {

@@ -40,11 +40,13 @@ const say = (log: () => void): void => {
  * installing the plugin is enough to light it up — no terminal `jetstream setup` with a
  * hand-resolved plugin path. Scope and consent, deliberately:
  *
- * - Wires the five silent lifecycle hooks (status board) AND the blocking
- *   PermissionRequest hook (deck Approve/Deny; an unanswered prompt falls through to
- *   Claude's own dialog after its timeout). It does NOT touch the statusline (the usage
- *   hook) — that stays with the explicit CLI paths (`init`/`setup`/`hooks install`), as do
- *   the higher-overhead --tool-detail hooks.
+ * - Wires the five silent lifecycle hooks (status board), the blocking PermissionRequest
+ *   hook (deck Approve/Deny; an unanswered prompt falls through to Claude's own dialog
+ *   after its timeout), AND the statusline usage hook — the latter only when the user has
+ *   NO statusline (mergeHooks never clobbers a foreign one, e.g. afterburner's), so the
+ *   Usage key works on install without surprising anyone. The higher-overhead --tool-detail
+ *   hooks stay opt-in (a node process per tool call) — enable them from the CLI or the
+ *   settings Property Inspector.
  * - Runs ONCE: a marker in the jetstream config dir records that auto-wire has run, so a
  *   user who deliberately removes the hooks isn't fought on every launch. Re-wire any time
  *   with the CLI. (installHooks itself is also idempotent — same-script entries are
@@ -58,12 +60,12 @@ export async function autoWireHooks(deps: AutoWireDeps): Promise<void> {
   const markerPath = deps.markerPath ?? defaultMarkerPath();
   try {
     if (existsSync(markerPath)) return; // ran before — the user's settings are theirs now
-    const { status, permission, toolDetail } = hookCommands(deps.binDir, false);
-    const result = await install({ commands: { status, permission, toolDetail } });
+    const { status, permission, usage, toolDetail } = hookCommands(deps.binDir, false);
+    const result = await install({ commands: { status, permission, usage, toolDetail } });
     if (result.changed) {
       say(() =>
         deps.logger.info(
-          `Jetstream auto-wired its Claude hooks (status + permission) into ${result.settingsPath}` +
+          `Jetstream auto-wired its Claude hooks (status + permission + usage) into ${result.settingsPath}` +
             (result.backupCreated ? ` (previous settings backed up to ${result.backupPath})` : '') +
             '. Restart any running `claude` sessions to pick them up.',
         ),

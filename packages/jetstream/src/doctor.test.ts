@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import {
   checkAnthropicEnv,
   checkHooksPresent,
   checkProjectsConfig,
   checkGhForCi,
+  commandOnPath,
   hasJetstreamHooks,
 } from './doctor';
 
@@ -47,6 +51,26 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
     expect(corrupt.status).toBe('warn');
     expect(corrupt.message).toContain('not valid JSON');
     expect(corrupt.message).not.toEqual(absent.message); // don't send the user to a fix that also fails
+  });
+});
+
+describe('commandOnPath', () => {
+  // Resolution keys off the PASSED env, not process.env — this is what lets the
+  // in-plugin doctor augment PATH with the standard install dirs the GUI launchd
+  // PATH omits. A tool only in `dir` is invisible until `dir` is on the PATH.
+  it('finds a command only when its dir is on the supplied PATH', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-path-'));
+    try {
+      const ext = process.platform === 'win32' ? '.CMD' : '';
+      writeFileSync(join(dir, `faketool${ext}`), '');
+      expect(commandOnPath('faketool', { PATH: dir })).toBe(true);
+      expect(commandOnPath('faketool', { PATH: '/nonexistent-dir-xyz' })).toBe(false);
+      expect(commandOnPath('faketool', {})).toBe(false); // no PATH at all
+      // augmenting a PATH that lacked the dir now resolves it (the pluginDoctorIO fix)
+      expect(commandOnPath('faketool', { PATH: ['/nonexistent-dir-xyz', dir].join(delimiter) })).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

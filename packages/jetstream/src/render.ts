@@ -75,11 +75,6 @@ function formatCountdown(ms: number): string {
   return m === 0 ? `${h}h` : `${h}h${m}m`;
 }
 
-export function formatReset(resetsAtSec: number | undefined, nowMs: number): string {
-  if (resetsAtSec === undefined) return '';
-  return formatCountdown(resetsAtSec * 1000 - nowMs);
-}
-
 /** Label the SOONER of the 5-hour and 7-day resets: `resets 3h33m`. Empty when neither
  * is in the future. Shows the one that actually bites next, not just the 5h. Pure. */
 export function formatNextReset(

@@ -1,11 +1,8 @@
 import { action, SingletonAction } from '@elgato/streamdeck';
 import { board } from '../state';
+import { config } from '../config';
 import { keyFace } from '../render';
 import { ciFace, uniquePaths, pollFleetCi, isNewFailure, type CiState } from '../ci-status';
-
-/** The branch namespace whose open PRs this key watches. A constant for now — jetstream
- * knows afterburner's convention without importing it; making it a setting is a follow-up. */
-const CI_BRANCH_PREFIX = 'afterburner/';
 
 /** How often the CI key re-polls `gh`. A constant, kept slow enough not to hammer the API. */
 export const CI_REFRESH_MS = 60_000;
@@ -32,7 +29,7 @@ export class CiKey extends SingletonAction {
   async refresh(): Promise<void> {
     if (!this.hasKey()) return;
     const seq = ++this.seq;
-    const next = await pollFleetCi(uniquePaths(board.projects()), CI_BRANCH_PREFIX);
+    const next = await pollFleetCi(uniquePaths(board.projects()), config.get().ciBranchPrefix);
     if (seq !== this.seq) return; // a newer refresh started while awaiting — drop this stale result
     const flash = isNewFailure(this.state, next);
     this.state = next;

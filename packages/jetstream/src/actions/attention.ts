@@ -22,7 +22,8 @@ export class AttentionKey extends SingletonAction {
 
   override async onKeyDown(ev: KeyDownEvent): Promise<void> {
     const [first] = board.attention();
-    if (!first?.path || !openProject(first.path)) await ev.action.showAlert();
+    if (!first?.path) return; // nothing waiting → a calm no-op, not an error shake
+    if (!openProject(first.path)) await ev.action.showAlert();
   }
 
   async renderAll(now = Date.now()): Promise<void> {

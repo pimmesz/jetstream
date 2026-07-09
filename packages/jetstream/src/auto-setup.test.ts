@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 describe('autoWireHooks (first-launch onboarding)', () => {
-  it('installs status + permission hooks — never the statusline or tool-detail — and logs on change', async () => {
+  it('installs status + permission + usage hooks (never tool-detail) and logs on change', async () => {
     const logger = makeLogger();
     const markerPath = makeMarkerPath();
     let seen: InstallOptions | undefined;
@@ -36,11 +36,12 @@ describe('autoWireHooks (first-launch onboarding)', () => {
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
 
-    expect(seen?.commands.toolDetail).toBe(false);
+    expect(seen?.commands.toolDetail).toBe(false); // higher-overhead tool-detail stays opt-in
     expect(seen?.commands.status).toContain('/plugin/bin/status-hook.js');
     expect(seen?.commands.permission).toContain('/plugin/bin/permission-hook.js');
-    // The statusline stays with the explicit CLI paths — auto-wire must not claim it.
-    expect(seen?.commands.usage).toBeUndefined();
+    // The usage statusline IS offered now — installHooks only sets it when the user has
+    // none (no-clobber lives in mergeHooks, covered by hooks-install.test.ts).
+    expect(seen?.commands.usage).toContain('/plugin/bin/usage-hook.js');
     expect(logger.info).toHaveBeenCalledTimes(1);
     expect(logger.info.mock.calls[0]?.[0]).toContain('/home/u/.claude/settings.json');
     expect(logger.info.mock.calls[0]?.[0]).toContain('jetstream-bak'); // fresh backup surfaced

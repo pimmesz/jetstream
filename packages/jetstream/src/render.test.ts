@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { keyFace, fit, formatElapsed, formatReset, formatNextReset } from './render';
+import { keyFace, fit, formatElapsed, formatNextReset } from './render';
 
 describe('keyFace', () => {
   it('renders a data:image/svg+xml URI with the colour and label', () => {
@@ -47,17 +47,6 @@ describe('formatElapsed', () => {
     expect(formatElapsed(72 * 60_000)).toBe('1h12m');
     expect(formatElapsed(120 * 60_000)).toBe('2h');
     expect(formatElapsed(Number.NaN)).toBe('1m');
-  });
-});
-
-describe('formatReset', () => {
-  it('counts down to an epoch-seconds reset', () => {
-    const now = 1_000_000_000_000;
-    expect(formatReset(now / 1000 + 134 * 60, now)).toBe('2h14m');
-    expect(formatReset(now / 1000 + 60, now)).toBe('1m');
-    expect(formatReset(now / 1000 + 3 * 24 * 3600, now)).toBe('3d');
-    expect(formatReset(now / 1000 - 10, now)).toBe('');
-    expect(formatReset(undefined, now)).toBe('');
   });
 });
 

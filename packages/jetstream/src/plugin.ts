@@ -16,6 +16,7 @@ import { CiKey, CI_REFRESH_MS } from './actions/ci';
 import { LaunchKey } from './actions/launch';
 import { PermissionKey } from './actions/permission';
 import { SettingsKey } from './actions/settings';
+import { FleetDialKey } from './actions/dial';
 
 const projectKey = new ProjectKey();
 const attentionKey = new AttentionKey();
@@ -25,6 +26,7 @@ const ciKey = new CiKey();
 const launchKey = new LaunchKey();
 const permissionKey = new PermissionKey();
 const settingsKey = new SettingsKey();
+const fleetDialKey = new FleetDialKey();
 
 streamDeck.actions.registerAction(projectKey);
 streamDeck.actions.registerAction(attentionKey);
@@ -34,6 +36,7 @@ streamDeck.actions.registerAction(ciKey);
 streamDeck.actions.registerAction(launchKey);
 streamDeck.actions.registerAction(permissionKey);
 streamDeck.actions.registerAction(settingsKey);
+streamDeck.actions.registerAction(fleetDialKey);
 
 // Seed the board + settings from the optional projects.json BEFORE anything subscribes or
 // connects: the Fleet roll-up and Attention doorbell then cover the whole fleet without a
@@ -47,6 +50,7 @@ function renderBoard(): void {
   void projectKey.renderAll();
   void attentionKey.renderAll();
   void fleetKey.renderAll();
+  void fleetDialKey.renderAll(); // Stream Deck + touchscreen; no-op when no dial is placed
 }
 
 function renderAll(): void {

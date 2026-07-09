@@ -10,6 +10,9 @@ export type JetstreamConfig = {
   longPressMs: number;
   usageRefreshSec: number;
   escalateAfterSec: number;
+  /** Branch namespace whose open PRs the CI key watches. Defaults to afterburner's, but
+   * a non-afterburner user sets their own so the CI key isn't stuck on "no PRs". */
+  ciBranchPrefix: string;
 };
 
 export const DEFAULTS: JetstreamConfig = {
@@ -17,6 +20,7 @@ export const DEFAULTS: JetstreamConfig = {
   longPressMs: 500,
   usageRefreshSec: 60,
   escalateAfterSec: 120,
+  ciBranchPrefix: 'afterburner/',
 };
 
 /** The accepted range per numeric setting — single-sourced so the init wizard can
@@ -44,6 +48,10 @@ export function mergeConfig(raw: unknown, base: JetstreamConfig = DEFAULTS): Jet
     longPressMs: clampInt(r.longPressMs, base.longPressMs, LIMITS.longPressMs.min, LIMITS.longPressMs.max),
     usageRefreshSec: clampInt(r.usageRefreshSec, base.usageRefreshSec, LIMITS.usageRefreshSec.min, LIMITS.usageRefreshSec.max),
     escalateAfterSec: clampInt(r.escalateAfterSec, base.escalateAfterSec, LIMITS.escalateAfterSec.min, LIMITS.escalateAfterSec.max),
+    ciBranchPrefix:
+      typeof r.ciBranchPrefix === 'string' && r.ciBranchPrefix.trim() !== ''
+        ? r.ciBranchPrefix.trim()
+        : base.ciBranchPrefix,
   };
 }
 
