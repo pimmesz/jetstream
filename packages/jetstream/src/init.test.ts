@@ -62,7 +62,7 @@ describe('runInit', () => {
     const repoB = makeRepo(work, 'hawk');
     const configPath = join(makeTmp(), 'jetstream', 'projects.json');
     const { io } = makeIo([
-      '', // no scan
+      'n', // skip scan (Enter now scans home)
       repoA, // add falcon…
       '', // …keep default name
       repoB, // add hawk…
@@ -121,7 +121,7 @@ describe('runInit', () => {
     const existing = '{ "projects": [{ "id": "keep", "name": "Keep", "path": "/keep" }] }\n';
     writeFileSync(configPath, existing);
     const { io } = makeIo([
-      '', // no scan
+      'n', // skip scan (Enter now scans home)
       '', // no manual adds
       '', // theme
       '', // escalate
@@ -142,7 +142,7 @@ describe('runInit', () => {
     const ghost = join(makeTmp(), 'gone');
     rmSync(ghost, { recursive: true, force: true });
     const { io } = makeIo([
-      '', // no scan
+      'n', // skip scan (Enter now scans home)
       ghost, // path that doesn't exist…
       'n', // …declined
       ghost, // again…
@@ -170,7 +170,7 @@ describe('runInit', () => {
     const work = makeTmp();
     const repo = makeRepo(work, 'fresh');
     const { io } = makeIo([
-      '', // no scan
+      'n', // skip scan (Enter now scans home)
       repo, // one new project
       '', // default name
       '', // finish
@@ -192,7 +192,7 @@ describe('runInit', () => {
   it('a root path gets a usable fallback name instead of aborting the wizard', async () => {
     const configPath = join(makeTmp(), 'projects.json');
     const { io } = makeIo([
-      '', // no scan
+      'n', // skip scan (Enter now scans home)
       '/', // filesystem root: basename('') — needs the fallback
       '', // accept the fallback name at `Name [project]:`
       '', // finish
@@ -216,7 +216,7 @@ describe('runInit', () => {
     const configPath = join(makeTmp(), 'projects.json');
     const opened: string[] = [];
     const { io, said } = makeIo([
-      '', // no scan
+      'n', // skip scan (Enter now scans home)
       repo, // one project
       '', // default name
       '', // finish
@@ -251,7 +251,7 @@ describe('runInit', () => {
     const configPath = join(makeTmp(), 'projects.json');
     const opened: string[] = [];
     const { io, said } = makeIo([
-      '', // no scan
+      'n', // skip scan (Enter now scans home)
       '', // no projects
       '', // theme
       '', // escalate
@@ -280,7 +280,7 @@ describe('runInit', () => {
     const cwd = makeTmp();
     const configPath = join(makeTmp(), 'projects.json');
     const opened: string[] = [];
-    const { io, said } = makeIo(['', '', '', '', '', '', '9']); // deck "9" → no match
+    const { io, said } = makeIo(['n', '', '', '', '', '', '9']); // deck "9" → no match
 
     const code = await runInit({
       io,
@@ -302,7 +302,7 @@ describe('runInit', () => {
     const cwd = makeTmp();
     const configPath = join(makeTmp(), 'projects.json');
     const opened: string[] = [];
-    const { io, said } = makeIo(['', '', '', '', '', '', '']); // all defaults incl. deck skip
+    const { io, said } = makeIo(['n', '', '', '', '', '', '']); // all defaults incl. deck skip
 
     const code = await runInit({
       io,
@@ -324,7 +324,7 @@ describe('runInit', () => {
     const install = vi.fn(async (): Promise<InstallResult> => {
       throw new Error('settings.json is not valid JSON');
     });
-    const { io, said } = makeIo(['', '', '', '', '', '']);
+    const { io, said } = makeIo(['n', '', '', '', '', '']);
 
     const code = await runInit({ io, commands: COMMANDS, configPath, install });
 

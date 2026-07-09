@@ -8,6 +8,7 @@ import {
   addToFleet,
   handleFleetMessage,
   removeFromFleet,
+  scanForGitRepos,
   writeFleetFile,
   type FleetDeps,
   type FleetOutbound,
@@ -76,6 +77,38 @@ describe('addToFleet', () => {
     const input: ProjectConfig[] = [];
     addToFleet(input, { path: join(dir, 'x') });
     expect(input).toHaveLength(0);
+  });
+});
+
+describe('scanForGitRepos', () => {
+  const repo = (root: string, ...segs: string[]): string => {
+    const dir = join(root, ...segs);
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    return dir;
+  };
+
+  it('finds repos a few levels deep, skipping hidden + noise dirs', () => {
+    const root = makeTmp();
+    const loose = repo(root, 'loose'); // depth 1
+    const app = repo(root, 'Personal', 'app'); // depth 2
+    const zap = repo(root, 'Capgemini', 'cicd', 'zap'); // depth 3
+    repo(root, '.nvm'); // hidden → skipped (the exact `~/.nvm` / `~/.oh-my-zsh` case)
+    repo(root, 'node_modules', 'pkg'); // noise → skipped
+    repo(root, 'deep', 'a', 'b', 'c'); // depth 4 → beyond the default maxDepth
+
+    const found = scanForGitRepos(root);
+    expect(found).toEqual([app, zap, loose].sort()); // exactly the three real repos
+  });
+
+  it('does not descend INTO a repo — a repo is a leaf, its subdirs are not separate repos', () => {
+    const root = makeTmp();
+    const app = repo(root, 'app');
+    mkdirSync(join(app, 'packages', 'sub', '.git'), { recursive: true });
+    expect(scanForGitRepos(root)).toEqual([app]);
+  });
+
+  it('returns [] for an unreadable/absent dir and never throws', () => {
+    expect(scanForGitRepos('/no/such/dir/xyz')).toEqual([]);
   });
 });
 

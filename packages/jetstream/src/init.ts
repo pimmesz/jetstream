@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { DEFAULTS, LIMITS, type JetstreamConfig } from './config';
@@ -104,13 +105,20 @@ async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]
     }
   };
 
-  const scanDir = (await io.ask('Folder to scan for git repos (Enter to skip): ')).trim();
-  if (scanDir) {
-    const dir = resolve(cwd, expandHome(scanDir));
+  // Default to scanning your HOME folder (searched a few levels deep, hidden/noise dirs
+  // skipped) — repos live under ~/Personal, ~/work, ~/Capgemini/… far more often than in a
+  // dir you'd want to type. Enter accepts the default; a path scans elsewhere; `n` skips.
+  const home = homedir();
+  const scanAnswer = (
+    await io.ask(`Scan for your git repos? [Enter = ${safe(home)} · a path · n to skip]: `)
+  ).trim();
+  if (!/^n(o)?$/i.test(scanAnswer)) {
+    const dir = resolve(cwd, expandHome(scanAnswer || home));
     const repos = scanForGitRepos(dir);
     if (repos.length === 0) {
-      io.say(`No git repos found directly under ${safe(dir)}.`);
+      io.say(`No git repos found under ${safe(dir)}.`);
     } else {
+      io.say(`Found ${repos.length} git repo${repos.length === 1 ? '' : 's'} under ${safe(dir)}:`);
       repos.forEach((repo, i) => io.say(`  ${i + 1}. ${safe(repo)}`));
       const picked = await io.ask('Add which? (numbers like 1,3 — Enter for all): ');
       const selection = parseSelection(picked, repos.length);

@@ -63,19 +63,22 @@ automation, git, pull request, usage, monitoring
 > - Stream Deck + dial (fleet scrubber) and two-page Board/Ops layouts
 > - Terminal-free setup: auto-wire + in-app fleet editor + Build-my-layout
 
-## Assets you need to make (the Console shows the exact required pixel sizes on upload)
+## Assets — generated in `marketing/` (regenerate with `node scripts/gen-store-assets.mjs`)
 
-You can't ship these from the repo — they need real imagery. Best sources: the Stream Deck
-app's key previews, or a photo of your physical deck with the keys lit.
+`scripts/gen-store-assets.mjs` composes the plugin's real key faces + brand into on-brand
+PNGs via headless Chrome (macOS, no deps). It writes:
 
-| Asset | What it is | Suggested content |
+| File | Size | Use |
 |---|---|---|
-| **Listing icon** | square plugin icon on the store card | the ✈ plugin mark, clean on a dark background (a larger export of `imgs/plugin@2x.png`) |
-| **Marquee / banner** | wide hero on the listing page | the deck with a lit board — Fleet showing `3w 1! 2✓`, an Attention key glowing red — + the tagline |
-| **Screenshots (2–5)** | the plugin in action | 1) the status board lit across a deck · 2) the usage gauge · 3) the Settings inspector (fleet editor + setup checklist) · 4) the Stream Deck + dial touchscreen · 5) the two-page Board/Ops layout |
+| `marketing/thumbnail.png` | 1280×1280 | listing thumbnail / card |
+| `marketing/gallery-1-board.png` | 1920×1080 | gallery — the status board |
+| `marketing/gallery-2-controls.png` | 1920×1080 | gallery — the Ops/controls page |
+| `marketing/gallery-3-hero.png` | 1920×1080 | gallery — hero + feature line |
 
-Screenshots sell it — show a real board where several keys are lit in different states, so the
-"glance and know" value is obvious.
+Upload these in the Console (it shows the exact accepted sizes and will resize/crop). Tweak the
+mockup states or copy by editing the script and re-running. **Optional upgrade:** a real photo of
+your physical deck with the keys lit makes a great *additional* gallery shot — synthetic mockups
+sell the concept, a real deck sells that it's real.
 
 ## Submission steps
 
@@ -85,6 +88,25 @@ Screenshots sell it — show a real board where several keys are lit in differen
 4. Upload the assets (icon, marquee, screenshots) and the `.streamDeckPlugin` file.
 5. Submit for review. Elgato reviews manually (days); they may request changes.
 6. Once approved it's live with an **Install** button + **auto-updates** for users.
+
+## Release notes (paste into the Console's notes field per version)
+
+### v1.0.0 — first release
+Jetstream turns your Stream Deck into a live cockpit for Claude Code.
+- Live status board — every project glows with its real state: working, needs you, done.
+- Attention doorbell + deck approve/deny for Claude permission prompts.
+- Usage gauge — live 5h / 7d subscription burn, plus model + context window.
+- Launch keys — fire preset headless prompts in a project with one press.
+- Fleet roll-up — one key summarizing every repo, colored by the worst state present.
+- Stream Deck + — a dial scrubs your whole fleet on the touchscreen.
+- Two-page deck — a status Board and a controls page (model / stop-all / review / heartbeat).
+- No-terminal setup — auto-wired hooks + an in-app fleet editor, health check, and layout
+  builder; a bundled CLI and conversational `chat` setup for keyboard folks.
+Works with Claude Code standalone; pairs with Afterburner. macOS.
+
+Future versions: list ONLY what changed since the last release, e.g.
+> ### v1.0.1
+> - Fix: … · New: … · Changed: …
 
 ## Shipping updates later
 

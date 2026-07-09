@@ -53,19 +53,38 @@ export function slugId(name: string, taken: Set<string>): string {
   return id;
 }
 
-/** Depth-1 children of `dir` that look like git repo roots (a `.git` dir or file).
- * Unreadable dir → []. Sorted for a stable listing. */
-export function scanForGitRepos(dir: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  return entries
-    .map((name) => join(dir, name))
-    .filter((child) => existsSync(join(child, '.git')))
-    .sort();
+/** Directory names never worth descending into when hunting for repos: package installs,
+ * the macOS Library/Applications trees, and the Trash. Hidden dirs (a `.` prefix) are skipped
+ * separately — that's what keeps `.nvm` / `.oh-my-zsh` out of the results. */
+const SCAN_SKIP = new Set(['node_modules', 'Library', 'Applications', '.Trash']);
+
+/** Find git repo roots under `dir`, searched a few levels deep (so pointing at your HOME
+ * folder finds `~/Personal/app`, `~/work/api`, `~/Capgemini/foo/bar`, not just direct
+ * children). Skips hidden dirs and heavy noise, and never descends INTO a repo (its subdirs
+ * aren't separate repos). Unreadable dirs are skipped; results are deduped + sorted. */
+export function scanForGitRepos(dir: string, maxDepth = 3): string[] {
+  const found: string[] = [];
+  const walk = (current: string, depth: number): void => {
+    if (depth > maxDepth) return;
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      return; // unreadable dir (permissions, gone) — skip, never throw
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.') || SCAN_SKIP.has(entry.name)) continue;
+      const child = join(current, entry.name);
+      if (existsSync(join(child, '.git'))) {
+        found.push(child); // a repo root — stop; don't treat its subdirs as repos
+      } else {
+        walk(child, depth + 1);
+      }
+    }
+  };
+  walk(dir, 1);
+  return [...new Set(found)].sort();
 }
 
 /** Render projects.json: pretty, stable field order, `settings` omitted entirely when
