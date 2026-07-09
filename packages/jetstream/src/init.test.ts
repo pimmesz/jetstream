@@ -115,6 +115,59 @@ describe('runInit', () => {
     expect(said.join('\n')).not.toContain('not-a-repo'); // …and never the .git-less dir
   });
 
+  it('big scan (> MANY_REPOS): Enter no longer adds all — it skips', async () => {
+    const parent = makeTmp();
+    for (let i = 0; i < 13; i++) makeRepo(parent, `r${String(i).padStart(2, '0')}`);
+    const configPath = join(makeTmp(), 'projects.json');
+    const { io, said } = makeIo([
+      parent, // scan here
+      '', // Enter — with a big list this SKIPS rather than adding all 13
+      '', // no manual adds
+      '', // theme
+      '', // escalate
+      '', // long-press
+      '', // refresh
+    ]);
+
+    const code = await runInit({ io, commands: COMMANDS, configPath, install: okInstall });
+
+    expect(code).toBe(0);
+    expect(parseProjectsConfig(readFileSync(configPath, 'utf8'))).toEqual([]);
+    const log = said.join('\n');
+    expect(log).toContain('pick the repos you actively drive'); // the big-list prompt, not "Enter for all"
+    expect(log).toContain('skipped'); // and the skip note
+  });
+
+  it('big scan: explicit "all" adds every repo; a numeric pick adds only those, in order', async () => {
+    const mkParent = (): string => {
+      const parent = makeTmp();
+      for (let i = 0; i < 13; i++) makeRepo(parent, `r${String(i).padStart(2, '0')}`);
+      return parent;
+    };
+    // "all" → all 13
+    const allCfg = join(makeTmp(), 'projects.json');
+    await runInit({
+      io: makeIo([mkParent(), 'all', '', '', '', '', '']).io,
+      commands: COMMANDS,
+      configPath: allCfg,
+      install: okInstall,
+    });
+    expect(parseProjectsConfig(readFileSync(allCfg, 'utf8'))).toHaveLength(13);
+
+    // "2,4" → exactly the 2nd and 4th of the sorted list (r01, r03), in that order
+    const pickCfg = join(makeTmp(), 'projects.json');
+    await runInit({
+      io: makeIo([mkParent(), '2,4', '', '', '', '', '']).io,
+      commands: COMMANDS,
+      configPath: pickCfg,
+      install: okInstall,
+    });
+    expect(parseProjectsConfig(readFileSync(pickCfg, 'utf8')).map((p) => p.name)).toEqual([
+      'r01',
+      'r03',
+    ]);
+  });
+
   it('never clobbers an existing projects.json without an explicit yes (hooks still run)', async () => {
     const cfgDir = makeTmp();
     const configPath = join(cfgDir, 'projects.json');

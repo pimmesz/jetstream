@@ -70,44 +70,45 @@ describe('profileForDeviceType', () => {
 });
 
 describe('buildProfile', () => {
-  it('XL: fixed keys at their slots, projects fill the rest with name+path settings', () => {
+  it('XL: controls anchor the bottom row, projects fill the top-left with name+path settings', () => {
     const { manifest, placedProjects, skippedProjects } = buildProfile(XL, projects(3));
     const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    expect(actions['0,0']!.UUID).toBe('gg.pim.jetstream.fleet');
-    expect(actions['1,0']!.UUID).toBe('gg.pim.jetstream.attention');
-    expect(actions['2,0']!.UUID).toBe('gg.pim.jetstream.usage');
-    expect(actions['3,0']!.UUID).toBe('gg.pim.jetstream.ci');
-    expect(actions['6,0']).toMatchObject({ UUID: 'gg.pim.jetstream.permission', Settings: { decision: 'allow' } });
-    expect(actions['7,0']).toMatchObject({ UUID: 'gg.pim.jetstream.permission', Settings: { decision: 'deny' } });
+    // Control strip along the bottom row + a nav cap above Settings. Fleet + Attention are
+    // dropped on the XL (redundant when every project has its own key).
+    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage');
+    expect(actions['1,3']!.UUID).toBe('gg.pim.jetstream.ci');
+    expect(actions['2,3']!.UUID).toBe('gg.pim.jetstream.launch');
+    expect(actions['3,3']).toMatchObject({ UUID: 'gg.pim.jetstream.permission', Settings: { decision: 'allow' } });
+    expect(actions['4,3']).toMatchObject({ UUID: 'gg.pim.jetstream.permission', Settings: { decision: 'deny' } });
     expect(actions['7,3']!.UUID).toBe('gg.pim.jetstream.settings');
-    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.launch'); // the XL teaching slot
-    // Projects land in the centered middle-rows block first, not row-major from 4,0 —
-    // and the 4,0/5,0 moat between the watch strip and Approve/Deny stays empty.
-    expect(actions['2,1']).toMatchObject({
+    expect(actions['7,2']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'ops' } });
+    const xlUuids = Object.values(actions).map((a) => a.UUID);
+    expect(xlUuids).not.toContain('gg.pim.jetstream.fleet');
+    expect(xlUuids).not.toContain('gg.pim.jetstream.attention');
+    // Projects fill the top row left-to-right, starting top-left.
+    expect(actions['0,0']).toMatchObject({
       UUID: 'gg.pim.jetstream.project',
       Settings: { name: 'Project 0', path: '/repo/0' },
     });
-    expect(actions['3,1']!.UUID).toBe('gg.pim.jetstream.project');
-    expect(actions['4,1']!.UUID).toBe('gg.pim.jetstream.project');
-    expect(actions['4,0']).toBeUndefined();
-    expect(actions['5,0']).toBeUndefined();
+    expect(actions['1,0']!.UUID).toBe('gg.pim.jetstream.project');
+    expect(actions['2,0']!.UUID).toBe('gg.pim.jetstream.project');
     expect(placedProjects).toBe(3);
     expect(skippedProjects).toBe(0);
     expect(manifest.DeviceModel).toBe('20GAT9901');
     expect(manifest.Version).toBe('1.0');
   });
 
-  it('XL overflow spills beyond the centered block but NEVER into the row-0 moat', () => {
+  it('XL overflow: projects fill the top rows, capped at the free slots', () => {
     const { manifest, placedProjects } = buildProfile(XL, projects(30));
     const actions = manifest.Actions as Record<string, { UUID: string }>;
-    // 32 slots − 8 fixed (fleet/attention/usage/ci/allow/deny/settings/launch) − 1 nav − 2 moat = 21.
-    expect(placedProjects).toBe(21);
-    expect(actions['4,0']).toBeUndefined();
-    expect(actions['5,0']).toBeUndefined();
+    // 32 slots − 6 bottom-row controls − 1 nav = 25 project slots.
+    expect(placedProjects).toBe(25);
+    expect(actions['0,0']!.UUID).toBe('gg.pim.jetstream.project'); // top-left is a project
+    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // bottom stays controls
   });
 
   it('caps project keys at the free slots and reports the overflow', () => {
-    // Standard 5x3 = 15 keys, 7 fixed + 1 nav (→ Ops page) → 7 free.
+    // Standard 5x3 = 15 keys, 8 controls (watch strip + settings + nav/approve/deny) → 7 free.
     const { placedProjects, skippedProjects } = buildProfile(STANDARD, projects(12));
     expect(placedProjects).toBe(7);
     expect(skippedProjects).toBe(5);
@@ -163,14 +164,13 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
   it('XL: fixed board + six UNCONFIGURED project invitations, zero user data', () => {
     const { manifest } = buildDefaultProfile(XL);
     const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    expect(Object.keys(actions)).toHaveLength(15); // 8 fixed + 1 nav + 6 invitations
-    for (const slot of ['2,1', '3,1', '4,1', '2,2', '3,2', '4,2']) {
+    expect(Object.keys(actions)).toHaveLength(13); // 7 controls + 6 invitations
+    for (const slot of ['0,0', '1,0', '2,0', '3,0', '4,0', '5,0']) {
       expect(actions[slot]).toMatchObject({ UUID: 'gg.pim.jetstream.project', Settings: null });
     }
-    expect(actions['0,1']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'ops' } });
-    expect(actions['0,3']).toMatchObject({ UUID: 'gg.pim.jetstream.launch', Settings: null });
-    expect(actions['4,0']).toBeUndefined(); // the moat ships empty
-    expect(actions['5,0']).toBeUndefined();
+    expect(actions['7,2']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'ops' } });
+    expect(actions['2,3']).toMatchObject({ UUID: 'gg.pim.jetstream.launch', Settings: null });
+    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // controls anchor the bottom
     expect(manifest.Name).toBe('Jetstream XL');
     // Baked at publish time: no path/name may appear anywhere in the manifest.
     expect(JSON.stringify(manifest)).not.toMatch(/"path"|"name"/);
@@ -179,8 +179,8 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
   it('standard + mini defaults mirror their init layouts with invitations only', () => {
     const std = buildDefaultProfile(STANDARD).manifest;
     const stdActions = std.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    expect(Object.keys(stdActions)).toHaveLength(11); // 7 fixed + 1 nav + 3 invitations
-    for (const slot of ['1,1', '2,1', '3,1']) {
+    expect(Object.keys(stdActions)).toHaveLength(11); // 8 controls + 3 invitations
+    for (const slot of ['0,0', '1,0', '2,0']) {
       expect(stdActions[slot]).toMatchObject({ UUID: 'gg.pim.jetstream.project', Settings: null });
     }
     expect(std.Name).toBe('Jetstream');
@@ -260,7 +260,7 @@ describe('zip writer', () => {
   it('archive bytes are reproducible ACROSS runs (pinned digest — catches run-dependent bytes)', () => {
     const built = buildProfile(XL, projects(2));
     const digest = createHash('sha256').update(renderProfileArchive(built, 'fixed-id')).digest('hex');
-    expect(digest).toBe('b7fdb93e72b0e7ee20db93f2e3827aeebd311a86780a5295670350796b311de5');
+    expect(digest).toBe('76b365b6545d4f8f10e408745d3f14bf8b07c6532eaa120aa15be15721966325');
   });
 
   it.skipIf(!hasUnzip && !process.env.CI)('a real unzip extracts the archive and the manifest round-trips', () => {

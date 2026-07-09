@@ -20,9 +20,9 @@ export type JetstreamConfig = {
 
 export const DEFAULTS: JetstreamConfig = {
   theme: 'default',
-  longPressMs: 500,
+  longPressMs: 1000,
   usageRefreshSec: 60,
-  escalateAfterSec: 120,
+  escalateAfterSec: 300,
   ciBranchPrefix: 'afterburner/',
   launchModel: '',
 };

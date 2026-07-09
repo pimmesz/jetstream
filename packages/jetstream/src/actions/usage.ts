@@ -21,15 +21,19 @@ export class UsageKey extends SingletonAction {
     const face = feed.available
       ? keyFace({
           color: gaugeColor(feed),
-          ...(feed.model ? { top: feed.model } : {}),
-          label: feed.fiveHour ? `5h ${Math.round(feed.fiveHour.usedPct)}%` : 'usage',
-          subMax: 22, // room for `7d 84% · resets 3h33m`
-          sub: [
-            feed.sevenDay ? `7d ${Math.round(feed.sevenDay.usedPct)}%` : '',
-            formatNextReset(feed.fiveHour?.resetsAt, feed.sevenDay?.resetsAt, now),
-          ]
-            .filter(Boolean)
-            .join(' · '),
+          // Weekly is the headline (afterburner's whole premise) → the big label. Show the
+          // 5-hour window on the line above when both exist, and the sooner reset below. Both
+          // windows stay readable instead of 7d hiding in a tiny sub-line.
+          ...(feed.fiveHour && feed.sevenDay
+            ? { top: `5h ${Math.round(feed.fiveHour.usedPct)}%` }
+            : {}),
+          label: feed.sevenDay
+            ? `7d ${Math.round(feed.sevenDay.usedPct)}%`
+            : feed.fiveHour
+              ? `5h ${Math.round(feed.fiveHour.usedPct)}%`
+              : 'usage',
+          subMax: 18,
+          sub: formatNextReset(feed.fiveHour?.resetsAt, feed.sevenDay?.resetsAt, now),
         })
       : keyFace({ color: '#26262b', label: 'no usage', sub: 'install hook' });
     for (const visible of this.actions) {

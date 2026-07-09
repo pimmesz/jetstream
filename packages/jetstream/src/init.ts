@@ -46,6 +46,11 @@ const yes = (answer: string): boolean => /^y(es)?$/i.test(answer.trim());
  * terminal — a directory named with ANSI escapes must not steer the user's console. */
 const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '');
 
+/** Above this many scanned repos, init stops defaulting the pick to "all": a whole-home scan
+ * (30+ repos) shouldn't flood the fleet and bury the handful you actually drive with Claude.
+ * Sits above a comfortable single-deck project count, well under a full home. */
+const MANY_REPOS = 12;
+
 /** Parse a "1,3,5" style pick against a 1-based list of `count` items. Empty or 'all'
  * selects everything; only fully numeric tokens count (so "1-3" is dropped rather than
  * misread as 1); out-of-range numbers are dropped; duplicates collapse. Returns 0-based
@@ -74,8 +79,11 @@ async function askNumber(
   question: string,
   fallback: number,
   range: { min: number; max: number },
+  unit = '',
 ): Promise<number | undefined> {
-  const raw = (await io.ask(`${question} [${fallback}]: `)).trim();
+  // Unit rides next to the default (`[300 seconds]`, not a bare `[300]`) so the number isn't
+  // ambiguous — a bare `[120]` reads as "120 what?".
+  const raw = (await io.ask(`${question} [${fallback}${unit}]: `)).trim();
   if (raw === '') return undefined; // keep the default → not written to settings
   const n = Number.parseInt(raw, 10);
   if (!Number.isInteger(n)) {
@@ -120,10 +128,32 @@ async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]
     } else {
       io.say(`Found ${repos.length} git repo${repos.length === 1 ? '' : 's'} under ${safe(dir)}:`);
       repos.forEach((repo, i) => io.say(`  ${i + 1}. ${safe(repo)}`));
-      const picked = await io.ask('Add which? (numbers like 1,3 — Enter for all): ');
-      const selection = parseSelection(picked, repos.length);
-      if (picked.trim() !== '' && selection.length === 0) {
-        io.say(`  (couldn't read "${safe(picked.trim())}" — use numbers like 1,3, or Enter for all)`);
+      // A handful of repos fits a deck; a whole home does not. Past MANY_REPOS, "Enter = all"
+      // would flood projects.json and overflow every deck but a packed XL — surfacing base-image
+      // and course repos on keys instead of the few you actually drive. So for a big list, drop
+      // the all-default: Enter skips, an explicit 'all' still adds every one, and a numeric pick
+      // becomes your keys in pick order. Small lists keep the Enter = all convenience.
+      const many = repos.length > MANY_REPOS;
+      const picked = (
+        await io.ask(
+          many
+            ? `That's a lot for one deck — pick the repos you actively drive with Claude (e.g. 1,3,5; 'all' for every one; Enter to skip): `
+            : 'Add which? (numbers like 1,3 — Enter for all): ',
+        )
+      ).trim();
+      let selection: number[];
+      if (many && picked === '') {
+        io.say('  (skipped — add specific repos by path below, or place keys in the app later)');
+        selection = [];
+      } else if (many && /^all$/i.test(picked)) {
+        selection = Array.from({ length: repos.length }, (_, i) => i);
+      } else {
+        selection = parseSelection(picked, repos.length);
+        if (picked !== '' && selection.length === 0) {
+          io.say(
+            `  (couldn't read "${safe(picked)}" — use numbers like 1,3${many ? ", or 'all'" : ', or Enter for all'})`,
+          );
+        }
       }
       for (const i of selection) {
         const repo = repos[i]!;
@@ -155,7 +185,7 @@ async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]
  * for the grounded-format rationale). Optional and best-effort: skipping or a write failure
  * never fails init — the drag-keys path always remains. Returns the artifact path when one
  * was written, for the next-steps copy. */
-async function offerProfile(
+export async function offerProfile(
   io: InitIo,
   cwd: string,
   projects: ProjectConfig[],
@@ -221,23 +251,26 @@ async function collectSettings(io: InitIo): Promise<Partial<JetstreamConfig>> {
   }
   const escalate = await askNumber(
     io,
-    'Attention: flash after this many unanswered seconds',
+    'Attention: how long unanswered before the doorbell flashes',
     DEFAULTS.escalateAfterSec,
     LIMITS.escalateAfterSec,
+    ' seconds',
   );
   if (escalate !== undefined) settings.escalateAfterSec = escalate;
   const longPress = await askNumber(
     io,
-    'Long-press to interrupt (ms)',
+    'Long-press-to-interrupt hold time',
     DEFAULTS.longPressMs,
     LIMITS.longPressMs,
+    ' ms',
   );
   if (longPress !== undefined) settings.longPressMs = longPress;
   const refresh = await askNumber(
     io,
-    'Usage gauge refresh (seconds)',
+    'Usage gauge refresh interval',
     DEFAULTS.usageRefreshSec,
     LIMITS.usageRefreshSec,
+    ' seconds',
   );
   if (refresh !== undefined) settings.usageRefreshSec = refresh;
   return settings;

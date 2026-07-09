@@ -73,68 +73,79 @@ export interface BuiltProfile {
 }
 
 /** The fixed keys every Jetstream board shares (both the shipped default and init's
- * personalized layout — same slots, so upgrading feels like filling in the same board):
- * Fleet/Attention/Usage top-left, Approve/Deny top-right (stacked on row 1 for the
- * Mini), Settings bottom-right, CI where there's room, one Launch teaching slot on the
- * XL. Returns the slot map plus the moat — deliberately-empty keys that separate the
- * watch strip from the blind-reach Approve/Deny pair; project keys never fill them. */
-function fixedLayout(deck: DeckModel): { slots: Map<string, ProfileAction>; moat: Set<string> } {
+ * personalized layout — same slots, so upgrading feels like filling in the same board).
+ * Controls anchor a coherent BOTTOM zone so the project keys own the top of the deck and
+ * flow left-to-right (Fleet/Attention/Usage/CI on the bottom row, Approve/Deny + Launch
+ * beside them, Settings bottom-right, a Page:Ops nav cap). The Mini keeps its two-row
+ * essentials (no project keys, so nothing to anchor). Returns the slot map. */
+function fixedLayout(deck: DeckModel): Map<string, ProfileAction> {
   const slots = new Map<string, ProfileAction>();
-  const moat = new Set<string>();
   const at = (col: number, row: number, entry: ProfileAction): void => {
     slots.set(`${col},${row}`, entry);
   };
-
-  at(0, 0, action('Fleet roll-up', 'gg.pim.jetstream.fleet'));
-  at(1, 0, action('Attention', 'gg.pim.jetstream.attention'));
-  at(2, 0, action('Usage gauge', 'gg.pim.jetstream.usage'));
   // The literals are type-checked against the actions' OWN settings types, so a
   // renamed field breaks the build here instead of shipping a dead key.
   const allow = { decision: 'allow' } satisfies PermissionSettings;
   const deny = { decision: 'deny' } satisfies PermissionSettings;
+  const ops = { target: 'ops' } satisfies NavSettings;
+
   if (deck.key === 'mini') {
     // 6 keys: the fleet covers every repo, so the Mini gets the essentials only.
+    at(0, 0, action('Fleet roll-up', 'gg.pim.jetstream.fleet'));
+    at(1, 0, action('Attention', 'gg.pim.jetstream.attention'));
+    at(2, 0, action('Usage gauge', 'gg.pim.jetstream.usage'));
     at(0, 1, action('Approve', 'gg.pim.jetstream.permission', allow));
     at(1, 1, action('Deny', 'gg.pim.jetstream.permission', deny));
     at(2, 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
-  } else {
-    at(deck.cols - 2, 0, action('Approve', 'gg.pim.jetstream.permission', allow));
-    at(deck.cols - 1, 0, action('Deny', 'gg.pim.jetstream.permission', deny));
-    at(deck.cols - 1, deck.rows - 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
-    // Page nav to the Ops (controls) page — the two-page bundled deck. Left edge, below the
-    // fleet key; the Mini has no room for a second page so it never gets this.
-    at(0, 1, action('Page: Ops', 'gg.pim.jetstream.nav', { target: 'ops' } satisfies NavSettings));
-    // CI fits on row 0 only when Approve/Deny don't already crowd it (the XL).
-    if (deck.cols >= 8) {
-      at(3, 0, action('CI / PR status', 'gg.pim.jetstream.ci'));
-      // One teaching slot for the headless-launch capability; bottom edge.
-      at(0, deck.rows - 1, action('Launch preset', 'gg.pim.jetstream.launch'));
-      // Row-0 gap between the watch strip (cols 0-3) and the decide pair (cols 6-7).
-      moat.add('4,0');
-      moat.add('5,0');
-    } else {
-      at(0, deck.rows - 1, action('CI / PR status', 'gg.pim.jetstream.ci'));
-    }
+    return slots;
   }
-  return { slots, moat };
+
+  if (deck.key === 'xl') {
+    // On the XL every project gets its own key, so the Fleet roll-up and Attention doorbell
+    // are redundant (they summarize what you can already see) — dropped here, kept on the
+    // smaller decks where projects overflow. Bottom row is the control strip; rows 0-2 are
+    // projects.
+    at(0, 3, action('Usage gauge', 'gg.pim.jetstream.usage'));
+    at(1, 3, action('CI / PR status', 'gg.pim.jetstream.ci'));
+    at(2, 3, action('Launch preset', 'gg.pim.jetstream.launch'));
+    at(3, 3, action('Approve', 'gg.pim.jetstream.permission', allow));
+    at(4, 3, action('Deny', 'gg.pim.jetstream.permission', deny));
+    at(7, 3, action('Jetstream settings', 'gg.pim.jetstream.settings'));
+    // Nav to the Ops page caps the right edge above Settings.
+    at(7, 2, action('Page: Ops', 'gg.pim.jetstream.nav', ops));
+    return slots;
+  }
+
+  // Standard (5x3): bottom row = watch strip + Settings; Nav/Approve/Deny sit on the
+  // right of row 1, leaving row 0 + the left of row 1 (7 slots) for projects.
+  at(0, 2, action('Fleet roll-up', 'gg.pim.jetstream.fleet'));
+  at(1, 2, action('Attention', 'gg.pim.jetstream.attention'));
+  at(2, 2, action('Usage gauge', 'gg.pim.jetstream.usage'));
+  at(3, 2, action('CI / PR status', 'gg.pim.jetstream.ci'));
+  at(4, 2, action('Jetstream settings', 'gg.pim.jetstream.settings'));
+  at(2, 1, action('Page: Ops', 'gg.pim.jetstream.nav', ops));
+  at(3, 1, action('Approve', 'gg.pim.jetstream.permission', allow));
+  at(4, 1, action('Deny', 'gg.pim.jetstream.permission', deny));
+  return slots;
 }
 
-/** Where project keys go first: a centered middle-rows block (the deck-ergonomics
- * convention — content blocks sit centered with whitespace around them, and six slots
- * match a realistic hot-repo count). Overflow spills row-major into other free slots. */
+/** Where project keys seed FIRST: the top row, left-to-right (a contiguous top-left block
+ * is what reads as "my projects", not a centered island). Overflow then spills row-major
+ * into the remaining free slots above the control strip. */
 function preferredProjectSlots(deck: DeckModel): string[] {
-  if (deck.key === 'xl') return ['2,1', '3,1', '4,1', '2,2', '3,2', '4,2'];
-  if (deck.key === 'standard') return ['1,1', '2,1', '3,1'];
+  if (deck.key === 'xl') return ['0,0', '1,0', '2,0', '3,0', '4,0', '5,0'];
+  if (deck.key === 'standard') return ['0,0', '1,0', '2,0'];
   return [];
 }
 
 /**
  * Lay out the personalized Jetstream board (`jetstream init`): the shared fixed keys
- * plus Project keys (name+path prefilled) — preferred centered slots first, then any
- * remaining free slot row-major (never the moat). Pure.
+ * plus Project keys (name+path prefilled) — the top-left preferred slots first, then any
+ * remaining free slot row-major (which, with controls on the bottom, is a contiguous
+ * top-anchored block). Pure.
  */
 export function buildProfile(deck: DeckModel, projects: ProjectConfig[]): BuiltProfile {
-  const { slots, moat } = fixedLayout(deck);
+  const slots = fixedLayout(deck);
 
   let placed = 0;
   const place = (slot: string): void => {
@@ -152,7 +163,7 @@ export function buildProfile(deck: DeckModel, projects: ProjectConfig[]): BuiltP
       for (let col = 0; col < deck.cols; col++) {
         if (placed >= projects.length) break outer;
         const slot = `${col},${row}`;
-        if (slots.has(slot) || moat.has(slot)) continue;
+        if (slots.has(slot)) continue;
         place(slot);
       }
     }
@@ -229,7 +240,7 @@ export function profileForDeviceType(type: number): string | undefined {
  * else on it works with zero configuration.
  */
 export function buildDefaultProfile(deck: DeckModel): BuiltProfile {
-  const { slots } = fixedLayout(deck);
+  const slots = fixedLayout(deck);
   const invitations = preferredProjectSlots(deck);
   for (const slot of invitations) {
     slots.set(slot, action('Project status', 'gg.pim.jetstream.project'));

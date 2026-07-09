@@ -1,47 +1,52 @@
 import { describe, it, expect } from 'vitest';
-import {
-  shellQuote,
-  appleScriptQuote,
-  buildOpenCommand,
-  isClaudeProcess,
-  interruptPids,
-} from './switchto';
+import { buildOpenCommand, isClaudeProcess, interruptPids } from './switchto';
 
-describe('shellQuote', () => {
-  it('single-quotes and survives embedded quotes', () => {
-    expect(shellQuote('/Users/me/proj')).toBe(`'/Users/me/proj'`);
-    expect(shellQuote(`/Users/me/o'brien`)).toBe(`'/Users/me/o'\\''brien'`);
-  });
-});
-
-describe('appleScriptQuote', () => {
-  it('escapes backslashes and double quotes', () => {
-    expect(appleScriptQuote('say "hi" \\ there')).toBe('say \\"hi\\" \\\\ there');
-  });
-});
-
-describe('buildOpenCommand', () => {
-  it('builds a Terminal osascript on macOS with the path safely quoted', () => {
-    const cmd = buildOpenCommand(`/Users/me/o'brien "x"`, 'darwin');
-    expect(cmd?.cmd).toBe('osascript');
-    const script = cmd?.args.at(-1) ?? '';
-    expect(script).toContain('claude --continue');
-    // The path's double quotes must be AppleScript-escaped so the literal stays intact.
-    expect(script).toContain('\\"x\\"');
-    // And single-quoted for the shell, with the shell-quote backslash itself
-    // AppleScript-escaped (\\ in the script source → \ when AppleScript runs it).
-    expect(script).toContain(String.raw`o'\\''brien`);
+describe('buildOpenCommand — open the project folder, no terminal, no claude', () => {
+  it('macOS: opens the folder in the first present editor app via `open -a`', () => {
+    const cmd = buildOpenCommand('/Users/me/proj', 'darwin', { appExists: (a) => a === 'Cursor' });
+    expect(cmd).toEqual({ cmd: 'open', args: ['-a', 'Cursor', '/Users/me/proj'] });
   });
 
-  it('builds a cmd start on Windows and null elsewhere', () => {
-    expect(buildOpenCommand('C:\\proj', 'win32')?.cmd).toBe('cmd');
-    expect(buildOpenCommand('/x', 'linux')).toBeNull();
+  it('macOS: prefers VS Code when both it and Cursor are present', () => {
+    const cmd = buildOpenCommand('/Users/me/proj', 'darwin', { appExists: () => true });
+    expect(cmd).toEqual({ cmd: 'open', args: ['-a', 'Visual Studio Code', '/Users/me/proj'] });
   });
 
-  it('refuses an unquotable Windows path rather than risk a cmd break-out', () => {
-    expect(buildOpenCommand('C:\\a" & calc', 'win32')).toBeNull();
-    expect(buildOpenCommand('C:\\a & b', 'win32')).toBeNull();
-    expect(buildOpenCommand('C:\\%USERPROFILE%\\p', 'win32')).toBeNull();
+  it('macOS: falls back to Finder (`open <path>`) when no editor app is installed', () => {
+    const cmd = buildOpenCommand('/Users/me/proj', 'darwin', { appExists: () => false });
+    expect(cmd).toEqual({ cmd: 'open', args: ['/Users/me/proj'] });
+  });
+
+  it('macOS: never launches claude and never runs a shell', () => {
+    const cmd = buildOpenCommand(`/Users/me/o'brien "x"`, 'darwin', { appExists: () => false });
+    expect(cmd.cmd).toBe('open'); // not osascript / Terminal
+    expect(cmd.args.join(' ')).not.toContain('claude');
+    // argv array: the path is a discrete arg, never spliced into a shell string.
+    expect(cmd.args.at(-1)).toBe(`/Users/me/o'brien "x"`);
+  });
+
+  it('Linux/Windows: opens in a CLI editor on PATH, else $EDITOR, else the OS opener', () => {
+    expect(buildOpenCommand('/x', 'linux', { onPath: (c) => c === 'code' })).toEqual({
+      cmd: 'code',
+      args: ['/x'],
+    });
+    expect(buildOpenCommand('/x', 'linux', { onPath: () => false, editor: 'nvim' })).toEqual({
+      cmd: 'nvim',
+      args: ['/x'],
+    });
+    // $EDITOR may carry flags — the executable must stay just the command, flags go before the path.
+    expect(buildOpenCommand('/x', 'linux', { onPath: () => false, editor: 'code --wait' })).toEqual({
+      cmd: 'code',
+      args: ['--wait', '/x'],
+    });
+    expect(buildOpenCommand('/x', 'linux', { onPath: () => false, editor: '' })).toEqual({
+      cmd: 'xdg-open',
+      args: ['/x'],
+    });
+    expect(buildOpenCommand('C:\\proj', 'win32', { onPath: () => false, editor: '' })).toEqual({
+      cmd: 'explorer',
+      args: ['C:\\proj'],
+    });
   });
 });
 

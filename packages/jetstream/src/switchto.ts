@@ -1,49 +1,81 @@
 import { spawn, execFileSync } from 'node:child_process';
-
-/** POSIX single-quote shell escaping: safe to embed in a `sh`-parsed string. */
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/** Escape a string for embedding inside an AppleScript double-quoted literal. */
-export function appleScriptQuote(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { delimiter, join } from 'node:path';
+import { augmentedPath } from './afterburner-cli';
 
 export interface Command {
   cmd: string;
   args: string[];
 }
 
+/** macOS editor apps to prefer, in order — opened via `open -a`, which is PATH-independent
+ * (so it works under the Stream Deck GUI's stripped launchd PATH). */
+const MAC_EDITOR_APPS = ['Visual Studio Code', 'Cursor'];
+/** CLI editors to prefer on Linux/Windows, in order. */
+const CLI_EDITORS = ['code', 'cursor'];
+
+/** A macOS app bundle present in either standard Applications location. */
+function macAppExists(app: string): boolean {
+  return (
+    existsSync(`/Applications/${app}.app`) ||
+    existsSync(join(homedir(), 'Applications', `${app}.app`))
+  );
+}
+
+/** Is `cmd` resolvable on the augmented PATH? Mirrors the GUI-PATH fix so an editor CLI is
+ * found even when the plugin runs under Stream Deck's stripped launchd PATH. */
+function cliOnPath(cmd: string): boolean {
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe', ''] : [''];
+  for (const dir of augmentedPath().split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) if (existsSync(join(dir, cmd + ext))) return true;
+  }
+  return false;
+}
+
+export interface OpenDeps {
+  /** Does a macOS app bundle exist? Injectable for tests. */
+  appExists?: (app: string) => boolean;
+  /** Is a CLI resolvable on the augmented PATH? Injectable for tests. */
+  onPath?: (cmd: string) => boolean;
+  /** $EDITOR override; defaults to process.env.EDITOR. */
+  editor?: string;
+}
+
 /**
- * The "jump to project" command: open a terminal at the project path resuming its
- * Claude session (`claude --continue`). Pure builder so quoting is unit-testable —
- * the project path is user config, but it still never reaches a shell unescaped.
- * Returns null on platforms without a v1 strategy (the key shows an alert instead).
+ * The "open this project" command: reveal the project FOLDER in an auto-detected editor
+ * (VS Code → Cursor → $EDITOR), falling back to the OS folder opener. No shell, no terminal,
+ * and it never launches `claude` — pressing a project key just opens the project. argv arrays
+ * only, so the path is never re-parsed as a command. Always returns a command (the OS opener
+ * is the floor), so the key always does *something*.
  */
-export function buildOpenCommand(path: string, platform: NodeJS.Platform): Command | null {
+export function buildOpenCommand(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+  deps: OpenDeps = {},
+): Command {
   if (platform === 'darwin') {
-    const inner = `cd ${shellQuote(path)} && claude --continue`;
-    return {
-      cmd: 'osascript',
-      args: [
-        '-e',
-        'tell application "Terminal" to activate',
-        '-e',
-        `tell application "Terminal" to do script "${appleScriptQuote(inner)}"`,
-      ],
-    };
+    const appExists = deps.appExists ?? macAppExists;
+    for (const app of MAC_EDITOR_APPS) {
+      if (appExists(app)) return { cmd: 'open', args: ['-a', app, path] };
+    }
+    return { cmd: 'open', args: [path] }; // Finder — always opens the folder
   }
-  if (platform === 'win32') {
-    // BUILD VERIFY on a real Windows box: start-in-new-window quoting via cmd. Refuse
-    // a path we can't safely embed in a cmd string rather than risk a break-out.
-    if (/["&|%<>^]/.test(path)) return null;
-    return {
-      cmd: 'cmd',
-      args: ['/c', 'start', 'Claude', 'cmd', '/k', `cd /d "${path}" && claude --continue`],
-    };
+  const onPath = deps.onPath ?? cliOnPath;
+  for (const cmd of CLI_EDITORS) {
+    if (onPath(cmd)) return { cmd, args: [path] };
   }
-  return null;
+  const editor = (deps.editor ?? process.env.EDITOR ?? '').trim();
+  if (editor) {
+    // $EDITOR may carry flags ("code --wait" / "code -n"); split so the executable is just the
+    // command, not the whole string (which would ENOENT).
+    const [cmd, ...editorArgs] = editor.split(/\s+/);
+    if (cmd) return { cmd, args: [...editorArgs, path] };
+  }
+  return platform === 'win32'
+    ? { cmd: 'explorer', args: [path] }
+    : { cmd: 'xdg-open', args: [path] };
 }
 
 /** Is `pid` a live process whose command mentions `claude`? Guards interrupt against
@@ -78,13 +110,17 @@ export function interruptPids(pids: number[], platform: NodeJS.Platform = proces
   return sent;
 }
 
-/** Fire the jump command, detached so the terminal outlives the plugin process.
- * Returns false when the platform has no strategy or the spawn fails synchronously. */
+/** Fire the open command, detached so the editor outlives the plugin process. PATH is
+ * augmented so a CLI opener (code/cursor/xdg-open) resolves under the GUI's stripped PATH.
+ * Returns false only when the spawn fails synchronously. */
 export function openProject(path: string, platform: NodeJS.Platform = process.platform): boolean {
   const command = buildOpenCommand(path, platform);
-  if (!command) return false;
   try {
-    const child = spawn(command.cmd, command.args, { detached: true, stdio: 'ignore' });
+    const child = spawn(command.cmd, command.args, {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, PATH: augmentedPath() },
+    });
     child.on('error', () => {
       /* nothing to surface post-hoc; the key press already gave feedback */
     });

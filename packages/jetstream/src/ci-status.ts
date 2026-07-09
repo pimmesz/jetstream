@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
+import { augmentedPath } from './afterburner-cli';
 
 /** Aggregate CI state for a PR — or a roll-up across several. */
 export type CiState = 'passing' | 'failing' | 'pending' | 'none' | 'unknown';
@@ -111,10 +112,18 @@ export type CiExec = (
 
 const defaultExec: CiExec = (cmd, args, opts) =>
   new Promise((resolve, reject) => {
-    execFile(cmd, args, { cwd: opts.cwd, timeout: 5_000, maxBuffer: 4_000_000 }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve({ stdout: String(stdout) });
-    });
+    // Augment PATH so `gh` resolves under the Stream Deck GUI's stripped launchd PATH (which
+    // lacks /opt/homebrew/bin) — the same fix doctor's health check already applies. Without
+    // this the key falsely shows "no gh" even when gh is installed.
+    execFile(
+      cmd,
+      args,
+      { cwd: opts.cwd, timeout: 5_000, maxBuffer: 4_000_000, env: { ...process.env, PATH: augmentedPath() } },
+      (err, stdout) => {
+        if (err) reject(err);
+        else resolve({ stdout: String(stdout) });
+      },
+    );
   });
 
 /**

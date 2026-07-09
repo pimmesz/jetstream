@@ -8,6 +8,7 @@ import { permissions } from './permissions';
 import { config } from './config';
 import { readConfigFile } from './projects-config';
 import { DEFAULT_PORT, startHookServer } from './server';
+import { discoverClaudeSessions } from './discover';
 import { ProjectKey } from './actions/project';
 import { AttentionKey } from './actions/attention';
 import { FleetKey } from './actions/fleet';
@@ -59,6 +60,9 @@ streamDeck.actions.registerAction(navKey);
 // override/add by id, and a live global-settings edit still wins over the file preset.
 const configFile = readConfigFile();
 board.seed(configFile.projects);
+// Restore the last board across an app/plugin restart, reconciled against actually-running
+// sessions — a still-running session re-shows its status instead of the deck blanking to gray.
+void board.restore();
 config.setBase(configFile.settings);
 
 function renderBoard(): void {
@@ -149,3 +153,17 @@ streamDeck.settings.onDidReceiveGlobalSettings((ev) => config.set(ev.settings));
 await streamDeck.connect();
 config.set(await streamDeck.settings.getGlobalSettings());
 renderAll();
+
+// Discover running Claude sessions by process scan every few seconds, so a project with a
+// live session shows as active even when its hook events predate this plugin instance (a
+// restart, or a session sitting mid-long-operation and not firing a fresh event). Hooks stay
+// authoritative for precise state; this only fills projects the hooks are silent on.
+async function pollDiscoveredSessions(): Promise<void> {
+  try {
+    board.setDiscovered(await discoverClaudeSessions());
+  } catch {
+    /* best-effort — hooks remain the source of truth */
+  }
+}
+void pollDiscoveredSessions();
+setInterval(() => void pollDiscoveredSessions(), 5000);

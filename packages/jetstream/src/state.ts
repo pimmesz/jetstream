@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   initialState,
   reduce,
@@ -7,13 +10,19 @@ import {
   type HookEvent,
   type ProjectConfig,
   type ProjectState,
+  type ProjectStatus,
   type StatusState,
 } from '@pimmesz/jetstream-status';
+import { discoverClaudeSessions, type DiscoveredSession } from './discover';
 
 export interface ProjectEntry {
   name: string;
   path: string;
 }
+
+/** Where the live board is checkpointed so a plugin/app restart doesn't blank the deck.
+ * A small JSON in the user's home; a failed read/write is always non-fatal. */
+const STATE_FILE = join(homedir(), '.jetstream', 'board-state.json');
 
 /**
  * The plugin-wide board: the hook-event status state + the project registry. Each visible
@@ -27,7 +36,11 @@ export class Board {
   private registry = new Map<string, ProjectEntry>();
   private seeded = new Map<string, ProjectEntry>();
   private sessions = new Map<string, { pid: number; cwd: string }>();
+  private discovered: DiscoveredSession[] = [];
   private listeners = new Set<() => void>();
+
+  /** Checkpoint file; injectable so tests don't touch the real home. */
+  constructor(private readonly statePath: string = STATE_FILE) {}
 
   /** Seed the baseline registry from the config file (`projects.json`), keyed by each
    * entry's own id. Called once at startup, before any key registers, so the fleet is
@@ -40,12 +53,103 @@ export class Board {
   dispatch(event: HookEvent): void {
     this.state = reduce(this.state, event);
     if (event.event === 'SessionEnd') this.sessions.delete(event.sessionId);
+    this.persist();
     this.emit();
   }
 
-  /** Remember a session's process (the hook's parent PID) so interrupt can SIGINT it. */
+  /** Remember a session's process (the hook's parent PID) so interrupt can SIGINT it —
+   * and so a restart can reconcile persisted state against live processes. */
   notePid(sessionId: string, pid: number, cwd: string): void {
-    if (sessionId && Number.isInteger(pid) && pid > 1) this.sessions.set(sessionId, { pid, cwd });
+    if (sessionId && Number.isInteger(pid) && pid > 1) {
+      this.sessions.set(sessionId, { pid, cwd });
+      this.persist();
+    }
+  }
+
+  /**
+   * Restore the last checkpoint across a plugin/app restart, but drop any session whose
+   * process is no longer alive — so a genuinely-running session re-shows immediately while a
+   * finished one stays gray (no resurrected "working"). `isAlive` is injectable for tests.
+   * Best-effort: a missing/corrupt file just leaves the board empty. Call once at startup.
+   */
+  async restore(
+    discover: () => Promise<DiscoveredSession[]> = discoverClaudeSessions,
+  ): Promise<void> {
+    let rawSessions: Record<string, unknown>;
+    try {
+      if (!existsSync(this.statePath)) return;
+      const parsed = JSON.parse(readFileSync(this.statePath, 'utf8')) as { state?: { sessions?: unknown } };
+      const sessions = parsed.state?.sessions;
+      // Validate the shape INSIDE the try: a corrupt/partial checkpoint must never crash startup.
+      if (typeof sessions !== 'object' || sessions === null || Array.isArray(sessions)) return;
+      rawSessions = sessions as Record<string, unknown>;
+    } catch {
+      return; // unreadable / invalid JSON → start fresh
+    }
+    // Reconcile against ACTUALLY-running Claude processes by working directory — robust to PID
+    // reuse (a dead session's recycled PID can't resurrect it), attaching the LIVE pid so
+    // interrupt targets the real process. Discovery failure → restore nothing (the poller
+    // refills within a few seconds).
+    let livePidByCwd: Map<string, number>;
+    try {
+      livePidByCwd = new Map((await discover()).map((session) => [session.cwd, session.pid]));
+    } catch {
+      return;
+    }
+    // Validate each persisted session (defensive against a corrupt checkpoint) and group by cwd.
+    // Restore a cwd only when it has a live process AND exactly ONE persisted session — an
+    // ambiguous cwd (two sessions in one repo, one now dead) can't be resolved from cwd alone,
+    // so leave it to hooks/discovery rather than risk resurrecting the dead one's status.
+    type Sess = StatusState['sessions'][string];
+    const VALID: ReadonlySet<string> = new Set(['none', 'idle', 'working', 'needsInput', 'done']);
+    const byCwd = new Map<string, Array<[string, Sess]>>();
+    for (const [sessionId, value] of Object.entries(rawSessions)) {
+      if (typeof value !== 'object' || value === null) continue;
+      const v = value as { cwd?: unknown; status?: unknown; since?: unknown; tool?: unknown };
+      if (
+        typeof v.cwd !== 'string' ||
+        typeof v.since !== 'number' ||
+        typeof v.status !== 'string' ||
+        !VALID.has(v.status)
+      ) {
+        continue;
+      }
+      const session: Sess = {
+        cwd: v.cwd,
+        status: v.status as ProjectStatus,
+        since: v.since,
+        ...(typeof v.tool === 'string' ? { tool: v.tool } : {}),
+      };
+      const list = byCwd.get(v.cwd) ?? [];
+      list.push([sessionId, session]);
+      byCwd.set(v.cwd, list);
+    }
+    const restored: StatusState['sessions'] = {};
+    const pids = new Map<string, { pid: number; cwd: string }>();
+    for (const [cwd, sessions] of byCwd) {
+      const livePid = livePidByCwd.get(cwd);
+      if (livePid === undefined || sessions.length !== 1) continue; // no live proc, or ambiguous
+      const [sessionId, session] = sessions[0]!;
+      restored[sessionId] = session;
+      pids.set(sessionId, { pid: livePid, cwd });
+    }
+    this.state = { sessions: restored };
+    this.sessions = pids;
+    this.emit();
+  }
+
+  /** Checkpoint the live board (status + session PIDs). Best-effort — a write failure must
+   * never break event handling. */
+  private persist(): void {
+    try {
+      mkdirSync(dirname(this.statePath), { recursive: true });
+      writeFileSync(
+        this.statePath,
+        JSON.stringify({ state: this.state, sessions: [...this.sessions.entries()] }),
+      );
+    } catch {
+      /* disk full / read-only home / … — the board stays correct in memory */
+    }
   }
 
   /** PIDs of the sessions running under a given project key (for interrupt). */
@@ -76,14 +180,50 @@ export class Board {
   }
 
   projects(): ProjectConfig[] {
-    const merged = new Map<string, ProjectEntry>(this.seeded);
-    for (const [id, entry] of this.registry) merged.set(id, entry); // placed keys win by id
+    // A seed (projects.json) only covers repos WITHOUT a placed deck key. If a placed key
+    // already owns a repo's PATH, keeping the seed too would list the same repo under two ids
+    // (the seed's config id AND the key's action id) — a live session matches the seed's id
+    // while the key renders by its OWN action id, so the key blanks to gray. Suppress any seed
+    // whose path a placed key already claims; seeds still cover keyless repos for the Fleet /
+    // Attention roll-ups. (Placed keys sharing a seed's id still override by id, as before.)
+    // Ignore trailing slashes; keep an all-slash path as root '/', a relative '' as ''.
+    const normPath = (p: string): string => p.replace(/\/+$/, '') || (p.startsWith('/') ? '/' : p);
+    const placedPaths = new Set(
+      [...this.registry.values()].map((e) => normPath(e.path)).filter((p) => p !== ''),
+    );
+    const merged = new Map<string, ProjectEntry>();
+    for (const [id, entry] of this.seeded) {
+      if (!placedPaths.has(normPath(entry.path))) merged.set(id, entry);
+    }
+    for (const [id, entry] of this.registry) merged.set(id, entry);
     return [...merged.entries()].map(([id, p]) => ({ id, name: p.name, path: p.path }));
   }
 
-  /** Current status per visible project key (keyed by action id). */
+  /** Replace the set of running Claude sessions found by process scan (not by hooks). Lets a
+   * project show as active even when no hook event reached this plugin instance — e.g. a
+   * session already mid-work when the plugin (re)started. */
+  setDiscovered(sessions: DiscoveredSession[]): void {
+    this.discovered = sessions;
+    this.emit();
+  }
+
+  /** Current status per visible project key (keyed by action id). Hook state is authoritative;
+   * a discovered live session only fills a project the hooks are currently SILENT on ('none'):
+   * an actively-CPU-burning session shows 'working', one sitting idle at a prompt shows 'idle'.
+   * The hooks still upgrade to the precise state (needs-you / done) as real events arrive. So:
+   * gray = no session, blue = session open but idle, pink = a live session actually working. */
   byProject(): Record<string, ProjectState> {
-    return statusByProject(this.state, this.projects());
+    const by = statusByProject(this.state, this.projects());
+    if (this.discovered.length > 0) {
+      const projects = this.projects();
+      for (const session of this.discovered) {
+        const id = matchProject(session.cwd, projects);
+        if (id && by[id]?.status === 'none') {
+          by[id] = { status: session.active ? 'working' : 'idle' };
+        }
+      }
+    }
+    return by;
   }
 
   /** The projects currently waiting on the user, most useful first. */

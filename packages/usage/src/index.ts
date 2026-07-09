@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -132,9 +132,25 @@ export async function readCache(cachePath = defaultCachePath()): Promise<UsageFe
 
 async function afterburnerUsage(): Promise<UsageFeed | null> {
   try {
-    const { stdout } = await execFileAsync('afterburner', ['statusline', 'print', '--json'], {
-      timeout: 4000,
-    });
+    // Augment PATH so `afterburner` resolves under the Stream Deck GUI's stripped launchd PATH
+    // (which lacks /opt/homebrew/bin) — mirrors jetstream's augmentedPath. Without this the
+    // fallback silently fails with ENOENT and the gauge shows "no usage / install hook".
+    const PATH = [
+      process.env.PATH,
+      join(homedir(), '.local', 'bin'),
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      join(homedir(), '.npm-global', 'bin'),
+    ]
+      .filter(Boolean)
+      .join(delimiter);
+    // `--claude` forces the Claude usage line: afterburner otherwise prefers Codex, which would
+    // report the wrong tool's numbers on a Claude-focused deck (7% Codex vs 74% Claude).
+    const { stdout } = await execFileAsync(
+      'afterburner',
+      ['statusline', 'print', '--json', '--claude'],
+      { timeout: 4000, env: { ...process.env, PATH } },
+    );
     return parseAfterburnerJson(JSON.parse(stdout));
   } catch {
     return null;

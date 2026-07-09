@@ -6,7 +6,8 @@ import { runClaude } from '@pimmesz/jetstream-claude';
 import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { installHooks, type HookCommands } from './hooks-install';
 import { runDoctor, formatReport } from './doctor';
-import { runInit } from './init';
+import { offerProfile, runInit } from './init';
+import { defaultOpenFile } from './open-file';
 import { projectsConfigPath, PROJECTS_TEMPLATE } from './projects-config';
 
 /**
@@ -149,15 +150,23 @@ export async function run(argv: string[], binDir: string): Promise<number> {
         rl.once('close', () => reject(new Error('input closed'))),
       );
       closed.catch(() => {});
+      const chatIo = {
+        ask: (q: string) => Promise.race([rl.question(q), closed]),
+        say: (line: string) => console.log(line),
+      };
       try {
         return await runChatSetup({
-          io: {
-            ask: (q) => Promise.race([rl.question(q), closed]),
-            say: (line) => console.log(line),
-          },
+          io: chatIo,
           ask: async (prompt) => {
             const result = await runClaude({ prompt, appendSystemPrompt: SETUP_SYSTEM }, () => {});
             return result.isError || !result.result ? null : result.result;
+          },
+          // After the fleet is written, build the whole deck layout in the same conversation:
+          // pick a deck, generate the importable .streamDeckProfile, and open it — so `chat`
+          // is a full talk-to-set-up flow, not just projects.json.
+          onWritten: async (projects) => {
+            chatIo.say('');
+            await offerProfile(chatIo, process.cwd(), projects, defaultOpenFile());
           },
         });
       } catch {
