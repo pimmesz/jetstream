@@ -46,6 +46,21 @@ describe('parseHookPayload', () => {
     expect(parseHookPayload(null, 1)).toBeNull();
     expect(parseHookPayload('nope', 1)).toBeNull();
   });
+
+  it('extracts tool_name when it is a string, omits it otherwise', () => {
+    expect(
+      parseHookPayload(
+        { hook_event_name: 'PreToolUse', cwd: '/x', session_id: 's', tool_name: 'Bash' },
+        7,
+      ),
+    ).toEqual({ event: 'PreToolUse', cwd: '/x', sessionId: 's', at: 7, toolName: 'Bash' });
+    expect(
+      parseHookPayload(
+        { hook_event_name: 'PreToolUse', cwd: '/x', session_id: 's', tool_name: 42 },
+        7,
+      ),
+    ).toEqual({ event: 'PreToolUse', cwd: '/x', sessionId: 's', at: 7 });
+  });
 });
 
 describe('matchProject', () => {

@@ -11,6 +11,7 @@ import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { board } from '../state';
 import { config } from '../config';
 import { dialFeedback, scrubIndex } from '../encoder';
+import { heldMs } from '../press';
 import { interruptPids, openProject } from '../switchto';
 
 /**
@@ -47,9 +48,7 @@ export class FleetDialKey extends SingletonAction {
   }
 
   override async onDialUp(ev: DialUpEvent): Promise<void> {
-    const started = this.pressAt.get(ev.action.id);
-    this.pressAt.delete(ev.action.id);
-    const held = started === undefined ? 0 : Date.now() - started;
+    const held = heldMs(this.pressAt, ev.action.id);
     const project = this.selected(ev.action.id);
     if (!project) return;
 

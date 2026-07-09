@@ -12,6 +12,7 @@ import { board } from '../state';
 import { config } from '../config';
 import { permissions } from '../permissions';
 import { formatDiffStat, readDiffStat, type DiffStat } from '../diffstat';
+import { heldMs } from '../press';
 import { formatElapsed, keyFace } from '../render';
 import { openProject, interruptPids } from '../switchto';
 
@@ -57,9 +58,7 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
   }
 
   override async onKeyUp(ev: KeyUpEvent<ProjectSettings>): Promise<void> {
-    const started = this.pressAt.get(ev.action.id);
-    this.pressAt.delete(ev.action.id);
-    const held = started === undefined ? 0 : Date.now() - started;
+    const held = heldMs(this.pressAt, ev.action.id);
 
     if (held >= config.get().longPressMs) {
       const sent = interruptPids(board.pidsForProject(ev.action.id));

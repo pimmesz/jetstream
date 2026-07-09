@@ -160,8 +160,10 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
         return 1;
       }
       io.say(`\nWrote ${proposal.projects.length} project(s) to ${configPath}.`);
+      // onWritten (when wired) offers a ready-made layout to import and prints how; fall back to
+      // the drag-keys hint for the bare fleet-only path.
       if (deps.onWritten) await deps.onWritten(proposal.projects);
-      io.say('Next: drag a Fleet + Attention key onto your deck (or import a generated layout).');
+      else io.say('Next: drag a Fleet + Attention key onto your deck.');
       return 0;
     }
     // Anything else = refine: loop, the transcript carries the last proposal.

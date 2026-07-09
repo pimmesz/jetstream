@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { clarifyingQuestion, parseProposal, runChatSetup } from './chat-setup';
 
 describe('clarifyingQuestion', () => {
@@ -56,6 +57,22 @@ describe('runChatSetup', () => {
     expect(code).toBe(0);
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0]![0]).toHaveLength(1);
+  });
+
+  it('runs onWritten with the written fleet after applying (the layout hook)', async () => {
+    const { io } = makeIo(['3 repos in /dev', 'y']);
+    const write = vi.fn();
+    const onWritten = vi.fn(async (_projects: ProjectConfig[]) => {});
+    const code = await runChatSetup({
+      io,
+      ask: async () => '{"projects":[{"name":"Falcon","path":"/dev/falcon"},{"name":"Api","path":"/dev/api"}]}',
+      write,
+      onWritten,
+      configPath: '/tmp/p.json',
+    });
+    expect(code).toBe(0);
+    expect(onWritten).toHaveBeenCalledTimes(1);
+    expect(onWritten.mock.calls[0]![0].map((p) => p.name)).toEqual(['Falcon', 'Api']);
   });
 
   it('a clarifying question loops, then applies on the next turn', async () => {

@@ -38,6 +38,12 @@ export class Board {
   private sessions = new Map<string, { pid: number; cwd: string }>();
   private discovered: DiscoveredSession[] = [];
   private listeners = new Set<() => void>();
+  // While restore()'s async scan is in flight the hook server is already listening, so live
+  // events keep arriving. Record which SESSIONS those events touch (see dispatch) so the
+  // checkpoint merge can't resurrect a session the live board has since moved on from — most
+  // importantly one a live SessionEnd removed mid-scan (which leaves no trace to override).
+  private restoring = false;
+  private touchedSessions = new Set<string>();
 
   /** Checkpoint file; injectable so tests don't touch the real home. */
   constructor(private readonly statePath: string = STATE_FILE) {}
@@ -53,6 +59,7 @@ export class Board {
   dispatch(event: HookEvent): void {
     this.state = reduce(this.state, event);
     if (event.event === 'SessionEnd') this.sessions.delete(event.sessionId);
+    if (this.restoring) this.touchedSessions.add(event.sessionId);
     this.persist();
     this.emit();
   }
@@ -90,10 +97,13 @@ export class Board {
     // reuse (a dead session's recycled PID can't resurrect it), attaching the LIVE pid so
     // interrupt targets the real process. Discovery failure → restore nothing (the poller
     // refills within a few seconds).
+    this.restoring = true;
+    this.touchedSessions.clear();
     let livePidByCwd: Map<string, number>;
     try {
       livePidByCwd = new Map((await discover()).map((session) => [session.cwd, session.pid]));
     } catch {
+      this.restoring = false;
       return;
     }
     // Validate each persisted session (defensive against a corrupt checkpoint) and group by cwd.
@@ -130,11 +140,25 @@ export class Board {
       const livePid = livePidByCwd.get(cwd);
       if (livePid === undefined || sessions.length !== 1) continue; // no live proc, or ambiguous
       const [sessionId, session] = sessions[0]!;
+      // A live hook for THIS session landed during the scan — the live board's view of it (a
+      // status change, or a SessionEnd that removed it) is newer than the checkpoint, so don't
+      // resurrect the persisted copy or its now-stale PID. Keyed on session id, not cwd: a
+      // DIFFERENT live session in the same repo can't tell us whether this one is still alive,
+      // so suppressing on cwd could hide a still-blocked session (see the merge note).
+      if (this.touchedSessions.has(sessionId)) continue;
       restored[sessionId] = session;
       pids.set(sessionId, { pid: livePid, cwd });
     }
-    this.state = { sessions: restored };
-    this.sessions = pids;
+    this.restoring = false;
+    // Merge, don't replace: real hook events can arrive during the async discovery scan
+    // (dispatch() updates this.state / this.sessions while discover() runs) and are newer than
+    // the checkpoint — so live state wins (spread last), and any session the scan touched was
+    // dropped from `restored` above so a live SessionEnd isn't undone. NOT resolved (left to the
+    // 5s poller): a checkpoint session for a repo where a *different-id* live session appears
+    // mid-scan — cwd alone can't tell "ended + replaced" from "two concurrent sessions", so we
+    // keep both rather than risk hiding a still-live one.
+    this.state = { sessions: { ...restored, ...this.state.sessions } };
+    this.sessions = new Map([...pids, ...this.sessions]);
     this.emit();
   }
 

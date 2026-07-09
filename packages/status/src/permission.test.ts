@@ -8,6 +8,10 @@ describe('summarizeTool', () => {
     expect(summarizeTool('WebFetch', { url: 'https://x' })).toBe('WebFetch: https://x');
     expect(summarizeTool('Task', {})).toBe('Task');
   });
+
+  it('falls back to a bare `path` input when file_path is absent', () => {
+    expect(summarizeTool('Glob', { path: '/a/dir' })).toBe('Glob: /a/dir');
+  });
 });
 
 describe('parsePermissionRequest', () => {
@@ -35,6 +39,16 @@ describe('parsePermissionRequest', () => {
   it('returns null without a cwd (nothing to route it to)', () => {
     expect(parsePermissionRequest({ tool_name: 'Bash' }, 'x')).toBeNull();
     expect(parsePermissionRequest(null, 'x')).toBeNull();
+  });
+
+  it('defaults a missing tool_name to "tool" and a missing session_id to ""', () => {
+    expect(parsePermissionRequest({ cwd: '/Users/me/proj' }, 'perm-2')).toEqual({
+      id: 'perm-2',
+      sessionId: '',
+      cwd: '/Users/me/proj',
+      toolName: 'tool',
+      summary: 'tool',
+    });
   });
 });
 

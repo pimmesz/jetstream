@@ -166,7 +166,12 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           // is a full talk-to-set-up flow, not just projects.json.
           onWritten: async (projects) => {
             chatIo.say('');
-            await offerProfile(chatIo, process.cwd(), projects, defaultOpenFile());
+            const profilePath = await offerProfile(chatIo, process.cwd(), projects, defaultOpenFile());
+            chatIo.say(
+              profilePath
+                ? `Next: double-click ${profilePath} to import it (installs as a new profile — nothing is overwritten).`
+                : 'Next: drag a Fleet + Attention key onto your deck.',
+            );
           },
         });
       } catch {

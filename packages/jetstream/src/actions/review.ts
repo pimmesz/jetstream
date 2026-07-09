@@ -83,6 +83,6 @@ export class ReviewKey extends SingletonAction {
 }
 
 /** A PR whose CI is green (or has nothing to wait on) — ready to open/merge. */
-function isReady(pr: Pr): boolean {
+export function isReady(pr: Pr): boolean {
   return pr.ci === 'green' || pr.ci === 'none';
 }

@@ -23,32 +23,32 @@ import { keyFace } from '../render';
 const errMsg = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** Was this a health-check request from the property inspector? */
-function isHealthCheck(payload: unknown): boolean {
+export function isHealthCheck(payload: unknown): boolean {
   return typeof payload === 'object' && payload !== null && (payload as { health?: unknown }).health === 'check';
 }
 
 /** "Switch to Jetstream layout" pressed in the property inspector? */
-function isProfileSwitch(payload: unknown): boolean {
+export function isProfileSwitch(payload: unknown): boolean {
   return typeof payload === 'object' && payload !== null && (payload as { profile?: unknown }).profile === 'switch';
 }
 
 /** "Enable per-tool detail" pressed in the property inspector? */
-function isToolDetail(payload: unknown): boolean {
+export function isToolDetail(payload: unknown): boolean {
   return typeof payload === 'object' && payload !== null && (payload as { hooks?: unknown }).hooks === 'toolDetail';
 }
 
 /** "Build my layout" pressed in the property inspector? */
-function isBuildLayout(payload: unknown): boolean {
+export function isBuildLayout(payload: unknown): boolean {
   return typeof payload === 'object' && payload !== null && (payload as { build?: unknown }).build === 'layout';
 }
 
 /** "Copy diagnostics" pressed in the property inspector? */
-function isDiagnostics(payload: unknown): boolean {
+export function isDiagnostics(payload: unknown): boolean {
   return typeof payload === 'object' && payload !== null && (payload as { diag?: unknown }).diag === 'copy';
 }
 
 /** A checklist "Fix" button (currently only `fix: 'hooks'`; the 'fleet' fix is client-side). */
-function fixId(payload: unknown): string | undefined {
+export function fixId(payload: unknown): string | undefined {
   const fix = (payload as { fix?: unknown } | null)?.fix;
   return typeof fix === 'string' ? fix : undefined;
 }

@@ -2,6 +2,7 @@ import { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyDownEvent, KeyUpEvent } from '@elgato/streamdeck';
 import { config } from '../config';
 import { runAfterburner } from '../afterburner-cli';
+import { heldMs } from '../press';
 import { keyFace } from '../render';
 
 /** The subset of `afterburner status --json` the face needs. Parsed defensively. */
@@ -52,9 +53,7 @@ export class HeartbeatKey extends SingletonAction {
   }
 
   override async onKeyUp(ev: KeyUpEvent): Promise<void> {
-    const started = this.pressAt.get(ev.action.id);
-    this.pressAt.delete(ev.action.id);
-    const held = started === undefined ? 0 : Date.now() - started;
+    const held = heldMs(this.pressAt, ev.action.id);
 
     if (this.missing) {
       await ev.action.showAlert(); // nothing to do without the CLI

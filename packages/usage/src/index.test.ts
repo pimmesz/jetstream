@@ -1,3 +1,6 @@
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   clampPct,
@@ -6,6 +9,8 @@ import {
   parseFeed,
   formatLine,
   resolveUsage,
+  writeCache,
+  readCache,
   type UsageFeed,
 } from './index';
 
@@ -78,6 +83,25 @@ describe('parseAfterburnerJson', () => {
       false,
     );
   });
+
+  it('degrades to unavailable on a non-object root', () => {
+    expect(parseAfterburnerJson('garbage')).toEqual({
+      source: 'claude',
+      available: false,
+      note: 'unparseable afterburner output',
+    });
+    expect(parseAfterburnerJson(null).available).toBe(false);
+  });
+
+  it('passes the model through and defaults a missing source to claude', () => {
+    const feed = parseAfterburnerJson({
+      available: true,
+      model: 'Opus',
+      fiveHour: { usedPct: 12 },
+    });
+    expect(feed.model).toBe('Opus');
+    expect(feed.source).toBe('claude');
+  });
 });
 
 describe('parseFeed (cache round-trip / untrusted disk)', () => {
@@ -109,6 +133,44 @@ describe('formatLine', () => {
       }),
     ).toBe('Jetstream · Opus · 5h 34% · 7d 30%');
     expect(formatLine({ source: 'claude', available: false })).toBe('');
+  });
+
+  it('drops the model / a missing window from the line', () => {
+    expect(
+      formatLine({
+        source: 'claude',
+        available: true,
+        fiveHour: { usedPct: 10 },
+        sevenDay: { usedPct: 20 },
+      }),
+    ).toBe('Jetstream · 5h 10% · 7d 20%');
+    expect(formatLine({ source: 'claude', available: true, fiveHour: { usedPct: 10 } })).toBe(
+      'Jetstream · 5h 10%',
+    );
+    expect(formatLine({ source: 'claude', available: true, sevenDay: { usedPct: 20 } })).toBe(
+      'Jetstream · 7d 20%',
+    );
+  });
+});
+
+describe('writeCache / readCache', () => {
+  it('round-trips a feed through an overridden cache path', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+    const cachePath = join(dir, 'nested', 'usage.json'); // nested → exercises mkdir recursive
+    const feed: UsageFeed = {
+      source: 'claude',
+      available: true,
+      model: 'Opus',
+      fiveHour: { usedPct: 12, resetsAt: 99 },
+      sevenDay: { usedPct: 34 },
+    };
+    await writeCache(feed, cachePath);
+    expect(await readCache(cachePath)).toEqual(feed);
+  });
+
+  it('readCache returns null for a missing file instead of throwing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+    expect(await readCache(join(dir, 'absent.json'))).toBeNull();
   });
 });
 

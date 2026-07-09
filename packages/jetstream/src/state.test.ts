@@ -129,6 +129,59 @@ describe('Board', () => {
       expect(after.pidsForProject('osprey')).toEqual([]);
     });
 
+    it('merges under live hook events that arrived during the scan (never clobbers them)', async () => {
+      const file = tmpFile();
+      const before = new Board(file);
+      before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      before.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 }); // checkpoint: working
+
+      const after = new Board(file);
+      after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      // A live hook lands (the session finished) BEFORE the async scan resolves:
+      after.dispatch({ event: 'Stop', cwd: '/Users/me/falcon', sessionId: 's1', at: 5 }); // live: done
+      await after.restore(async () => [{ pid: 9, cwd: '/Users/me/falcon', active: true }]);
+      // the live 'done' must win over the checkpoint's stale 'working'
+      expect(after.byProject()['falcon']).toEqual({ status: 'done', since: 5 });
+    });
+
+    it('does not resurrect a session a live SessionEnd removed DURING the scan', async () => {
+      const file = tmpFile();
+      const before = new Board(file);
+      before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      before.notePid('s1', 4242, '/Users/me/falcon');
+      before.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 }); // checkpoint: working
+
+      const after = new Board(file);
+      after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      await after.restore(async () => {
+        // the session ends while the async scan is still resolving, and discovery still
+        // momentarily sees the process alive at that cwd (the resurrection trap)
+        after.dispatch({ event: 'SessionEnd', cwd: '/Users/me/falcon', sessionId: 's1', at: 5 });
+        return [{ pid: 9, cwd: '/Users/me/falcon', active: true }];
+      });
+      expect(after.byProject()['falcon']).toEqual({ status: 'none' }); // gray, not resurrected 'working'
+      expect(after.pidsForProject('falcon')).toEqual([]); // no stale PID for interrupt to target
+    });
+
+    it('keeps a still-live checkpoint session when a DIFFERENT session in the repo emits mid-scan', async () => {
+      // Suppression keys on session id, not cwd: a new session's event must NOT hide a still-
+      // relevant checkpoint session for the same repo (here one blocked needing input).
+      const file = tmpFile();
+      const before = new Board(file);
+      before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      before.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 }); // checkpoint: needsInput
+
+      const after = new Board(file);
+      after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      await after.restore(async () => {
+        // a different session finishes mid-scan; it must not suppress s1's restore
+        after.dispatch({ event: 'Stop', cwd: '/Users/me/falcon', sessionId: 's2', at: 5 });
+        return [{ pid: 9, cwd: '/Users/me/falcon', active: true }];
+      });
+      // s1 (needsInput, rank 4) still wins over s2 (done, rank 2) — the attention signal survives
+      expect(after.byProject()['falcon']).toEqual({ status: 'needsInput', since: 1 });
+    });
+
     it('restore is a safe no-op with no checkpoint', async () => {
       const board = new Board(tmpFile());
       board.seed([{ id: 'x', name: 'X', path: '/x' }]);

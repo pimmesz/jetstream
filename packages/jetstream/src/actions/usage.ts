@@ -45,7 +45,7 @@ export class UsageKey extends SingletonAction {
 }
 
 /** Green with headroom, amber when the tighter window passes 75%, red past 90%. */
-function gaugeColor(feed: UsageFeed): string {
+export function gaugeColor(feed: UsageFeed): string {
   const used = Math.max(feed.fiveHour?.usedPct ?? 0, feed.sevenDay?.usedPct ?? 0);
   if (used >= 90) return '#e5484d';
   if (used >= 75) return '#ffb224';

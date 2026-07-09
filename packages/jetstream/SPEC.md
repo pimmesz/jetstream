@@ -8,8 +8,8 @@ it works for the interactive sessions you actually run all day, not just headles
 
 Standalone — no afterburner required; afterburner is just one of the projects on the board.
 
-Status: **BUILT (v1.3+).** Cores + plugin unit-tested (see `pnpm test` for the live count), passes
-`streamdeck validate`, packs.
+Status: **BUILT (v1.3 + item G, plus the post-G wave below).** Cores + plugin unit-tested (see
+`pnpm test` for the live count), passes `streamdeck validate`, packs.
 v1.1 added deck **Approve/Deny** + **interrupt**; v1.2 added **colour-blind glyphs + high-contrast
 theme**, a **Settings** key (global settings: theme / escalation / long-press / usage-refresh),
 **escalation flash** on the doorbell, **`done Xm`** waiting time, **opt-in tool detail**
@@ -28,20 +28,35 @@ template and manual re-wiring. On top sits
 projects.json + hooks) — and an optional **prebuilt key layout** (profile.ts): a generated
 `.streamDeckProfile` (flat `Version:"1.0"` manifest + dependency-free STORE zip, mirroring the profiles
 Elgato's own tutorial plugin ships; DeviceModel codes taken from those artifacts) for Mini/MK.2/XL,
-imported additively via double-click. Remaining: on-device verification (a real
-deck + real `~/.claude/settings.json`), the macOS jump-to-terminal UX, the Windows path, the
-`projects.json`↔placed-key merge-by-id (deferred — see Open items), and the deferred Stream Deck+ dials
-— see Open items.
+imported additively via double-click.
+
+Shipped since item G: **`jetstream chat`** (chat-setup.ts + the CLI's `chat` command) — conversational
+setup: describe your repos in plain English, Claude returns a structured proposal, the code validates
+it through the same fleet rules as the wizard and writes projects.json (the model never touches disk),
+then offers the generated key layout in the same conversation; a **two-page bundled deck**
+(profile.ts) — a **Board** page (status keys) and an **Ops** page (controls) ship in the manifest's
+`Profiles` for Mini/MK.2/XL, linked by a **page-nav key** (nav.ts); the **CI / PR status key** (ci.ts —
+no longer v2); the formerly-deferred **Stream Deck + dial** (dial.ts + encoder.ts); the Ops-page
+control keys — **afterburner heartbeat** (heartbeat.ts), **review queue** (review.ts), **model toggle**
+(model.ts), and **stop-all** (interrupt-all.ts) — see the Ops-page table below;
+**live-process session discovery** (discover.ts) + **board restart-persistence** (state.ts) — see the
+status section; and the `projects.json`↔placed-key overlap fix (state.ts `projects()`: a placed key
+suppresses a seed claiming the same path and overrides by id, so a repo never shows twice — deck
+wins). Pressing a Project key now opens the project folder **in your editor** (switchto.ts:
+VS Code → Cursor → `$EDITOR`, else the OS opener — no shell, no terminal, never launches `claude`),
+replacing the planned jump-to-terminal UX. Remaining: on-device verification (a real deck + real
+`~/.claude/settings.json`) and the Windows gaps (interrupt + process discovery are macOS/Linux-only;
+the editor/folder open works everywhere).
 
 ## The board (v1 key set)
 
 | Key                    | Face / colour                                                                                        | Press                                                                                             | Backed by                          |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **Project** (one each) | name + live colour: grey none · blue idle · **red working** (+ elapsed) · **amber needs you** (`!` deck-answerable / `?` keyboard) · **green done** (`+120/-40 · done Xm`) | switch to it — focus the project's Claude terminal (macOS), else open a terminal at the path running `claude --continue` | `status` reducer ← hooks           |
-| **Fleet** roll-up      | one always-visible key: `3w 1! 2✓` counts, coloured by the WORST state present (needsInput > working > done) | ack blip (paging the board is later)                                                              | `status.summarize`/`worstStatus`   |
+| **Project** (one each) | name + live colour: grey none · blue idle · **red working** (+ elapsed) · **amber needs you** (`!` deck-answerable / `?` keyboard) · **green done** (`+120/-40 · done Xm`) | switch to it — open the project folder in an auto-detected editor (VS Code → Cursor → `$EDITOR`, else the OS opener) | `status` reducer ← hooks           |
+| **Fleet** roll-up      | one always-visible key: `3w 1! 2✓` counts, coloured by the WORST state present (needsInput > working > done) | lit board: ack blip · dark board: shows why (`add repos` / `wire hooks` / `all idle`)             | `status.summarize`/`worstStatus`   |
 | **Attention** doorbell | dim; lights **amber** and names the project when ANY project needs input                              | jump to that project                                                                              | `status.needsAttention`            |
-| **Usage** gauge        | 5h / 7d used %, reset countdown, model                                                                | (optional) open `/usage`                                                                           | `usage.resolveUsage`               |
-| **CI / PR** status (v2) | worst CI state across open `afterburner/` PRs — green / red / running; flashes on a new failure       | (read-only)                                                                                        | `ci-status` (`gh` poll)            |
+| **Usage** gauge        | 5h / 7d used %, sooner-of reset countdown                                                             | (read-only)                                                                                        | `usage.resolveUsage`               |
+| **CI / PR** status     | worst CI state across the fleet's open `afterburner/` PRs — green / red / running; flashes on a new failure | (read-only)                                                                                        | `ci-status` (`gh` poll)            |
 | **Launch preset**\*    | a canned prompt / skill for a chosen project                                                          | fire headless `claude -p`, stream idle→working→done onto the key                                  | `claude.runClaude`                 |
 
 \* optional in v1. Projects are user-configured `{ id, name, path }` — whatever repos you run
@@ -55,6 +70,25 @@ a free-text question or drive the TUI — for those, amber = "go to your keyboar
 you there. **Interrupt (v1.1):** long-press a Project key to SIGINT its running Claude session (the
 lifecycle hook reports its parent PID for this).
 
+## The Ops page (post-item-G key set)
+
+The bundled deck is two pages — **Board** (the keys above) and **Ops** (controls) — linked by a
+**Nav** key (nav.ts) that flips the device between the bundled Board/Ops profiles (Standard + XL;
+the Mini has no room for a second page). Heartbeat and Review need the separate `afterburner` CLI
+and show an explicit "no afterburner" face without it; both no-op (never spawn) when unplaced.
+
+| Key                    | Face / colour                                                                     | Press                                                                          | Backed by                     |
+| ---------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------- |
+| **Heartbeat**          | `armed live` / `dry-run` / `idle`, plus `N benched` (failure-backoff)             | short: re-poll · long: fire a cycle (`afterburner run-once`)                    | `afterburner status --json`   |
+| **Review** queue       | `N PRs · M ✓` — green when a PR is ready (CI green or nothing to wait on)          | open the top ready PR in the browser — deliberately open-only, never merge      | `afterburner review --json`   |
+| **Model** toggle       | the global Launch-model override: `default` → `opus` → `sonnet` → `haiku`          | cycle it (Launch keys without their own model pick it up live)                  | Stream Deck global settings   |
+| **Stop all**           | `N working` — red while anything runs                                              | SIGINT every running Claude session across the fleet (the panic key)            | `board.allPids()` + switchto  |
+| **Fleet dial** (SD +)  | touchscreen: the selected project's name + live status line                        | rotate scrubs the fleet · tap / short press opens it · long press interrupts    | encoder.ts (dial.ts is glue)  |
+
+The **Fleet dial** (dial.ts) is the Stream Deck + encoder take on the board: one dial to scan the
+whole fleet without a key per repo, mirroring the keypad Project key's press semantics. Encoder-only —
+the keypad board already covers non-+ decks (which is also why the + has no bundled profile pages).
+
 ## How per-project status works (the hero mechanism)
 
 Claude Code hooks fire during **every** session (interactive included) and can run a command. Install
@@ -65,6 +99,16 @@ maps events → per-session status, `matchProject(cwd)` routes a session to its 
 `statusByProject` aggregates (needsInput > working > done > idle) into the key colour. The hook is
 **silent** (prints nothing — some hooks treat stdout as injected context) and always exits 0, so it
 can never disturb a session.
+
+Two shipped reinforcements keep the board truthful when hooks alone can't. **Live-process discovery**
+(discover.ts): a 5s `ps` + `lsof` poll (macOS/Linux; no-op on Windows) fills in projects whose hooks
+are SILENT — a live session shows **working** (CPU-burning) or **idle** even when its events predate
+this plugin instance; hooks stay authoritative and upgrade to the precise state as events arrive.
+**Restart persistence** (state.ts): the board checkpoints to `~/.jetstream/board-state.json` on every
+event, and on startup restores it reconciled against actually-running processes — a still-running
+session re-shows immediately (with a live PID for interrupt), a finished one stays grey (no
+resurrected "working"), and an ambiguous cwd is left to hooks/discovery. Both are best-effort and
+non-fatal.
 
 ## Verified capability matrix (re-verify at build — these change)
 
@@ -100,14 +144,17 @@ auth (else it bills the API — label loudly). **BUILD VERIFY the metering befor
   `reduce`, `statusByProject`, `needsAttention`, `colorFor`, + the silent lifecycle hook that POSTs
   to the plugin. Pure reducer + a thin hook. Node built-ins only.
 - **`packages/jetstream`** — BUILT. The `@elgato/streamdeck` plugin: `<uuid>.sdPlugin` +
-  `manifest.json`, one `SingletonAction` per key type (project / attention / usage / launch), the
-  **local HTTP hook-listener server** feeding the `status` reducer, key rendering (colour + label +
-  elapsed), the switch/launch actions, the consolidated **`jetstream` CLI** (`init` — the guided
-  wizard: projects.json + hooks + an optional prebuilt key layout; `hooks install` writes the
-  global hook + statusline hook into `~/.claude/settings.json`; `doctor` is a read-only health check;
-  `setup` does hooks + a `projects.json` template), and startup **`projects.json`** seeding of the
-  board's fleet. Depends on the three cores via `workspace:*`.
-  Ships via the **Elgato Marketplace** (UUID e.g. `gg.pim.jetstream`), not npm.
+  `manifest.json`, one `SingletonAction` per key type (project / fleet / attention / usage / CI /
+  launch / approve-deny / settings / nav / model / review / heartbeat / stop-all, plus the SD+ fleet
+  dial), the **local HTTP hook-listener server** feeding the `status` reducer, key rendering (colour +
+  label + elapsed), the switch/launch actions, the consolidated **`jetstream` CLI** (`init` — the
+  guided wizard: projects.json + hooks + an optional prebuilt key layout; `chat` — the conversational
+  setup: the model proposes, the code validates + writes, then offers the layout; `hooks install`
+  writes the global hook + statusline hook into `~/.claude/settings.json`; `doctor` is a read-only
+  health check; `setup` does hooks + a `projects.json` template), the bundled two-page Board/Ops
+  profiles (profile.ts), and startup **`projects.json`** seeding of the board's fleet. Depends on the
+  three cores via `workspace:*`.
+  Ships via the **Elgato Marketplace** (UUID `gg.pim.jetstream`), not npm.
 
 afterburner is **not** a dependency — it's just a project path on the board. (`usage` can shell out to
 `afterburner statusline print --json` as an optional fallback when present, nothing more.)
@@ -124,13 +171,10 @@ afterburner's `ci.yml`. Changesets only when a package publishes to npm (deferre
 - The Claude hook payload field names (`hook_event_name`, `cwd`, `session_id`) + the settings.json
   hook config format for each event (`status.parseHookPayload` is defensive, so a shape change
   degrades rather than crashes).
-- Switching/focus on macOS (AppleScript to focus a terminal) vs the reliable fallback (open a new
-  terminal `--continue`); Windows equivalent.
 - The statusline usage payload field names (`rate_limits.five_hour.used_percentage` / `resets_at`).
-- npm scope (`@pimmesz/*` placeholder) + the Elgato plugin UUID + a local server port default
-  (`JETSTREAM_PORT`, currently 41321).
-- The `projects.json` ↔ placed-Project-key merge (v1.3 item G stop-condition): `projects.json` seeds a
-  baseline registry keyed by each entry's config id, while placed Project keys register by Stream Deck
-  action id — so a repo with BOTH a config entry and a placed key currently shows as two entries. True
-  union-by-id (deck wins) needs an `id` field on the Project key's Property Inspector + reconciliation
-  in the board; deferred (do not guess merge semantics beyond union-by-id, deck-wins).
+
+Resolved since: switching shipped as open-in-editor (switchto.ts — no terminal focus/`--continue`
+launch); the npm scope (`@pimmesz/*`), plugin UUID (`gg.pim.jetstream`), and server port
+(`JETSTREAM_PORT`, default 41321 in server.ts) are final; and the `projects.json` ↔ placed-key merge
+landed in state.ts `projects()` (deck wins: placed keys override by id, and a seed whose path a
+placed key claims is suppressed).

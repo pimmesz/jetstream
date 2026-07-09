@@ -80,6 +80,76 @@ describe('parseStreamLine', () => {
     ).toEqual({ type: 'result', sessionId: 's1', result: 'done', costUsd: 0.02, isError: false });
   });
 
+  it('carries is_error:true through to the result event', () => {
+    expect(
+      parseStreamLine(
+        JSON.stringify({ type: 'result', session_id: 's1', result: 'boom', is_error: true }),
+      ),
+    ).toEqual({
+      type: 'result',
+      sessionId: 's1',
+      result: 'boom',
+      costUsd: undefined,
+      isError: true,
+    });
+  });
+
+  it('passes missing/mistyped result fields through as undefined', () => {
+    // absent entirely
+    expect(parseStreamLine(JSON.stringify({ type: 'result' }))).toEqual({
+      type: 'result',
+      sessionId: undefined,
+      result: undefined,
+      costUsd: undefined,
+      isError: false,
+    });
+    // wrong types (str/num reject non-string/non-finite values)
+    expect(
+      parseStreamLine(
+        JSON.stringify({ type: 'result', session_id: 42, result: null, total_cost_usd: 'free' }),
+      ),
+    ).toEqual({
+      type: 'result',
+      sessionId: undefined,
+      result: undefined,
+      costUsd: undefined,
+      isError: false,
+    });
+  });
+
+  it('joins only the text blocks of mixed assistant content', () => {
+    expect(
+      parseStreamLine(
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: 'a' },
+              { type: 'tool_use', name: 'Bash' },
+              { type: 'text', text: 'b' },
+              'junk',
+              42,
+              { type: 'text', text: 7 }, // text field must be a string
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ type: 'text', text: 'ab' });
+  });
+
+  it('falls through to `other` when no usable text exists (non-text blocks, absent/non-array content)', () => {
+    const cases: unknown[] = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } },
+      { type: 'assistant', message: {} },
+      { type: 'assistant', message: { content: 'not an array' } },
+      { type: 'assistant', message: 'not an object' },
+      { type: 'assistant' },
+    ];
+    for (const raw of cases) {
+      expect(parseStreamLine(JSON.stringify(raw))).toEqual({ type: 'other', raw });
+    }
+  });
+
   it('extracts assistant text, passes other events through, rejects junk', () => {
     expect(
       parseStreamLine(
@@ -101,7 +171,7 @@ describe('parseStreamLine', () => {
 function fakeSpawn(
   lines: string[],
   exitCode: number | null,
-): { spawnFn: RunDeps['spawnFn']; fire: () => void } {
+): { spawnFn: RunDeps['spawnFn']; fire: () => void; fail: (err: Error) => void } {
   const stdout = new EventEmitter();
   const proc = new EventEmitter();
   const child = {
@@ -113,7 +183,10 @@ function fakeSpawn(
     for (const line of lines) stdout.emit('data', `${line}\n`);
     proc.emit('close', exitCode);
   };
-  return { spawnFn: () => child, fire };
+  const fail = (err: Error): void => {
+    proc.emit('error', err);
+  };
+  return { spawnFn: () => child, fire, fail };
 }
 
 describe('runClaude', () => {
@@ -160,5 +233,22 @@ describe('runClaude', () => {
     stdout.emit('data', `${line.slice(10)}\n`);
     proc.emit('close', 0);
     expect((await pending).sessionId).toBe('z');
+  });
+
+  it("resolves { isError: true } on a child 'error' event — never rejects", async () => {
+    const { spawnFn, fail } = fakeSpawn([], 0);
+    const pending = runClaude({ prompt: 'x' }, () => {}, { spawnFn, env: {} });
+    fail(new Error('spawn claude ENOENT'));
+    await expect(pending).resolves.toEqual({ isError: true, exitCode: null });
+  });
+
+  it('resolves { isError: true } when spawnFn itself throws — never rejects', async () => {
+    const spawnFn: RunDeps['spawnFn'] = () => {
+      throw new Error('EACCES');
+    };
+    await expect(runClaude({ prompt: 'x' }, () => {}, { spawnFn, env: {} })).resolves.toEqual({
+      isError: true,
+      exitCode: null,
+    });
   });
 });
