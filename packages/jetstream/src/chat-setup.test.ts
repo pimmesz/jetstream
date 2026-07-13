@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { clarifyingQuestion, parseProposal, runChatSetup } from './chat-setup';
+import { DECK_MODELS } from './profile';
 
 describe('clarifyingQuestion', () => {
   it('extracts a QUESTION reply, else null', () => {
@@ -37,6 +38,29 @@ describe('parseProposal', () => {
     expect(parseProposal('not json')).toBeNull();
     expect(parseProposal('{"nope":1}')).toBeNull();
     expect(parseProposal('QUESTION: where?')).toBeNull();
+  });
+
+  it('accepts a layout-only reply that omits "projects" (the "add a key at a8" case)', () => {
+    const p = parseProposal(
+      '{"layout":{"deck":"xl","keys":[{"coord":"a8","type":"open-app","app":"/Applications/Telegram.app"}]}}',
+    );
+    expect(p?.projects).toHaveLength(0);
+    expect(p?.layout?.deck.key).toBe('xl');
+    expect(p?.layout?.placements[0]).toMatchObject({
+      column: 7,
+      row: 0,
+      uuid: 'gg.pim.jetstream.slot', // open-app now places a live-editable slot, not a native key
+      settings: { kind: 'app', app: '/Applications/Telegram.app' },
+    });
+  });
+
+  it('falls back to the board deck when the model omits "deck", and unwraps prose/fenced JSON', () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl');
+    const reply =
+      'Sure! ```json\n{"layout":{"keys":[{"coord":"a8","type":"open-app","app":"/Applications/Telegram.app"}]}}\n```';
+    const p = parseProposal(reply, xl);
+    expect(p?.layout?.deck.key).toBe('xl');
+    expect(p?.layout?.placements[0]).toMatchObject({ column: 7, row: 0 });
   });
 });
 

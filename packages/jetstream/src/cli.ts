@@ -1,12 +1,19 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { runClaude } from '@pimmesz/jetstream-claude';
 import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { installHooks, type HookCommands } from './hooks-install';
 import { runDoctor, formatReport } from './doctor';
 import { offerProfile, runInit } from './init';
+import { buildLayoutProfile, renderProfileArchive, type DeckModel } from './profile';
+import { mergeBoard, pruneCustomProfiles, readBoardLayout, renderBoardMap } from './board-layout';
+import { coordLabel } from './actions/coord';
+import { selectOne } from './select';
+import { paintCoordByRow, spinner } from './term';
+import { pluginAlive, sendSlot } from './slot-client';
 import { defaultOpenFile } from './open-file';
 import { projectsConfigPath, PROJECTS_TEMPLATE } from './projects-config';
 
@@ -28,7 +35,8 @@ Commands:
                                   and Claude builds your fleet (uses your subscription)
   hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
   doctor                          Read-only health check — why isn't my board lighting up?
-  setup                           hooks install + create a projects.json template, then next steps`;
+  setup                           hooks install + create a projects.json template, then next steps
+  board                           Print your current Stream Deck board as a coordinate map (a1…hN)`;
 
 /** Build the node-quoted hook commands pointing at the sibling bundled hook scripts, so
  * they install with correct absolute paths wherever the .sdPlugin lives. */
@@ -40,6 +48,25 @@ export function hookCommands(binDir: string, toolDetail: boolean): HookCommands 
     usage: cmd('usage-hook.js'),
     toolDetail,
   };
+}
+
+/** A generated profile's DeviceModel must match the CONNECTED deck (an XL ships as 20GAT9901 or
+ * 20GAT9902; other decks have revisions too), or Stream Deck won't import it onto the device. The
+ * CLI has no SDK connection, so sniff the real model from the app's profile store — matched to this
+ * deck by model-code prefix — and fall back to the DeckModel default when nothing fits. */
+function detectDeviceModel(deck: DeckModel): string {
+  const prefix = deck.model.slice(0, 7); // '20GAT99' (XL), '20GBA99' (MK.2), '20GAI99' (Mini)
+  const dir = join(homedir(), 'Library', 'Application Support', 'com.elgato.StreamDeck', 'ProfilesV3');
+  try {
+    for (const entry of readdirSync(dir)) {
+      if (!entry.endsWith('.sdProfile')) continue;
+      const match = /"Model":"(20[0-9A-Z]+)"/.exec(readFileSync(join(dir, entry, 'manifest.json'), 'utf8'));
+      if (match?.[1]?.startsWith(prefix)) return match[1];
+    }
+  } catch {
+    /* Stream Deck not installed / no profile store — use the DeckModel default */
+  }
+  return deck.model;
 }
 
 async function runHooks(args: string[], binDir: string): Promise<number> {
@@ -153,10 +180,15 @@ export async function run(argv: string[], binDir: string): Promise<number> {
       const chatIo = {
         ask: (q: string) => Promise.race([rl.question(q), closed]),
         say: (line: string) => console.log(line),
+        select: <T>(prompt: string, choices: { label: string; hint?: string; value: T }[]) =>
+          selectOne(rl, prompt, choices),
+        spinner,
       };
       try {
         return await runChatSetup({
           io: chatIo,
+          board: readBoardLayout(),
+          paintCoord: paintCoordByRow,
           ask: async (prompt) => {
             const result = await runClaude({ prompt, appendSystemPrompt: SETUP_SYSTEM }, () => {});
             return result.isError || !result.result ? null : result.result;
@@ -166,11 +198,57 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           // is a full talk-to-set-up flow, not just projects.json.
           onWritten: async (projects) => {
             chatIo.say('');
-            const profilePath = await offerProfile(chatIo, process.cwd(), projects, defaultOpenFile());
+            const profilePath = await offerProfile(chatIo, projects, defaultOpenFile());
             chatIo.say(
               profilePath
                 ? `Next: double-click ${profilePath} to import it (installs as a new profile — nothing is overwritten).`
                 : 'Next: drag a Fleet + Attention key onto your deck.',
+            );
+          },
+          // When the model designed a full key layout ("open telegram at a8"), apply it. Slots go
+          // LIVE (retargeted in place on the running plugin — no profile, no import); anything
+          // structural (a project/native key, or the plugin being down) falls back to generating an
+          // importable .streamDeckProfile.
+          onLayout: async (layout) => {
+            const slotEdits = layout.placements.filter((p) => p.uuid === 'gg.pim.jetstream.slot');
+            const structural = layout.placements.filter((p) => p.uuid !== 'gg.pim.jetstream.slot');
+            if (structural.length === 0 && slotEdits.length > 0 && (await pluginAlive())) {
+              const results = await Promise.all(
+                slotEdits.map(async (p) => {
+                  const coord = coordLabel(p.column, p.row);
+                  const status = await sendSlot({ coord, ...(p.settings ?? {}) });
+                  return { coord, ok: status === 200 };
+                }),
+              );
+              const failed = results.filter((r) => !r.ok);
+              if (failed.length === 0) {
+                chatIo.say(
+                  `\n✓ Applied live to your board — no import needed ` +
+                    `(${slotEdits.length} key${slotEdits.length > 1 ? 's' : ''}: ${results.map((r) => r.coord).join(', ')}).`,
+                );
+                return;
+              }
+              chatIo.say(
+                `\n(Couldn't apply ${failed.map((r) => r.coord).join(', ')} live — those keys aren't on your active ` +
+                  'Jetstream profile. Generating an importable profile instead.)',
+              );
+            }
+            // Fallback: rebuild + import the whole board (structural change, plugin down, or a live miss).
+            const placements = mergeBoard(readBoardLayout(), layout.placements);
+            const outPath = join(homedir(), 'Downloads', 'Jetstream-Custom.streamDeckProfile');
+            mkdirSync(dirname(outPath), { recursive: true });
+            writeFileSync(
+              outPath,
+              renderProfileArchive(buildLayoutProfile(layout.deck, placements, detectDeviceModel(layout.deck))),
+            );
+            defaultOpenFile()?.(outPath);
+            // Auto-clean: drop any redundant older "Jetstream Custom" copies from the store (keeps the
+            // real board), so imports can't pile up. Stream Deck's in-memory list settles on next restart.
+            const pruned = pruneCustomProfiles();
+            chatIo.say(
+              `\nWrote a ${placements.length}-key layout (${layout.placements.length} changed) to ${outPath}.\n` +
+                'Double-click it to import (installs as a new profile — nothing is overwritten).' +
+                (pruned.length ? `\n(Cleaned up ${pruned.length} old duplicate profile${pruned.length > 1 ? 's' : ''}.)` : ''),
             );
           },
         });
@@ -180,6 +258,16 @@ export async function run(argv: string[], binDir: string): Promise<number> {
       } finally {
         rl.close();
       }
+    }
+    case 'board': {
+      const board = readBoardLayout();
+      if (!board) {
+        console.log('No Jetstream board found in your Stream Deck profiles yet — place some Project keys, then retry.');
+        return 0;
+      }
+      console.log(`${board.profileName} · ${board.deck.label}\n`);
+      console.log(renderBoardMap(board, paintCoordByRow));
+      return 0;
     }
     case 'hooks':
       return runHooks(rest, binDir);

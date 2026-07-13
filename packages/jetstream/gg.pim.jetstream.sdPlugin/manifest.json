@@ -49,6 +49,21 @@
       "Name": "profiles/Jetstream Ops XL",
       "DeviceType": 2,
       "DontAutoSwitchWhenInstalled": true
+    },
+    {
+      "Name": "profiles/Jetstream Grid",
+      "DeviceType": 0,
+      "DontAutoSwitchWhenInstalled": true
+    },
+    {
+      "Name": "profiles/Jetstream Grid Mini",
+      "DeviceType": 1,
+      "DontAutoSwitchWhenInstalled": true
+    },
+    {
+      "Name": "profiles/Jetstream Grid XL",
+      "DeviceType": 2,
+      "DontAutoSwitchWhenInstalled": true
     }
   ],
   "Actions": [
@@ -174,6 +189,62 @@
       "Name": "Page nav",
       "Icon": "imgs/plugin",
       "Tooltip": "Switch between the Board (status) and Ops (controls) pages of the bundled two-page Jetstream deck.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/plugin"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.build",
+      "Name": "Build version",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Shows the compile-time build stamp, so you can confirm which build is loaded on the deck.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/plugin"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.coord",
+      "Name": "Grid coordinate",
+      "Icon": "imgs/plugin",
+      "Tooltip": "A grid-reference key that renders its own a8-style coordinate. The bundled Grid overlay places one on every slot; press any of them to return to your board.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/plugin"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.grid",
+      "Name": "Grid toggle",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Flip the deck to a coordinate grid (a1…hN) to reference key positions, then press any key on the grid to return to your board. No import needed.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/plugin"
+        }
+      ]
+    },
+    {
+      "UUID": "gg.pim.jetstream.slot",
+      "Name": "Slot",
+      "Icon": "imgs/plugin",
+      "Tooltip": "A self-labeling board slot: an empty key shows its a8-style coordinate; configure it as an app / URL / command shortcut, or retarget it live from jetstream chat.",
       "Controllers": [
         "Keypad"
       ],

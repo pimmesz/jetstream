@@ -18,6 +18,12 @@ import { dirname, join } from 'node:path';
 const pkg = join(dirname(fileURLToPath(import.meta.url)), '..');
 const bin = join(pkg, 'gg.pim.jetstream.sdPlugin', 'bin');
 
+// A compile-time build stamp, injected into the plugin bundle (esbuild `define`) and shown by
+// the "Build version" key — so you can confirm the plugin running on the deck is THIS build.
+const now = new Date();
+const p2 = (n) => String(n).padStart(2, '0');
+const BUILD_ID = `${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
+
 await build({
   absWorkingDir: tmpdir(),
   entryPoints: {
@@ -33,6 +39,7 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node20',
+  define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
   banner: {
     js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
   },
@@ -62,10 +69,13 @@ const {
   DECK_MODELS,
   DEFAULT_PROFILE_IDS,
   OPS_PROFILE_IDS,
+  GRID_PROFILE_IDS,
   buildDefaultProfile,
   buildOpsProfile,
+  buildGridProfile,
   defaultProfileName,
   opsProfileName,
+  gridProfileName,
   renderProfileArchive,
 } = await import(pathToFileURL(profileGenOut).href);
 const profilesDir = join(pkg, 'gg.pim.jetstream.sdPlugin', 'profiles');
@@ -78,7 +88,11 @@ for (const deck of DECK_MODELS) {
     const ops = renderProfileArchive(buildOpsProfile(deck), OPS_PROFILE_IDS[deck.key]);
     writeFileSync(join(profilesDir, `${opsProfileName(deck)}.streamDeckProfile`), ops);
   }
+  // The coordinate-grid overlay (toggled to via a Grid key) ships for every deck.
+  const grid = renderProfileArchive(buildGridProfile(deck), GRID_PROFILE_IDS[deck.key]);
+  writeFileSync(join(profilesDir, `${gridProfileName(deck)}.streamDeckProfile`), grid);
 }
 rmSync(profileGenOut, { force: true });
 
 console.log('bundle complete: bin/plugin.js + hooks + default profiles + {"type":"module"} marker');
+console.log(`build id: ${BUILD_ID}   (shown on the "Build version" key)`);

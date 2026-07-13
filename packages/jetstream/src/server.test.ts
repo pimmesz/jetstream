@@ -66,4 +66,34 @@ describe('startHookServer', () => {
     expect(res.status).toBe(204);
     expect(await res.text()).toBe('');
   });
+
+  it('POST /slot hands the parsed body to onSlot and returns its {status, body}', async () => {
+    let received: unknown;
+    server = await startHookServer(0, {
+      onPayload: () => {},
+      onSlot: async (raw) => {
+        received = raw;
+        return { status: 200, body: '{"ok":true}' };
+      },
+    });
+    const res = await fetch(`http://127.0.0.1:${port(server)}/slot`, {
+      method: 'POST',
+      body: JSON.stringify({ coord: 'a8', kind: 'app', app: '/Applications/Telegram.app' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('{"ok":true}');
+    expect(received).toMatchObject({ coord: 'a8', kind: 'app' });
+  });
+
+  it('POST /slot 404s when onSlot is unwired (old build)', async () => {
+    server = await startHookServer(0, { onPayload: () => {} });
+    const res = await fetch(`http://127.0.0.1:${port(server)}/slot`, { method: 'POST', body: '{}' });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /slot 400s a malformed body', async () => {
+    server = await startHookServer(0, { onPayload: () => {}, onSlot: async () => ({ status: 200, body: '{}' }) });
+    const res = await fetch(`http://127.0.0.1:${port(server)}/slot`, { method: 'POST', body: 'not json' });
+    expect(res.status).toBe(400);
+  });
 });

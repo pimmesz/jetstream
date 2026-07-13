@@ -164,13 +164,15 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
   it('XL: fixed board + six UNCONFIGURED project invitations, zero user data', () => {
     const { manifest } = buildDefaultProfile(XL);
     const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    expect(Object.keys(actions)).toHaveLength(13); // 7 controls + 6 invitations
+    // The whole board is plugin-owned now: 7 controls + 6 invitations + the rest filled with empty slots.
+    expect(Object.keys(actions)).toHaveLength(XL.cols * XL.rows);
     for (const slot of ['0,0', '1,0', '2,0', '3,0', '4,0', '5,0']) {
       expect(actions[slot]).toMatchObject({ UUID: 'gg.pim.jetstream.project', Settings: null });
     }
     expect(actions['7,2']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'ops' } });
     expect(actions['2,3']).toMatchObject({ UUID: 'gg.pim.jetstream.launch', Settings: null });
     expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // controls anchor the bottom
+    expect(actions['6,0']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } }); // unplaced → slot
     expect(manifest.Name).toBe('Jetstream XL');
     // Baked at publish time: no path/name may appear anywhere in the manifest.
     expect(JSON.stringify(manifest)).not.toMatch(/"path"|"name"/);
@@ -179,14 +181,16 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
   it('standard + mini defaults mirror their init layouts with invitations only', () => {
     const std = buildDefaultProfile(STANDARD).manifest;
     const stdActions = std.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    expect(Object.keys(stdActions)).toHaveLength(11); // 8 controls + 3 invitations
+    // Full board: 8 controls + 3 invitations + empty slots filling the rest.
+    expect(Object.keys(stdActions)).toHaveLength(STANDARD.cols * STANDARD.rows);
     for (const slot of ['0,0', '1,0', '2,0']) {
       expect(stdActions[slot]).toMatchObject({ UUID: 'gg.pim.jetstream.project', Settings: null });
     }
     expect(std.Name).toBe('Jetstream');
 
     const mini = buildDefaultProfile(MINI).manifest;
-    // The Mini has no room for a second page, so no nav key — essentials only.
+    // The Mini has no room for a second page, so no nav key — essentials only (its 6 keys are all
+    // fixed, so nothing to fill).
     expect(Object.keys(mini.Actions as object)).toHaveLength(6);
     expect(mini.Name).toBe('Jetstream Mini');
     expect(Object.values(mini.Actions as Record<string, { UUID: string }>).map((a) => a.UUID)).not.toContain(
@@ -260,7 +264,7 @@ describe('zip writer', () => {
   it('archive bytes are reproducible ACROSS runs (pinned digest — catches run-dependent bytes)', () => {
     const built = buildProfile(XL, projects(2));
     const digest = createHash('sha256').update(renderProfileArchive(built, 'fixed-id')).digest('hex');
-    expect(digest).toBe('76b365b6545d4f8f10e408745d3f14bf8b07c6532eaa120aa15be15721966325');
+    expect(digest).toBe('24a423d250e43719040121acaedcbd5d4b2714922dd24ac0333565a7b2c3cd0b');
   });
 
   it.skipIf(!hasUnzip && !process.env.CI)('a real unzip extracts the archive and the manifest round-trips', () => {

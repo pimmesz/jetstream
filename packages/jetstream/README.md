@@ -18,7 +18,7 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
    falls back to Claude's own dialog after ~90s). No terminal step. Restart any running
    `claude` sessions to pick the hooks up. Remove the hooks from `settings.json` and they
    stay removed — re-wire any time with `jetstream setup`. The usage/statusline hook is
-   wired only by the CLI commands below, never automatically.
+   installed automatically on first launch if you have no statusline yet (re-wirable via the CLI commands below).
 
    Want the whole board built for you? Run the guided wizard from inside the installed
    plugin folder:
@@ -29,8 +29,8 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
 
    `init` asks for your repos (or scans a folder), your theme and timings, writes
    `projects.json` (see below), wires the hooks — and can **prebuild a ready-made key
-   layout** for your deck (Mini / MK.2 / XL) as a `Jetstream.streamDeckProfile` you
-   double-click to import. The import installs it as a *new* profile on the device you
+   layout** for your deck (Mini / MK.2 / XL) as a `Jetstream.streamDeckProfile` in
+   `~/Downloads` you double-click to import. The import installs it as a *new* profile on the device you
    pick in the dialog; your existing layout is never touched. (The layout file mirrors the
    profile format Elgato's own plugins ship, but treat it as experimental — dragging keys
    by hand always works.)
@@ -41,7 +41,8 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
    when the board isn't lighting up).
 
 Drag keys onto your deck: **Project status** (set a name + project path per key;
-short-press jumps to the terminal, **long-press interrupts** the session; done keys show the
+short-press opens the project folder in your editor (VS Code → Cursor → `$EDITOR`, else the OS
+folder opener), **long-press interrupts** the session; done keys show the
 change size, `+120/-40 · done 4m`), **Fleet roll-up** (one always-visible key counting the whole
 fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
 answerable even when projects outnumber keys), **Attention** (flashes if a request goes

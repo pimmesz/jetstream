@@ -46,28 +46,66 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
   }
 
   override onWillDisappear(ev: WillDisappearEvent<ProjectSettings>): void {
+    this.clearHoldWarn(ev.action.id);
     board.removeProject(ev.action.id);
   }
 
-  // Short press → jump to the project's terminal. Long press → interrupt (SIGINT)
-  // the Claude session(s) running there. Measured as key-down → key-up duration.
+  // Short press → open the project in your editor. Long press → interrupt (SIGINT) the Claude
+  // session(s) there — but ONLY when the project is actually `working`, and only after a
+  // deliberate hold: past the threshold the key flips to a "release to interrupt" warning so a
+  // too-long "jump to project" press can be released to cancel. Measured key-down → key-up.
   private pressAt = new Map<string, number>();
+  private holdWarn = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** SIGINT kills the current turn, so interrupt needs a longer, deliberate hold than the
+   * generic long-press — and the face warns before it commits. */
+  private static readonly INTERRUPT_HOLD_MS = 1500;
 
   override onKeyDown(ev: KeyDownEvent<ProjectSettings>): void {
     this.pressAt.set(ev.action.id, Date.now());
+    // Only a working session can be interrupted — arm the warning only then. Past the hold
+    // threshold, flip the face so the press is visibly "about to interrupt" (still releasable).
+    if (board.byProject()[ev.action.id]?.status !== 'working') return;
+    this.holdWarn.set(
+      ev.action.id,
+      setTimeout(() => {
+        // A session that Stopped during the hold must not show a lying warning — keyUp already
+        // declines to interrupt a non-working session, so keep the face honest too.
+        if (board.byProject()[ev.action.id]?.status !== 'working') return;
+        void ev.action.setImage(
+          keyFace({
+            color: '#e5484d', // danger red — this press is about to SIGINT the session
+            label: board.project(ev.action.id)?.name ?? 'project',
+            glyph: '✕',
+            sub: 'release to interrupt',
+          }),
+        );
+      }, ProjectKey.INTERRUPT_HOLD_MS),
+    );
   }
 
   override async onKeyUp(ev: KeyUpEvent<ProjectSettings>): Promise<void> {
+    const warned = this.clearHoldWarn(ev.action.id);
     const held = heldMs(this.pressAt, ev.action.id);
+    const status = board.byProject()[ev.action.id]?.status ?? 'none';
 
-    if (held >= config.get().longPressMs) {
+    if (shouldInterrupt(status, held, ProjectKey.INTERRUPT_HOLD_MS)) {
       const sent = interruptPids(board.pidsForProject(ev.action.id));
       await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
-      return;
+    } else {
+      const project = board.project(ev.action.id);
+      if (!project?.path || !openProject(project.path)) await ev.action.showAlert();
     }
+    if (warned) void this.renderAll(); // repaint over the "release to interrupt" warning
+  }
 
-    const project = board.project(ev.action.id);
-    if (!project?.path || !openProject(project.path)) await ev.action.showAlert();
+  /** Clear a key's pending interrupt-warning timer; returns whether one was armed. */
+  private clearHoldWarn(actionId: string): boolean {
+    const timer = this.holdWarn.get(actionId);
+    if (timer === undefined) return false;
+    clearTimeout(timer);
+    this.holdWarn.delete(actionId);
+    return true;
   }
 
   private register(actionId: string, settings: ProjectSettings): void {
@@ -94,6 +132,9 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
     const answerable = permissions.projectsWithPending(board.projects());
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
+      // A key mid-interrupt-hold is showing the "release to interrupt" warning — don't let a
+      // routine repaint (5s discovery tick, 30s elapsed tick) wipe it. Entry lives keydown→keyup.
+      if (this.holdWarn.has(visible.id)) continue;
       const project = board.project(visible.id);
       const state = byProject[visible.id] ?? { status: 'none' as const };
       const configured = Boolean(project?.path);
@@ -157,4 +198,14 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
     const label = STATUS_LABEL[state.status] ?? '';
     return label ? { sub: label } : {};
   }
+}
+
+/** Interrupt only a genuinely-working session, and only after a deliberate hold — so a
+ * mistimed "jump to project" press can never SIGINT an idle / done / waiting session. Pure. */
+export function shouldInterrupt(
+  status: ProjectStatus,
+  held: number,
+  thresholdMs: number,
+): boolean {
+  return status === 'working' && held >= thresholdMs;
 }

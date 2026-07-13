@@ -16,6 +16,9 @@ export class UsageKey extends SingletonAction {
   }
 
   async refresh(now = Date.now()): Promise<void> {
+    // No Usage key on the deck → don't spend a subprocess resolving usage nobody will see
+    // (mirrors the CI / heartbeat / review keys, which all gate on a placed key first).
+    if (![...this.actions].some((a) => a.isKey())) return;
     this.feed = await resolveUsage();
     const feed = this.feed;
     const face = feed.available
@@ -35,7 +38,7 @@ export class UsageKey extends SingletonAction {
           subMax: 18,
           sub: formatNextReset(feed.fiveHour?.resetsAt, feed.sevenDay?.resetsAt, now),
         })
-      : keyFace({ color: '#26262b', label: 'no usage', sub: 'install hook' });
+      : keyFace({ color: '#26262b', label: 'no usage', sub: 'run claude' });
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');

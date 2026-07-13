@@ -40,7 +40,7 @@ export class LaunchKey extends SingletonAction<LaunchSettings> {
     this.running.add(id);
     await ev.action.setTitle('');
     await ev.action.setImage(
-      keyFace({ color: '#e5484d', label: this.label(settings), sub: 'running…' }),
+      keyFace({ color: '#0091ff', label: this.label(settings), sub: 'running…' }),
     );
     try {
       // This key's own model wins; else the global Model-key override (empty = Claude default).

@@ -1,0 +1,222 @@
+import { normalizeColor } from './slot-color';
+import { isHttpUrl } from './slot-command';
+import type { DeckModel } from './profile';
+
+/**
+ * The chat layout designer's whitelist: the key TYPES the model may place, and how each turns
+ * the model's fields into a profile action (UUID + Name + Settings). Deliberately a closed set —
+ * the model can only place keys we understand, and each settings-builder validates its own input,
+ * mirroring chat-setup's `extractSettings` "the model can't smuggle in a bad entry" contract.
+ */
+export interface KeyType {
+  /** The Elgato action UUID placed in the generated profile (Jetstream or built-in). */
+  uuid: string;
+  /** The profile action's display Name. */
+  name: string;
+  /** Build the action Settings from the model-supplied fields, or return an error. Omitted for a
+   * no-config key (Settings become null). */
+  build?: (fields: Record<string, unknown>) => { settings: Record<string, unknown> } | { error: string };
+}
+
+const str = (v: unknown): string | undefined =>
+  typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+
+/** Cosmetic overrides any slot key accepts: a custom label, an icon image, a background colour
+ * (name or hex), a subtitle line, and a corner emoji. Shared by every slot builder. */
+const slotCosmetics = (f: Record<string, unknown>): Record<string, unknown> => {
+  const color = str(f.color) ? normalizeColor(str(f.color)!) : undefined;
+  return {
+    ...(str(f.label) ? { label: str(f.label) } : {}),
+    ...(str(f.icon) ? { icon: str(f.icon) } : {}),
+    ...(color ? { color } : {}),
+    ...(str(f.sub) ? { sub: str(f.sub) } : {}),
+    ...(str(f.glyph) ? { glyph: str(f.glyph) } : {}),
+  };
+};
+
+/** No-config Jetstream keys (any placeable action with no per-key Settings). */
+const NO_SETTINGS: Record<string, string> = {
+  fleet: 'gg.pim.jetstream.fleet',
+  attention: 'gg.pim.jetstream.attention',
+  usage: 'gg.pim.jetstream.usage',
+  ci: 'gg.pim.jetstream.ci',
+  settings: 'gg.pim.jetstream.settings',
+  build: 'gg.pim.jetstream.build',
+  'stop-all': 'gg.pim.jetstream.interruptall',
+  model: 'gg.pim.jetstream.model',
+  heartbeat: 'gg.pim.jetstream.heartbeat',
+  review: 'gg.pim.jetstream.review',
+};
+
+const NO_SETTINGS_NAMES: Record<string, string> = {
+  fleet: 'Fleet roll-up',
+  attention: 'Attention',
+  usage: 'Usage gauge',
+  ci: 'CI / PR status',
+  settings: 'Jetstream settings',
+  build: 'Build version',
+  'stop-all': 'Stop all',
+  model: 'Model toggle',
+  heartbeat: 'Heartbeat',
+  review: 'Review queue',
+};
+
+export const KEY_TYPES: Record<string, KeyType> = {
+  // ── Slot shortcuts (plugin-owned, so chat can retarget them LIVE) ──
+  // open-app / open-url place a gg.pim.jetstream.slot rather than a native Elgato key: the plugin
+  // draws + handles them, which is what lets a later "move it / change it" apply without a re-import.
+  'open-app': {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'App',
+    build: (f) => {
+      const app = str(f.app) ?? str(f.path);
+      if (!app) return { error: 'open-app needs "app" (e.g. /Applications/Telegram.app)' };
+      return { settings: { kind: 'app', app, ...slotCosmetics(f) } };
+    },
+  },
+  'open-url': {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'URL',
+    build: (f) => {
+      const url = str(f.url) ?? str(f.path);
+      if (!url) return { error: 'open-url needs "url"' };
+      if (!isHttpUrl(url)) return { error: 'open-url needs an http(s) URL' };
+      return { settings: { kind: 'url', url, ...slotCosmetics(f) } };
+    },
+  },
+  run: {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Run',
+    build: (f) => {
+      const command = str(f.command);
+      if (!command) return { error: 'run needs "command"' };
+      const args = Array.isArray(f.args) ? f.args.filter((a): a is string => typeof a === 'string') : undefined;
+      return {
+        settings: {
+          kind: 'run',
+          command,
+          ...(args && args.length ? { args } : {}),
+          ...(str(f.cwd) ? { cwd: str(f.cwd) } : {}),
+          ...slotCosmetics(f),
+        },
+      };
+    },
+  },
+  slot: { uuid: 'gg.pim.jetstream.slot', name: 'Empty slot', build: (f) => ({ settings: { kind: 'empty', ...slotCosmetics(f) } }) },
+  // ── Built-in Elgato keys ──
+  text: {
+    uuid: 'com.elgato.streamdeck.system.text',
+    name: 'Text',
+    build: (f) => {
+      const t = str(f.text);
+      if (t === undefined) return { error: 'text needs "text"' };
+      return { settings: { isSendingEnter: false, pastedText: t } };
+    },
+  },
+  // ── Jetstream keys with settings ──
+  project: {
+    uuid: 'gg.pim.jetstream.project',
+    name: 'Project status',
+    build: (f) => {
+      const path = str(f.path);
+      if (!path) return { error: 'project needs "path"' };
+      return { settings: { path, ...(str(f.name) ? { name: str(f.name) } : {}) } };
+    },
+  },
+  launch: {
+    uuid: 'gg.pim.jetstream.launch',
+    name: 'Launch preset',
+    build: (f) => {
+      const prompt = str(f.prompt);
+      const path = str(f.path);
+      if (!prompt || !path) return { error: 'launch needs "prompt" and "path"' };
+      return {
+        settings: { prompt, path, ...(str(f.model) ? { model: str(f.model) } : {}) },
+      };
+    },
+  },
+  approve: { uuid: 'gg.pim.jetstream.permission', name: 'Approve', build: () => ({ settings: { decision: 'allow' } }) },
+  deny: { uuid: 'gg.pim.jetstream.permission', name: 'Deny', build: () => ({ settings: { decision: 'deny' } }) },
+  nav: {
+    uuid: 'gg.pim.jetstream.nav',
+    name: 'Page nav',
+    build: (f) => ({ settings: { target: str(f.target) === 'board' ? 'board' : 'ops' } }),
+  },
+  // ── Jetstream keys with no settings ──
+  ...Object.fromEntries(
+    Object.entries(NO_SETTINGS).map(([type, uuid]) => [type, { uuid, name: NO_SETTINGS_NAMES[type] ?? type }]),
+  ),
+};
+
+/** The placeable type names, for the model prompt + "unknown type" messages. */
+export const KEY_TYPE_NAMES: readonly string[] = Object.keys(KEY_TYPES);
+
+/** "a8" → { column, row } — row = letter (a = top), column = 1-indexed number — validated against
+ * the deck's grid. Null for an unparseable or off-board coordinate. Inverse of `coordLabel`. */
+export function parseCoord(label: string, deck: DeckModel): { column: number; row: number } | null {
+  const m = /^\s*([a-z])\s*(\d+)\s*$/i.exec(label);
+  if (!m) return null;
+  const row = m[1]!.toLowerCase().charCodeAt(0) - 97; // 'a' → 0
+  const column = Number(m[2]) - 1; // 1-indexed → 0-indexed
+  if (row < 0 || row >= deck.rows || column < 0 || column >= deck.cols) return null;
+  return { column, row };
+}
+
+export interface Placement {
+  column: number;
+  row: number;
+  uuid: string;
+  name: string;
+  settings: Record<string, unknown> | null;
+}
+
+export interface ResolvedLayout {
+  placements: Placement[];
+  /** Human-readable reasons keys were dropped (unknown type, off-board coord, missing settings,
+   * a coordinate already taken) — surfaced to the user so a silent drop never masquerades as done. */
+  warnings: string[];
+}
+
+/** Validate + build the model's proposed keys into concrete placements. Never throws: an unknown
+ * type, bad coordinate, missing required settings, or a duplicate coordinate is DROPPED with a
+ * warning, so the model can't smuggle a malformed key onto the deck. */
+export function resolvePlacements(deck: DeckModel, keys: unknown): ResolvedLayout {
+  const placements: Placement[] = [];
+  const warnings: string[] = [];
+  const taken = new Set<string>();
+  if (!Array.isArray(keys)) return { placements, warnings };
+  for (const raw of keys) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const k = raw as Record<string, unknown>;
+    const coordLabel = typeof k.coord === 'string' ? k.coord : '';
+    const typeName = typeof k.type === 'string' ? k.type.toLowerCase() : '';
+    const at = coordLabel || '(no coord)';
+    const type = KEY_TYPES[typeName];
+    if (!type) {
+      warnings.push(`skipped ${typeName || '(no type)'} at ${at}: unknown key type`);
+      continue;
+    }
+    const coord = parseCoord(coordLabel, deck);
+    if (!coord) {
+      warnings.push(`skipped ${typeName} at ${at}: off the ${deck.key} board (${deck.cols}×${deck.rows})`);
+      continue;
+    }
+    const slot = `${coord.column},${coord.row}`;
+    if (taken.has(slot)) {
+      warnings.push(`skipped ${typeName} at ${coordLabel}: ${coordLabel} is already taken`);
+      continue;
+    }
+    let settings: Record<string, unknown> | null = null;
+    if (type.build) {
+      const result = type.build(k);
+      if ('error' in result) {
+        warnings.push(`skipped ${typeName} at ${coordLabel}: ${result.error}`);
+        continue;
+      }
+      settings = result.settings;
+    }
+    taken.add(slot);
+    placements.push({ column: coord.column, row: coord.row, uuid: type.uuid, name: type.name, settings });
+  }
+  return { placements, warnings };
+}

@@ -16,6 +16,9 @@ export interface HookServerHandlers {
    * (the decision JSON) to answer, or `undefined` to defer to Claude's own dialog.
    * Omit to disable deck approvals (the endpoint then always defers). */
   onPermission?: (raw: unknown) => Promise<string | undefined>;
+  /** Live board edits (`/slot`): retarget the slot key at a coordinate and resolve with
+   * `{status, body}`. Omit (old build) → the endpoint 404s so the CLI can say "update the plugin". */
+  onSlot?: (raw: unknown) => Promise<{ status: number; body: string }>;
 }
 
 function readBody(req: IncomingMessage, onDone: (body: string | undefined) => void): void {
@@ -96,6 +99,34 @@ export function startHookServer(port: number, handlers: HookServerHandlers): Pro
               }
             })
             .catch(defer);
+        });
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/slot') {
+        readBody(req, (body) => {
+          if (body === undefined || !handlers.onSlot) {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          let raw: unknown;
+          try {
+            raw = JSON.parse(body);
+          } catch {
+            res.writeHead(400);
+            res.end();
+            return;
+          }
+          handlers
+            .onSlot(raw)
+            .then(({ status, body: out }) => {
+              res.writeHead(status, { 'content-type': 'application/json' });
+              res.end(out);
+            })
+            .catch(() => {
+              res.writeHead(500);
+              res.end();
+            });
         });
         return;
       }

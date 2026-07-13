@@ -37,6 +37,15 @@ export class Board {
   private seeded = new Map<string, ProjectEntry>();
   private sessions = new Map<string, { pid: number; cwd: string }>();
   private discovered: DiscoveredSession[] = [];
+  // Epoch ms each discovered cwd FIRST read CPU-active (reset when it goes quiet). A resting
+  // hook status (done / needsInput / idle) is only upgraded to 'working' once a cwd has been
+  // SUSTAINED-active — a real background task (a Claude workflow keeps subagent processes busy
+  // at the repo's cwd) reads as working, while a just-stopped session's decaying CPU can't
+  // flicker a genuine 'done' back. See byProject / setDiscovered.
+  private activeSince = new Map<string, number>();
+  /** How long a cwd must stay continuously CPU-active before a resting hook status upgrades to
+   * 'working' (≈2+ of the 5s discovery polls) — long enough to outlast a post-Stop CPU decay. */
+  private static readonly SUSTAINED_ACTIVE_MS = 12_000;
   private listeners = new Set<() => void>();
   // While restore()'s async scan is in flight the hook server is already listening, so live
   // events keep arriving. Record which SESSIONS those events touch (see dispatch) so the
@@ -226,28 +235,58 @@ export class Board {
   /** Replace the set of running Claude sessions found by process scan (not by hooks). Lets a
    * project show as active even when no hook event reached this plugin instance — e.g. a
    * session already mid-work when the plugin (re)started. */
-  setDiscovered(sessions: DiscoveredSession[]): void {
+  setDiscovered(sessions: DiscoveredSession[], now = Date.now()): void {
+    // Remember when each cwd FIRST read active (preserved across identical polls, dropped when it
+    // goes quiet) so byProject can tell a SUSTAINED-busy repo from a brief post-Stop CPU spike.
+    const active = new Map<string, number>();
+    for (const s of sessions) {
+      if (s.active) active.set(s.cwd, this.activeSince.get(s.cwd) ?? now);
+    }
+    this.activeSince = active;
+    // Skip the repaint when the scan is unchanged — the poller fires every 5s and each emit
+    // re-renders every key (SVG rebuild + setImage over the deck socket) and would also wipe a
+    // Project key's in-flight "release to interrupt" warning. (activeSince advances above
+    // regardless; the resting→working upgrade repaints on the next scan change or the 30s tick.)
+    if (JSON.stringify(sessions) === JSON.stringify(this.discovered)) return;
     this.discovered = sessions;
     this.emit();
   }
 
   /** Current status per visible project key (keyed by action id). Hook state is authoritative;
-   * a discovered live session only fills a project the hooks are currently SILENT on ('none'):
-   * an actively-CPU-burning session shows 'working', one sitting idle at a prompt shows 'idle'.
-   * The hooks still upgrade to the precise state (needs-you / done) as real events arrive. So:
-   * gray = no session, blue = session open but idle, pink = a live session actually working. */
-  byProject(): Record<string, ProjectState> {
+   * discovery then (a) fills a hook-SILENT project ('none') — active → working, else idle — and
+   * (b) upgrades a RESTING hook state (done / needsInput / idle) to 'working' when the repo has
+   * been SUSTAINED CPU-active, so a session running a background task (a Claude workflow, which
+   * fires `Stop` when it yields the turn yet keeps subagent processes busy) doesn't read as
+   * falsely done / waiting-on-you. grey = no session, slate = idle, orange = working. */
+  byProject(now = Date.now()): Record<string, ProjectState> {
     const by = statusByProject(this.state, this.projects());
     if (this.discovered.length > 0) {
       const projects = this.projects();
       for (const session of this.discovered) {
         const id = matchProject(session.cwd, projects);
-        if (id && by[id]?.status === 'none') {
+        if (id === undefined) continue;
+        const status = by[id]?.status ?? 'none';
+        if (status === 'none') {
           by[id] = { status: session.active ? 'working' : 'idle' };
+        } else if (
+          session.active &&
+          (status === 'done' || status === 'needsInput' || status === 'idle') &&
+          this.sustainedActive(session.cwd, now)
+        ) {
+          // Resting per hooks, but the process tree has been busy a while → a background task is
+          // running; show working. Keep the prior `since` so the elapsed reflects how long.
+          by[id] = { status: 'working', ...(by[id]?.since !== undefined ? { since: by[id]!.since } : {}) };
         }
       }
     }
     return by;
+  }
+
+  /** Has this cwd been continuously CPU-active long enough to treat a resting hook state as a
+   * running background task (vs a just-stopped session's decaying CPU)? */
+  private sustainedActive(cwd: string, now: number): boolean {
+    const since = this.activeSince.get(cwd);
+    return since !== undefined && now - since >= Board.SUSTAINED_ACTIVE_MS;
   }
 
   /** The projects currently waiting on the user, most useful first. */

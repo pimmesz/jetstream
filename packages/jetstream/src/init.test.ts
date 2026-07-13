@@ -287,6 +287,7 @@ describe('runInit', () => {
       configPath,
       install: okInstall,
       cwd,
+      downloadsDir: cwd,
       openFile: (path) => opened.push(path),
     });
 
@@ -320,6 +321,7 @@ describe('runInit', () => {
       configPath,
       install: okInstall,
       cwd,
+      downloadsDir: cwd,
       openFile: (path) => opened.push(path),
     });
 
@@ -341,6 +343,7 @@ describe('runInit', () => {
       configPath,
       install: okInstall,
       cwd,
+      downloadsDir: cwd,
       openFile: (path) => opened.push(path),
     });
 
@@ -363,6 +366,7 @@ describe('runInit', () => {
       configPath,
       install: okInstall,
       cwd,
+      downloadsDir: cwd,
       openFile: (path) => opened.push(path),
     });
 

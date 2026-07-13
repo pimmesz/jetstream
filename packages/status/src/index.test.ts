@@ -135,8 +135,14 @@ describe('colorFor', () => {
     }
   });
 
-  it('highContrast swaps the red/green pair (working + done differ from default)', () => {
-    expect(colorFor('working', 'highContrast')).not.toBe(colorFor('working'));
+  it('reserves danger-red — no project status is #e5484d in either theme', () => {
+    for (const status of ALL_STATUSES) {
+      expect(colorFor(status)).not.toBe('#e5484d');
+      expect(colorFor(status, 'highContrast')).not.toBe('#e5484d');
+    }
+  });
+
+  it('highContrast still distinguishes done from the default theme', () => {
     expect(colorFor('done', 'highContrast')).not.toBe(colorFor('done'));
   });
 });

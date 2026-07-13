@@ -34,6 +34,9 @@ export interface InitDeps {
   install?: typeof installHooks;
   /** Base for resolving relative paths the user types; defaults to process.cwd(). */
   cwd?: string;
+  /** Where a prebuilt layout is written; defaults to ~/Downloads. Injected in tests so they
+   * never touch the real Downloads folder. */
+  downloadsDir?: string;
   /** Opens the generated .streamDeckProfile in the Stream Deck app. Injectable for
    * tests; defaults to a real spawn on macOS/Windows and UNDEFINED elsewhere — when
    * undefined the "open it now?" question isn't asked at all. */
@@ -184,12 +187,14 @@ async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]
 /** Offer a ready-made key layout as a double-clickable .streamDeckProfile (see profile.ts
  * for the grounded-format rationale). Optional and best-effort: skipping or a write failure
  * never fails init — the drag-keys path always remains. Returns the artifact path when one
- * was written, for the next-steps copy. */
+ * was written, for the next-steps copy. Writes to ~/Downloads (matching the in-app builder):
+ * init is typically run from inside the installed plugin folder, which is wiped on every
+ * plugin update — the artifact must survive that. */
 export async function offerProfile(
   io: InitIo,
-  cwd: string,
   projects: ProjectConfig[],
   openFile: ((path: string) => void) | undefined,
+  downloadsDir: string = join(homedir(), 'Downloads'),
 ): Promise<string | undefined> {
   io.say('Optional: prebuild a ready-made key layout you can import with a double-click.');
   DECK_MODELS.forEach((deck, i) => io.say(`  ${i + 1}. ${deck.label}`));
@@ -200,7 +205,7 @@ export async function offerProfile(
     io.say(`  (no deck matches "${safe(answer)}" — skipping the layout; drag keys by hand instead)`);
     return undefined;
   }
-  const outPath = join(cwd, 'Jetstream.streamDeckProfile');
+  const outPath = join(downloadsDir, 'Jetstream.streamDeckProfile');
   try {
     // Never follow a pre-existing file or symlink blindly: confirm, then remove the
     // entry itself before writing fresh (writeFileSync would write THROUGH a symlink).
@@ -345,7 +350,12 @@ export async function runInit(deps: InitDeps): Promise<number> {
   }
 
   io.say('');
-  const profilePath = await offerProfile(io, cwd, projects, deps.openFile ?? defaultOpenFile());
+  const profilePath = await offerProfile(
+    io,
+    projects,
+    deps.openFile ?? defaultOpenFile(),
+    deps.downloadsDir,
+  );
 
   io.say('');
   io.say('Done. Next, in the Stream Deck app:');

@@ -23,6 +23,10 @@ import { ModelKey } from './actions/model';
 import { HeartbeatKey } from './actions/heartbeat';
 import { ReviewKey } from './actions/review';
 import { NavKey } from './actions/nav';
+import { BuildKey } from './actions/build';
+import { CoordinateKey } from './actions/coord';
+import { GridKey } from './actions/grid';
+import { SlotKey } from './actions/slot';
 
 const projectKey = new ProjectKey();
 const attentionKey = new AttentionKey();
@@ -38,6 +42,10 @@ const modelKey = new ModelKey();
 const heartbeatKey = new HeartbeatKey();
 const reviewKey = new ReviewKey();
 const navKey = new NavKey();
+const buildKey = new BuildKey();
+const coordinateKey = new CoordinateKey();
+const gridKey = new GridKey();
+const slotKey = new SlotKey();
 
 streamDeck.actions.registerAction(projectKey);
 streamDeck.actions.registerAction(attentionKey);
@@ -53,6 +61,10 @@ streamDeck.actions.registerAction(modelKey);
 streamDeck.actions.registerAction(heartbeatKey);
 streamDeck.actions.registerAction(reviewKey);
 streamDeck.actions.registerAction(navKey);
+streamDeck.actions.registerAction(buildKey);
+streamDeck.actions.registerAction(coordinateKey);
+streamDeck.actions.registerAction(gridKey);
+streamDeck.actions.registerAction(slotKey);
 
 // Seed the board + settings from the optional projects.json BEFORE anything subscribes or
 // connects: the Fleet roll-up and Attention doorbell then cover the whole fleet without a
@@ -140,6 +152,9 @@ startHookServer(port, {
     board.dispatch(event);
   },
   onPermission: (raw) => permissions.request(raw),
+  // Live board edits from `jetstream chat`: retarget the slot at a coordinate (setSettings + repaint),
+  // so a layout change lands on the deck instantly with no profile re-import.
+  onSlot: (raw) => slotKey.assign(raw),
 }).catch((error: unknown) => {
   streamDeck.logger.error(
     `Jetstream hook server failed to bind 127.0.0.1:${port} — project status will not update`,

@@ -16,6 +16,10 @@ export type JetstreamConfig = {
   /** Global model override the Launch keys fall back to when their own `model` is unset,
    * cycled by the Model key. Plain string (a `claude -p` alias); '' = no override. */
   launchModel: string;
+  /** Whether a slot's `run` kind may EXECUTE its command on press. OFF by default: the loopback
+   * `/slot` endpoint is unauthenticated, so a local process could plant a `run` command; keeping
+   * execution opt-in means a planted command is inert until the user deliberately enables this. */
+  allowRunKeys: boolean;
 };
 
 export const DEFAULTS: JetstreamConfig = {
@@ -25,6 +29,7 @@ export const DEFAULTS: JetstreamConfig = {
   escalateAfterSec: 300,
   ciBranchPrefix: 'afterburner/',
   launchModel: '',
+  allowRunKeys: false,
 };
 
 /** The accepted range per numeric setting — single-sourced so the init wizard can
@@ -57,6 +62,7 @@ export function mergeConfig(raw: unknown, base: JetstreamConfig = DEFAULTS): Jet
         ? r.ciBranchPrefix.trim()
         : base.ciBranchPrefix,
     launchModel: typeof r.launchModel === 'string' ? r.launchModel.trim() : base.launchModel,
+    allowRunKeys: typeof r.allowRunKeys === 'boolean' ? r.allowRunKeys : base.allowRunKeys,
   };
 }
 

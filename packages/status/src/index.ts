@@ -246,13 +246,13 @@ export function colorFor(status: ProjectStatus, theme: Theme = 'default'): strin
   }
   switch (status) {
     case 'working':
-      return '#e5484d'; // red — Claude is busy
+      return '#f76808'; // orange — busy (red is reserved for danger: deny / stop / error / over-budget)
     case 'needsInput':
       return '#ffb224'; // amber — waiting on you
     case 'done':
       return '#30a46c'; // green — finished, ready to review
     case 'idle':
-      return '#0091ff'; // blue — session open, no active turn
+      return '#8e8e93'; // slate — session open, no active turn
     case 'none':
       return '#3a3a3a'; // grey — no session
   }

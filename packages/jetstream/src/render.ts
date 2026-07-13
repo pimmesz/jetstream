@@ -17,6 +17,11 @@ export interface Face {
   /** A status glyph in the top-left corner, so state reads without colour
    * (colour-blind safe). See `glyphFor` in @pimmesz/jetstream-status. */
   glyph?: string;
+  /** A large centred emoji as the key's MAIN visual (e.g. a slot's `icon:"🔥"`), instead of the label. */
+  emoji?: string;
+  /** An image data URI painted as the key's main visual (an app logo / custom image); a `glyph`
+   * overlays its corner. When set, the text label/top/sub are suppressed so the picture reads clean. */
+  image?: string;
 }
 
 function esc(text: string): string {
@@ -34,20 +39,40 @@ export function fit(text: string, max = 10): string {
 
 /** Render a key face as a `data:image/svg+xml` URI for `setImage`. Pure. */
 export function keyFace(face: Face): string {
-  const label = esc(fit(face.label));
-  const subMax = face.subMax ?? 14;
-  const sub = face.sub === undefined ? '' : esc(fit(face.sub, subMax));
-  // A longer line renders smaller so it still fits the 144px key rather than truncating.
-  const subFont = subMax > 16 ? 14 : 18;
-  const top = face.top === undefined ? '' : esc(fit(face.top, 14));
   const glyph = face.glyph ? esc(face.glyph) : '';
+  const corner = glyph
+    ? `<text x="18" y="34" font-family="-apple-system,Segoe UI,sans-serif" font-size="22" font-weight="700" fill="#ffffff">${glyph}</text>`
+    : '';
+  let body: string;
+  if (face.image) {
+    // The picture IS the key (app logo / custom image); only a corner glyph overlays it.
+    body =
+      `<image href="${esc(face.image)}" x="12" y="12" width="120" height="120" preserveAspectRatio="xMidYMid meet"/>` +
+      corner;
+  } else if (face.emoji) {
+    // A big centred emoji as the main visual, with an optional small label beneath.
+    const label = face.label ? esc(fit(face.label)) : '';
+    body =
+      `<text x="72" y="92" text-anchor="middle" font-size="66">${esc(face.emoji)}</text>` +
+      (label ? `<text x="72" y="128" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="18" fill="rgba(255,255,255,0.85)">${label}</text>` : '') +
+      corner;
+  } else {
+    const label = esc(fit(face.label));
+    const subMax = face.subMax ?? 14;
+    const sub = face.sub === undefined ? '' : esc(fit(face.sub, subMax));
+    // A longer line renders smaller so it still fits the 144px key rather than truncating.
+    const subFont = subMax > 16 ? 14 : 18;
+    const top = face.top === undefined ? '' : esc(fit(face.top, 14));
+    body =
+      corner +
+      (top ? `<text x="72" y="42" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="18" fill="rgba(255,255,255,0.85)">${top}</text>` : '') +
+      `<text x="72" y="82" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="26" font-weight="700" fill="#ffffff">${label}</text>` +
+      (sub ? `<text x="72" y="112" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="${subFont}" fill="rgba(255,255,255,0.85)">${sub}</text>` : '');
+  }
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">` +
     `<rect width="144" height="144" rx="18" fill="${esc(face.color)}"/>` +
-    (glyph ? `<text x="18" y="34" font-family="-apple-system,Segoe UI,sans-serif" font-size="22" font-weight="700" fill="#ffffff">${glyph}</text>` : '') +
-    (top ? `<text x="72" y="42" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="18" fill="rgba(255,255,255,0.85)">${top}</text>` : '') +
-    `<text x="72" y="82" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="26" font-weight="700" fill="#ffffff">${label}</text>` +
-    (sub ? `<text x="72" y="112" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="${subFont}" fill="rgba(255,255,255,0.85)">${sub}</text>` : '') +
+    body +
     `</svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }

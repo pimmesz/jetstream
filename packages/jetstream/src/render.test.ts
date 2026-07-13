@@ -11,6 +11,34 @@ describe('keyFace', () => {
     expect(svg).toContain('working 4m');
   });
 
+  it('renders a big emoji as the main visual, suppressing the normal label slot', () => {
+    const svg = decodeURIComponent(keyFace({ color: '#000000', label: '', emoji: '🔥' }).slice('data:image/svg+xml,'.length));
+    expect(svg).toContain('🔥');
+    expect(svg).toContain('font-size="66"'); // big centred emoji
+    expect(svg).not.toContain('font-size="26"'); // the 26px label line is not drawn
+  });
+
+  it('embeds an image icon and overlays a corner glyph', () => {
+    const svg = decodeURIComponent(
+      keyFace({ color: '#000000', label: 'x', image: 'data:image/png;base64,AAA', glyph: '🔔' }).slice(
+        'data:image/svg+xml,'.length,
+      ),
+    );
+    expect(svg).toContain('<image href="data:image/png;base64,AAA"');
+    expect(svg).toContain('🔔');
+    expect(svg).not.toContain('>x<'); // the text label is suppressed when a picture is shown
+  });
+
+  it('escapes the image href so a crafted data: URI cannot break out of the attribute', () => {
+    const svg = decodeURIComponent(
+      keyFace({ color: '#000000', label: '', image: 'data:image/svg+xml,<svg onload="x"/>', glyph: '!' }).slice(
+        'data:image/svg+xml,'.length,
+      ),
+    );
+    expect(svg).not.toContain('onload="x"/>"'); // the raw quote-breakout is gone
+    expect(svg).toContain('&quot;'); // the injected quote was escaped
+  });
+
   it('escapes markup in labels (untrusted settings text)', () => {
     const svg = decodeURIComponent(
       keyFace({ color: '#000000', label: '<script>' }).slice('data:image/svg+xml,'.length),

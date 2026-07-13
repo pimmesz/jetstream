@@ -4,6 +4,7 @@ import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import type { NavSettings } from './actions/nav';
 import type { PermissionSettings } from './actions/permission';
 import type { ProjectSettings } from './actions/project';
+import type { Placement } from './layout';
 
 /**
  * Generate a ready-made Jetstream key layout as a double-clickable `.streamDeckProfile`,
@@ -62,6 +63,18 @@ const action = (name: string, uuid: string, settings: Record<string, unknown> | 
   States: [{ ...STATE }],
   UUID: uuid,
 });
+
+/** Fill every board coordinate that has no action yet with an empty, self-labeling Slot key, so ONE
+ * import makes the whole deck plugin-owned: empty keys then render their own a8-style coordinate and
+ * can be retargeted live (POST /slot) without ever generating another profile. Mutates `slots`. */
+function fillEmptySlots(slots: Map<string, ProfileAction>, deck: DeckModel): void {
+  for (let row = 0; row < deck.rows; row++) {
+    for (let col = 0; col < deck.cols; col++) {
+      const slot = `${col},${row}`;
+      if (!slots.has(slot)) slots.set(slot, action('Empty slot', 'gg.pim.jetstream.slot', { kind: 'empty' }));
+    }
+  }
+}
 
 export interface BuiltProfile {
   /** The profile manifest, ready to stringify. */
@@ -169,6 +182,7 @@ export function buildProfile(deck: DeckModel, projects: ProjectConfig[]): BuiltP
     }
   }
 
+  fillEmptySlots(slots, deck);
   const manifest: Record<string, unknown> = {
     Actions: Object.fromEntries(slots),
     DeviceModel: deck.model,
@@ -194,6 +208,13 @@ export const OPS_PROFILE_IDS: Record<DeckModel['key'], string> = {
   xl: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AB003',
 };
 
+/** Stable ids for the bundled GRID overlay profiles (the coordinate reference you toggle to). */
+export const GRID_PROFILE_IDS: Record<DeckModel['key'], string> = {
+  mini: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AC001',
+  standard: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AC002',
+  xl: '7A2B60D1-4E63-4B5A-9C1D-1B4E9A0AC003',
+};
+
 /** The profile file name (and manifest display name) per device, mirroring the
  * tutorial plugin's convention ("Tutorial" / "Tutorial Mini" / "Tutorial XL"). */
 export function defaultProfileName(deck: DeckModel): string {
@@ -208,6 +229,14 @@ export function opsProfileName(deck: DeckModel): string {
   if (deck.key === 'xl') return 'Jetstream Ops XL';
   if (deck.key === 'mini') return 'Jetstream Ops Mini';
   return 'Jetstream Ops';
+}
+
+/** The bundled GRID overlay profile name per device — must match a manifest `Profiles[].Name`
+ * so a Grid key can `switchToProfile` to it. */
+export function gridProfileName(deck: DeckModel): string {
+  if (deck.key === 'xl') return 'Jetstream Grid XL';
+  if (deck.key === 'mini') return 'Jetstream Grid Mini';
+  return 'Jetstream Grid';
 }
 
 /** DeviceType (Stream Deck SDK enum) → DeckModel key for the three decks we bundle a
@@ -245,6 +274,7 @@ export function buildDefaultProfile(deck: DeckModel): BuiltProfile {
   for (const slot of invitations) {
     slots.set(slot, action('Project status', 'gg.pim.jetstream.project'));
   }
+  fillEmptySlots(slots, deck);
   const name = defaultProfileName(deck);
   const manifest: Record<string, unknown> = {
     Actions: Object.fromEntries(slots),
@@ -292,8 +322,10 @@ function fixedOpsLayout(deck: DeckModel): Map<string, ProfileAction> {
  */
 export function buildOpsProfile(deck: DeckModel): BuiltProfile {
   const name = opsProfileName(deck);
+  const slots = fixedOpsLayout(deck);
+  fillEmptySlots(slots, deck);
   const manifest: Record<string, unknown> = {
-    Actions: Object.fromEntries(fixedOpsLayout(deck)),
+    Actions: Object.fromEntries(slots),
     DeviceModel: deck.model,
     Name: name,
     InstalledByPluginUUID: 'gg.pim.jetstream',
@@ -400,4 +432,48 @@ export function writeProfileFile(
   const built = buildProfile(deck, projects);
   writeFileSync(outPath, renderProfileArchive(built));
   return built;
+}
+
+/** The bundled GRID overlay profile: a coordinate key on EVERY slot. A "Grid" key toggles the
+ * deck to this via `switchToProfile` (it's plugin-bundled, like Board/Ops), and pressing any key
+ * on it returns to your board — so you see the a1…hN reference without importing anything. */
+export function buildGridProfile(deck: DeckModel, model: string = deck.model): BuiltProfile {
+  const slots = new Map<string, ProfileAction>();
+  for (let row = 0; row < deck.rows; row++) {
+    for (let col = 0; col < deck.cols; col++) {
+      slots.set(`${col},${row}`, action('Grid coordinate', 'gg.pim.jetstream.coord'));
+    }
+  }
+  const name = gridProfileName(deck);
+  const manifest: Record<string, unknown> = {
+    Actions: Object.fromEntries(slots),
+    DeviceModel: model,
+    Name: name,
+    InstalledByPluginUUID: 'gg.pim.jetstream',
+    PreconfiguredName: `profiles/${name}`,
+    Version: '1.0',
+  };
+  return { manifest, placedProjects: 0, skippedProjects: 0 };
+}
+
+/** A CUSTOM layout profile from the chat designer: place each resolved key (a Jetstream key or a
+ * built-in Elgato Open/Website/Text/Hotkey) at its coordinate. Same importable V1 shape as the
+ * other generators — the `action()` helper's output is exactly a placed V1 action. */
+export function buildLayoutProfile(
+  deck: DeckModel,
+  placements: Placement[],
+  model: string = deck.model,
+): BuiltProfile {
+  const slots = new Map<string, ProfileAction>();
+  for (const p of placements) {
+    slots.set(`${p.column},${p.row}`, action(p.name, p.uuid, p.settings));
+  }
+  fillEmptySlots(slots, deck);
+  const manifest: Record<string, unknown> = {
+    Actions: Object.fromEntries(slots),
+    DeviceModel: model,
+    Name: 'Jetstream Custom',
+    Version: '1.0',
+  };
+  return { manifest, placedProjects: 0, skippedProjects: 0 };
 }

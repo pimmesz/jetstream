@@ -216,4 +216,45 @@ describe('Board', () => {
       expect(after.byProject()['falcon']).toEqual({ status: 'none' });
     });
   });
+
+  describe('discovery CPU cross-check (workflow-wait)', () => {
+    const falcon = { id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' };
+    const busy = [{ pid: 9, cwd: '/Users/me/falcon', active: true }];
+
+    it('upgrades a Stop→done project to working when the repo stays busy (the green case)', () => {
+      const board = new Board(tmpFile());
+      board.seed([falcon]);
+      board.dispatch({ event: 'Stop', cwd: '/Users/me/falcon', sessionId: 's1', at: 1_000 }); // hook: done
+      board.setDiscovered(busy, 1_000); // repo busy (a workflow's subagents), first seen at t=1000
+      expect(board.byProject(1_000)['falcon']).toEqual({ status: 'done', since: 1_000 }); // not yet sustained
+      board.setDiscovered(busy, 14_000); // still busy 13s later — past the 12s sustained threshold
+      expect(board.byProject(14_000)['falcon']).toEqual({ status: 'working', since: 1_000 });
+    });
+
+    it('upgrades an idle_prompt→needsInput project to working when the repo stays busy (the amber case)', () => {
+      const board = new Board(tmpFile());
+      board.seed([falcon]);
+      board.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 's1', at: 1_000 }); // needsInput
+      board.setDiscovered(busy, 1_000);
+      board.setDiscovered(busy, 14_000);
+      expect(board.byProject(14_000)['falcon']?.status).toBe('working');
+    });
+
+    it('does NOT flicker a genuine done to working on a brief post-Stop CPU spike', () => {
+      const board = new Board(tmpFile());
+      board.seed([falcon]);
+      board.dispatch({ event: 'Stop', cwd: '/Users/me/falcon', sessionId: 's1', at: 1_000 });
+      board.setDiscovered(busy, 1_000); // reads active briefly (decaying CPU)...
+      board.setDiscovered([], 6_000); // ...then quiet by the next poll — never sustained
+      expect(board.byProject(20_000)['falcon']).toEqual({ status: 'done', since: 1_000 });
+    });
+
+    it('leaves a quiet needsInput as the doorbell (a real permission wait is CPU-idle)', () => {
+      const board = new Board(tmpFile());
+      board.seed([falcon]);
+      board.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 's1', at: 1_000 });
+      board.setDiscovered([], 1_000); // no busy process → a genuine wait-on-you
+      expect(board.byProject(20_000)['falcon']?.status).toBe('needsInput');
+    });
+  });
 });
