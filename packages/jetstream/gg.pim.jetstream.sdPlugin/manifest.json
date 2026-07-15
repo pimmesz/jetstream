@@ -4,7 +4,7 @@
   "Name": "Jetstream",
   "Version": "1.0.1.0",
   "Author": "pimmesz",
-  "URL": "https://github.com/pimmesz/afterburner/tree/main/packages/jetstream",
+  "URL": "https://github.com/pimmesz/jetstream",
   "Description": "Full Claude control on your Stream Deck: a live per-project status board (working / needs you / done), an attention doorbell, usage gauges, and preset headless launches.",
   "Category": "Jetstream",
   "CategoryIcon": "imgs/plugin",

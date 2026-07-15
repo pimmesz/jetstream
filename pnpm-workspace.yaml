@@ -1,0 +1,10 @@
+# pnpm workspace. The published package is packages/jetstream (@pimmesz/jetstream);
+# packages/{claude,status,usage} are PRIVATE build-time cores — esbuild inlines them
+# into the .sdPlugin bundle (the Stream Deck runtime has no node_modules), so they are
+# never resolved from the registry and never published.
+#
+# allowBuilds allowlists dependency build scripts (esbuild's postinstall, needed by tsup).
+packages:
+  - 'packages/*'
+allowBuilds:
+  esbuild: true

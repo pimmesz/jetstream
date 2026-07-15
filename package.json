@@ -1,0 +1,31 @@
+{
+  "name": "jetstream-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace root for Jetstream — full Claude control on your Elgato Stream Deck.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.5.3",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build:cores": "pnpm --filter '@pimmesz/jetstream-usage' --filter '@pimmesz/jetstream-claude' --filter '@pimmesz/jetstream-status' run build",
+    "build": "pnpm build:cores && pnpm --filter '@pimmesz/jetstream' run build",
+    "typecheck": "pnpm -r --filter './packages/*' run typecheck",
+    "test": "pnpm -r --filter './packages/*' run test",
+    "check": "pnpm build:cores && pnpm -r --filter './packages/*' run check",
+    "format": "prettier --write .",
+    "lint": "prettier --check ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pimmesz/jetstream.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pimmesz/jetstream/issues"
+  },
+  "devDependencies": {
+    "prettier": "^3.8.4"
+  }
+}

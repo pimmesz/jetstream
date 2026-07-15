@@ -1,13 +1,27 @@
 {
   "name": "@pimmesz/jetstream",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Full Claude control on your Elgato Stream Deck.",
+  "version": "1.0.0",
+  "description": "Full Claude control on your Elgato Stream Deck — one key per project, live Claude Code status, deck approvals, usage gauges.",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "bin": {
+    "jetstream": "dist/npm-cli-entry.js"
+  },
+  "files": [
+    "dist",
+    "assets/gg.pim.jetstream.streamDeckPlugin"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "node scripts/build.mjs",
+    "prepack": "node scripts/prepack.mjs",
     "check": "pnpm typecheck && pnpm test",
     "pack": "streamdeck pack gg.pim.jetstream.sdPlugin",
     "repack": "pnpm build && streamdeck validate gg.pim.jetstream.sdPlugin && streamdeck pack gg.pim.jetstream.sdPlugin --force --no-update-check",
@@ -15,18 +29,34 @@
     "install:dev": "pnpm build && streamdeck link gg.pim.jetstream.sdPlugin",
     "validate": "streamdeck validate gg.pim.jetstream.sdPlugin"
   },
-  "dependencies": {
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pimmesz/jetstream.git",
+    "directory": "packages/jetstream"
+  },
+  "homepage": "https://github.com/pimmesz/jetstream#readme",
+  "bugs": {
+    "url": "https://github.com/pimmesz/jetstream/issues"
+  },
+  "keywords": [
+    "stream-deck",
+    "streamdeck",
+    "elgato",
+    "claude",
+    "claude-code",
+    "cli",
+    "dashboard"
+  ],
+  "devDependencies": {
+    "@elgato/cli": "^1.7.4",
     "@elgato/streamdeck": "^2.1.0",
     "@pimmesz/jetstream-claude": "workspace:*",
     "@pimmesz/jetstream-status": "workspace:*",
-    "@pimmesz/jetstream-usage": "workspace:*"
-  },
-  "devDependencies": {
-    "@elgato/cli": "^1.7.4",
+    "@pimmesz/jetstream-usage": "workspace:*",
     "@types/node": "^25.9.2",
+    "esbuild": "^0.25.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8",
-    "esbuild": "^0.25.0"
+    "vitest": "^4.1.8"
   }
 }

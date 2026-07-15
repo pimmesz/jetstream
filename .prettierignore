@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+pnpm-lock.yaml
+LICENSE
+# Build artifacts + Elgato-authored files (profiles are machine-generated JSON blobs;
+# the ui/ property inspectors are hand-authored HTML against Elgato's own conventions).
+packages/jetstream/gg.pim.jetstream.sdPlugin/bin/
+packages/jetstream/gg.pim.jetstream.sdPlugin/profiles/
+packages/jetstream/gg.pim.jetstream.sdPlugin/ui/
+packages/jetstream/assets/
+# Inherited unformatted: afterburner excluded packages/ from its root Prettier gate
+# ("workspace packages format via their own gate") — a gate they never actually had.
+# Adopting Prettier across these is a legitimate follow-up, but it reformats ~80 files,
+# so it stays OUT of the split commit rather than burying the split in churn.
+packages/*/src/
+packages/*/scripts/
+packages/*/*.md
+packages/jetstream/docs/
+packages/*/tsconfig.json

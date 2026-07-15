@@ -1,0 +1,21 @@
+# dependencies / build
+node_modules/
+dist/
+coverage/
+
+# the packed installable, built into the npm tarball at prepack — never committed
+packages/jetstream/assets/*.streamDeckPlugin
+
+# local Claude Code session/runtime metadata
+.claude/
+
+# timestamped edit backups (tooling artifacts, never source). The *.bak globs also
+# matter because npm force-includes any README*, so a stray README.md.bak would ship.
+*.bak
+*.bak-*
+
+# macOS Finder metadata
+.DS_Store
+
+# npm pack output
+*.tgz

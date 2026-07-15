@@ -1,0 +1,267 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only by default: the build job runs repo code (including PR code), so it must
+# never hold a token that can push. Only bump-version and release opt into writes.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Floor is Node 22 (pnpm 11 requires >=22.12); 24 is current.
+        node-version: ['22.13', '24']
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Build/test execute repo code; never leave credentials behind.
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `check` builds the cores first (the plugin typechecks against their dist types),
+      # then typechecks + tests every package.
+      - name: Check
+        run: pnpm check
+
+      - name: Lint
+        run: pnpm lint
+
+      # The real publish gate: `npm pack` runs prepack, so this proves the exact tarball
+      # (plugin bundle + packed .streamDeckPlugin + the `jetstream` bin) still builds on
+      # every PR — instead of discovering it only when a release tries to publish, which
+      # is precisely how afterburner shipped nothing between 3.6.0 and 3.11.0.
+      - name: Pack the npm tarball (proves prepack)
+        run: npm pack --dry-run
+        working-directory: packages/jetstream
+
+  changes:
+    name: Detect published-file changes
+    # Only the release path cares; PRs never bump.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      shipped: ${{ steps.detect.outputs.shipped }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Need history on both sides of the push to diff its range.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect whether any published file changed
+        id: detect
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          # The tarball is built from packages/** (the plugin bundle inlines all four
+          # packages), so any change there is shippable. Only .github/ (CI) and top-level
+          # docs are absent from it. Fail safe toward publishing: an unknown base (first
+          # push / rewritten history) => shipped.
+          if ! git rev-parse --verify --quiet "${BEFORE}^{commit}" >/dev/null; then
+            echo "base ${BEFORE} unavailable; treating as a shippable change"
+            echo "shipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(git diff --name-only "${BEFORE}" "${AFTER}")"
+          echo "changed files in push range:"
+          echo "${files:-<none>}"
+          if [ -z "${files}" ]; then
+            echo "no file delta — nothing to publish"
+            echo "shipped=false" >> "$GITHUB_OUTPUT"
+          elif grep -qvE '^(\.github/|README\.md$|LICENSE$)' <<< "${files}"; then
+            echo "a published file changed — release will proceed"
+            echo "shipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "only CI/docs changed — skipping release"
+            echo "shipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  bump-version:
+    name: Auto-bump version
+    needs: [build, changes]
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      commit: ${{ steps.commit.outputs.sha }}
+    # The only job that may push; the workflow default is contents: read.
+    permissions:
+      contents: write
+    # Serialized: back-to-back merges queue here instead of racing each other's push.
+    concurrency:
+      group: bump-version-main
+      cancel-in-progress: false
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.shipped == 'true' &&
+      !startsWith(github.event.head_commit.message, 'chore(release): bump version')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # main's tip, not the triggering SHA: an earlier queued bump may have
+          # already moved the version this run builds on.
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump package version
+        id: bump
+        env:
+          # EVERY commit in the push, not just the tip. A merge-commit tip has a
+          # "Merge branch ..." subject that matches no conventional-commit type, so
+          # reading only head_commit silently drops a feat to a patch. Scan the whole
+          # pushed range; the highest bump wins.
+          COMMIT_MESSAGES: ${{ toJSON(github.event.commits.*.message) }}
+          # Fallback only: GitHub truncates the commits array past 2048 commits.
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          node --input-type=module <<'EOF'
+          import { readFile, writeFile } from 'node:fs/promises';
+
+          let messages;
+          try {
+            messages = JSON.parse(process.env.COMMIT_MESSAGES ?? '[]');
+          } catch {
+            messages = [];
+          }
+          if (!Array.isArray(messages) || messages.length === 0) {
+            messages = [process.env.HEAD_COMMIT_MESSAGE ?? ''];
+          }
+          // The bot's own bump commits carry [skip ci], but filter them out
+          // defensively so a mixed push can't misread them.
+          messages = messages.filter(
+            (m) => typeof m === 'string' && !/^chore\(release\): bump version/.test(m),
+          );
+
+          // `!` rides the subject (first line); a BREAKING CHANGE footer rides the body.
+          const subject = (m) => m.split('\n', 1)[0] ?? '';
+          const isMajor = (m) =>
+            /BREAKING CHANGE/.test(m) || /^[a-z]+(?:\([^)]+\))?!:/.test(subject(m));
+          const isMinor = (m) => /^feat(?:\([^)]+\))?:/.test(subject(m));
+
+          const pkgPath = 'packages/jetstream/package.json';
+          const pkg = JSON.parse(await readFile(pkgPath, 'utf8'));
+          // Refuse prereleases and anything non-numeric: "1.2.3-rc.1" would
+          // otherwise bump to "1.2.NaN" and push it with [skip ci].
+          if (!/^\d+\.\d+\.\d+$/.test(String(pkg.version))) {
+            console.error(`refusing to auto-bump non-release version: ${pkg.version}`);
+            process.exit(1);
+          }
+          const [major = 0, minor = 0, patch = 0] = String(pkg.version)
+            .split('.')
+            .map((part) => Number(part));
+
+          let next;
+          if (messages.some(isMajor)) {
+            next = `${major + 1}.0.0`;
+          } else if (messages.some(isMinor)) {
+            next = `${major}.${minor + 1}.0`;
+          } else {
+            next = `${major}.${minor}.${patch + 1}`;
+          }
+
+          pkg.version = next;
+          await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+          await writeFile(process.env.GITHUB_OUTPUT, `version=${next}\n`, { flag: 'a' });
+          EOF
+
+      - name: Commit version bump
+        id: commit
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/jetstream/package.json
+          git commit -m "chore(release): bump version to ${VERSION} [skip ci]"
+          # Belt and braces against pushes that landed since checkout; only the
+          # version line can conflict, and only this bot edits it.
+          git pull --rebase origin main
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish to npm
+    needs: bump-version
+    # OIDC trusted publishing: npmjs.org trusts this workflow's identity directly
+    # (configured under the package's Trusted Publisher settings), so no long-lived
+    # npm token exists to leak. id-token is the only grant.
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The exact bump commit, not main's tip: a push that lands while this job
+          # queues must not ship under this run's version number.
+          ref: ${{ needs.bump-version.outputs.commit }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          # npm >= 11.5.1 is the floor for OIDC trusted publishing; Node 24 bundles it.
+          # No registry-url here: setup-node would write an .npmrc demanding
+          # NODE_AUTH_TOKEN, which OIDC deliberately omits.
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # prepack builds the cores, the plugin bundle, the `jetstream` bin, and packs the
+      # .streamDeckPlugin — so the tarball ships exactly this checkout. It is self-contained
+      # on purpose: no build step here to fall out of sync with it.
+      - name: Publish
+        run: npm publish
+        working-directory: packages/jetstream
+
+  release:
+    name: Tag & GitHub Release
+    # publish for ordering (never tag a version that failed to ship); bump-version for
+    # the version/commit outputs. The bump commit's [skip ci] and GITHUB_TOKEN push mean
+    # no other run ever fires for it, so the tag must be cut here.
+    needs: [bump-version, publish]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.bump-version.outputs.commit }}
+          persist-credentials: false
+
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Numeric-only X.Y.Z, enforced by the bump job's regex gate.
+          VERSION: ${{ needs.bump-version.outputs.version }}
+          TARGET: ${{ needs.bump-version.outputs.commit }}
+        run: |
+          TAG="v${VERSION}"
+          # Idempotent: a re-run of this job after a partial failure must not fail the
+          # pipeline on an already-published release.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; skipping"
+            exit 0
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$TARGET" --title "$TAG" --generate-notes
