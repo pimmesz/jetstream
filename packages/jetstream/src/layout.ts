@@ -129,13 +129,16 @@ export const KEY_TYPES: Record<string, KeyType> = {
     },
   },
   // ── Jetstream keys with settings ──
+  // `project` is FOLDED into the plugin-owned slot (uuid slot, kind 'project') so a repo add/move
+  // applies LIVE (POST /slot) with no profile re-import — same as build/stop-all/model/fleet below.
+  // The standalone gg.pim.jetstream.project action stays registered for already-installed profiles.
   project: {
-    uuid: 'gg.pim.jetstream.project',
+    uuid: 'gg.pim.jetstream.slot',
     name: 'Project status',
     build: (f) => {
       const path = str(f.path);
       if (!path) return { error: 'project needs "path"' };
-      return { settings: { path, ...(str(f.name) ? { name: str(f.name) } : {}) } };
+      return { settings: { kind: 'project', path, ...(str(f.name) ? { name: str(f.name) } : {}), ...slotCosmetics(f) } };
     },
   },
   launch: {

@@ -254,8 +254,16 @@ export async function run(argv: string[], binDir: string): Promise<number> {
             // Auto-clean: drop any redundant older "Jetstream Custom" copies from the store (keeps the
             // real board), so imports can't pile up. Stream Deck's in-memory list settles on next restart.
             const pruned = pruneCustomProfiles();
+            // Say WHY a copy was still needed, so it never looks like a silent fallback: native
+            // Elgato action types (launch/approve/nav/text/…) can't be placed live — only a profile
+            // import can add them — while slot kinds (apps, repos, folded keys) normally apply live.
+            const nativeNames = [...new Set(structural.map((p) => p.name))].join(', ');
+            const why =
+              structural.length > 0
+                ? ` — ${structural.length} native Stream Deck ${structural.length > 1 ? 'keys' : 'key'} (${nativeNames}) can only be added by import`
+                : '';
             chatIo.say(
-              `\nWrote a ${placements.length}-key layout (${layout.placements.length} changed) to ${outPath}.\n` +
+              `\nWrote a ${placements.length}-key layout (${layout.placements.length} changed) to ${outPath}${why}.\n` +
                 'Double-click it to import (installs as a new profile — nothing is overwritten).' +
                 (pruned.length ? `\n(Cleaned up ${pruned.length} old duplicate profile${pruned.length > 1 ? 's' : ''}.)` : '') +
                 runNote,

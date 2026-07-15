@@ -102,6 +102,7 @@ function renderBoard(): void {
   void interruptAllKey.renderAll(); // working-count face tracks the board
   void slotKey.renderKind('stopall'); // stop-all folded as a slot kind — refresh its working-count face
   void slotKey.renderKind('fleet'); // fleet roll-up folded as a slot kind — refresh on every board change
+  void slotKey.renderKind('project'); // project folded as a slot kind — refresh live status/glyph/elapsed
   void micMuteKey.renderAll(); // re-read mic state so an external mute (Zoom, …) reflects on the key
 }
 

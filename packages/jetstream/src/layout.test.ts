@@ -59,13 +59,28 @@ describe('resolvePlacements', () => {
     });
   });
 
-  it('places a Jetstream project key (with settings) and a no-settings key', () => {
+  it('folds a project key into a LIVE slot kind (uuid slot → sendSlot, no import) alongside a no-settings key', () => {
     const { placements } = resolvePlacements(xl, [
       { coord: 'b1', type: 'project', path: '/dev/falcon', name: 'Falcon' },
       { coord: 'c1', type: 'usage' },
     ]);
-    expect(placements[0]).toMatchObject({ uuid: 'gg.pim.jetstream.project', settings: { path: '/dev/falcon', name: 'Falcon' } });
+    // uuid === gg.pim.jetstream.slot is exactly what puts a repo add in cli.ts onLayout's LIVE bucket
+    // (structural.length === 0) instead of forcing a .streamDeckProfile re-import.
+    expect(placements[0]).toMatchObject({
+      uuid: 'gg.pim.jetstream.slot',
+      settings: { kind: 'project', path: '/dev/falcon', name: 'Falcon' },
+    });
     expect(placements[1]).toMatchObject({ uuid: 'gg.pim.jetstream.usage', settings: null });
+  });
+
+  it('a project key requires a path, and threads cosmetic overrides onto the slot', () => {
+    const { placements, warnings } = resolvePlacements(xl, [
+      { coord: 'a1', type: 'project' }, // no path → dropped with a warning
+      { coord: 'b1', type: 'project', path: '/dev/x', color: 'red', label: 'X' },
+    ]);
+    expect(warnings.some((w) => /project needs "path"/.test(w))).toBe(true);
+    expect(placements).toHaveLength(1);
+    expect(placements[0]?.settings).toMatchObject({ kind: 'project', path: '/dev/x', color: '#e5484d', label: 'X' });
   });
 
   it('places a mic-mute key (a no-settings action wired into the designer)', () => {

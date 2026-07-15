@@ -10,7 +10,7 @@ export interface SlotCommand {
 }
 
 const KINDS: readonly SlotKind[] = [
-  'empty', 'app', 'url', 'run', 'build', 'stopall', 'model', 'fleet', 'volup', 'voldown', 'volmute',
+  'empty', 'app', 'url', 'run', 'build', 'stopall', 'model', 'fleet', 'project', 'volup', 'voldown', 'volmute',
 ];
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined);
@@ -87,6 +87,15 @@ export function parseSlotCommand(raw: unknown): SlotCommand | null {
       const args = Array.isArray(r.args) ? (r.args as string[]) : undefined;
       const cwd = str(r.cwd);
       settings = { kind, command, ...(args ? { args } : {}), ...(cwd ? { cwd } : {}), ...extra };
+      break;
+    }
+    case 'project': {
+      // A live per-repo status light. `path` is required (the repo whose sessions colour the key);
+      // `name` defaults to the folder name at render. Without this case the per-kind whitelist would
+      // strip path/name and the key would bind to nothing.
+      const path = str(r.path);
+      if (!path) return null;
+      settings = { kind, path, ...(str(r.name) ? { name: str(r.name) } : {}), ...extra };
       break;
     }
     case 'build':

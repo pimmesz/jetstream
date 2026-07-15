@@ -71,6 +71,9 @@ export function labelForAction(uuid: string, settings: unknown): string {
   if (uuid === 'gg.pim.jetstream.slot') {
     const label = asStr(s.label);
     if (label) return label;
+    if (s.kind === 'project') {
+      return asStr(s.name) ?? (asStr(s.path) ? basename(asStr(s.path)!) : 'project');
+    }
     if (s.kind === 'app') {
       const app = asStr(s.app);
       return app ? basename(app.replace(/^"+|"+$/g, '')).replace(/\.app$/i, '') || 'open' : 'open';
@@ -383,6 +386,22 @@ export function describeKeyForModel(k: BoardKey): string {
       const cwd = asStr(s.cwd) ? ` cwd="${asStr(s.cwd)}"` : '';
       return `run command="${asStr(s.command) ?? ''}"${args}${cwd}${extra}`;
     }
+    // A project slot MUST round-trip its path/name, or a "move it" would drop the repo (the model
+    // would see the cell as empty and overwrite it). The other folded kinds round-trip as their chat
+    // type name so they're visible + movable too, not silently read as empty.
+    if (s.kind === 'project') {
+      return `project path="${asStr(s.path) ?? ''}"${asStr(s.name) ? ` name="${asStr(s.name)}"` : ''}${extra}`;
+    }
+    const foldedType: Record<string, string> = {
+      build: 'build',
+      stopall: 'stop-all',
+      model: 'model',
+      fleet: 'fleet',
+      volup: 'volup',
+      voldown: 'voldown',
+      volmute: 'volmute',
+    };
+    if (typeof s.kind === 'string' && foldedType[s.kind]) return `${foldedType[s.kind]}${extra}`;
     return extra ? `slot${extra}` : 'empty';
   }
   if (k.uuid === 'gg.pim.jetstream.project') {

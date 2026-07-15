@@ -4,14 +4,19 @@ import type {
   DidReceiveSettingsEvent,
   KeyAction,
   KeyDownEvent,
+  KeyUpEvent,
   WillAppearEvent,
+  WillDisappearEvent,
 } from '@elgato/streamdeck';
-import { worstStatus } from '@pimmesz/jetstream-status';
+import { worstStatus, type ProjectStatus } from '@pimmesz/jetstream-status';
 import type { Face } from '../render';
 import { keyFace } from '../render';
 import { config } from '../config';
 import { board } from '../state';
-import { interruptPids } from '../switchto';
+import { permissions } from '../permissions';
+import { readDiffStat, type DiffStat } from '../diffstat';
+import { heldMs } from '../press';
+import { interruptPids, openProject } from '../switchto';
 import { execPlan, runPlan } from '../slot-exec';
 import { parseSlotCommand } from '../slot-command';
 import { imageMime, resolveSlotIcon } from '../slot-icon';
@@ -19,13 +24,17 @@ import { buildFace } from './build';
 import { stopFace } from './interrupt-all';
 import { modelFace, cycleModel } from './model';
 import { fleetFace, darkReason } from './fleet';
+import { projectFace } from './project-face';
+import { shouldInterrupt } from './project';
 import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
 
 // FOLDED structural keys + volume keys: rendered + handled here so `jetstream chat` retargets them LIVE
 // (POST /slot) instead of re-importing a profile. 'build' is a static stamp; 'stopall' (gated) SIGINTs
 // the fleet; 'model' cycles the global model override; 'fleet' is the live roll-up; 'volup'/'voldown'/
-// 'volmute' adjust the macOS OUTPUT volume (works on a Scarlett once a virtual gain device like
-// Background Music is in front). None carry per-key settings. See docs/slot-kinds-scoping.md.
+// 'volmute' adjust the macOS OUTPUT volume; 'project' is a live per-repo status light (colour/glyph/
+// diff/long-press-interrupt) — the standalone ProjectKey action folded in so a repo add/move applies
+// live with no profile re-import. Only 'project' carries per-key settings (path/name). See
+// docs/slot-kinds-scoping.md.
 export type SlotKind =
   | 'empty'
   | 'app'
@@ -35,6 +44,7 @@ export type SlotKind =
   | 'stopall'
   | 'model'
   | 'fleet'
+  | 'project'
   | 'volup'
   | 'voldown'
   | 'volmute';
@@ -50,6 +60,8 @@ export type SlotSettings = {
   command?: string; // kind 'run': argv[0], resolved on PATH — NEVER a shell string
   args?: string[]; // kind 'run': argument vector, one argv slot each (no splitting)
   cwd?: string; // kind 'run': working directory
+  path?: string; // kind 'project': the repo root whose Claude sessions colour this key
+  name?: string; // kind 'project': display name; defaults to the folder name
   icon?: string; // custom key image (a data: URI or an image file path); else an app slot shows the app's own icon
   color?: string; // face background override (#rrggbb); else the per-kind default
   sub?: string; // small second line override
@@ -130,16 +142,68 @@ export function slotFace(s: SlotSettings): Face {
 export class SlotKey extends SingletonAction<SlotSettings> {
   override async onWillAppear(ev: WillAppearEvent<SlotSettings>): Promise<void> {
     if (!ev.action.isKey()) return; // keypad-only; a dial has no board coordinate
+    this.syncProjectRegistry(ev.action.id, ev.payload.settings);
     await this.render(ev.action, ev.payload.settings);
   }
 
   override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<SlotSettings>): Promise<void> {
     if (!ev.action.isKey()) return;
+    this.syncProjectRegistry(ev.action.id, ev.payload.settings);
     await this.render(ev.action, ev.payload.settings);
+  }
+
+  /** A slot of kind 'project' represents a repo, so it must join the board registry (keyed by the
+   * Stream Deck action id, like ProjectKey does) for its live Claude sessions to colour it and for the
+   * Fleet/Attention roll-ups to cover it. Idempotent; deregisters + drops per-id state when a slot is
+   * retargeted AWAY from 'project'. MUST also be called from `assign()` — setSettings does not re-fire
+   * onDidReceiveSettings in-plugin, so a live retarget would otherwise never (de)register. */
+  private syncProjectRegistry(id: string, settings: SlotSettings): void {
+    if (settings.kind === 'project') {
+      const path = settings.path ?? '';
+      const name = settings.name?.trim() || (path ? basename(path) : 'set path');
+      const prev = board.project(id);
+      // CRITICAL: skip an UNCHANGED re-registration. render() → renderKind('project') calls
+      // getSettings(), whose SDK response re-fires onDidReceiveSettings (a shared connection event);
+      // without this guard that echo would setProject → board emit → renderBoard → renderKind → getSettings
+      // → … an endless loop the moment a project slot is visible. Registering only on a real change
+      // breaks it after one cycle.
+      if (prev?.path === path && prev?.name === name) return;
+      // A re-point to a DIFFERENT repo (or a first registration) cancels any in-flight hold gesture and
+      // drops the stale diff badge; a name-only change keeps the badge (avoids a needless git re-read).
+      if (prev?.path !== path) {
+        this.clearHoldWarn(id);
+        this.pressAt.delete(id);
+        this.diffStats.delete(id);
+      }
+      board.setProject(id, { name, path });
+    } else if (board.project(id)) {
+      // this key WAS a project and is now something else → deregister + drop its per-id state
+      this.clearHoldWarn(id);
+      this.pressAt.delete(id);
+      this.diffStats.delete(id);
+      this.diffPending.delete(id);
+      board.removeProject(id);
+    }
+  }
+
+  override onWillDisappear(ev: WillDisappearEvent<SlotSettings>): void {
+    this.clearHoldWarn(ev.action.id);
+    this.pressAt.delete(ev.action.id); // WillDisappear doesn't call syncProjectRegistry — clear the gesture here too
+    if (board.project(ev.action.id)) {
+      this.diffStats.delete(ev.action.id);
+      this.diffPending.delete(ev.action.id);
+      board.removeProject(ev.action.id);
+    }
   }
 
   override async onKeyDown(ev: KeyDownEvent<SlotSettings>): Promise<void> {
     const settings = ev.payload.settings;
+    // 'project' is press-and-hold: arm the interrupt warning now, act on key-UP (short = open the repo,
+    // long = SIGINT a working session). Every other kind acts on key-down, below.
+    if (settings.kind === 'project') {
+      this.projectKeyDown(ev.action);
+      return;
+    }
     // `stopall` SIGINTs the whole fleet — destructive, so (like the run gate) it stays inert until
     // opted in, so a webpage that plants it via the unauthenticated /slot endpoint can't fire it.
     if (settings.kind === 'stopall') {
@@ -202,6 +266,85 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     else await ev.action.showAlert();
   }
 
+  override async onKeyUp(ev: KeyUpEvent<SlotSettings>): Promise<void> {
+    if (ev.payload.settings.kind !== 'project') return; // every other kind already acted on key-down
+    await this.projectKeyUp(ev.action, ev.payload.settings);
+  }
+
+  // ── 'project' slot kind: per-id press + done-diff state (mirrors the standalone ProjectKey) ──
+  // Short press → open the repo; long press → SIGINT its working session(s), but ONLY when working
+  // and only after a deliberate hold (the face warns first). Measured key-down → key-up.
+  private pressAt = new Map<string, number>();
+  private holdWarn = new Map<string, ReturnType<typeof setTimeout>>();
+  /** SIGINT kills the current turn, so interrupt needs a longer, deliberate hold than a generic press. */
+  private static readonly INTERRUPT_HOLD_MS = 1500;
+  // Per-project done-diff, fetched ONCE per done-episode off the render path and cached; cleared when
+  // the project leaves 'done' or the key is re-pointed.
+  private diffStats = new Map<string, DiffStat | null>();
+  private diffPending = new Set<string>();
+
+  private projectKeyDown(a: KeyAction): void {
+    this.pressAt.set(a.id, Date.now());
+    // Only a working session can be interrupted — arm the warning only then. Past the hold threshold,
+    // flip the face so the press is visibly "about to interrupt" (still releasable to cancel).
+    if (board.byProject()[a.id]?.status !== 'working') return;
+    this.holdWarn.set(
+      a.id,
+      setTimeout(() => {
+        if (board.byProject()[a.id]?.status !== 'working') return; // Stopped mid-hold → no lying warning
+        void a.setImage(
+          keyFace({
+            color: '#e5484d', // danger red — this press is about to SIGINT the session
+            label: board.project(a.id)?.name ?? 'project',
+            glyph: '✕',
+            sub: 'release to interrupt',
+          }),
+        );
+      }, SlotKey.INTERRUPT_HOLD_MS),
+    );
+  }
+
+  private async projectKeyUp(a: KeyAction, settings: SlotSettings): Promise<void> {
+    const warned = this.clearHoldWarn(a.id);
+    const held = heldMs(this.pressAt, a.id);
+    const status = board.byProject()[a.id]?.status ?? 'none';
+    if (shouldInterrupt(status, held, SlotKey.INTERRUPT_HOLD_MS)) {
+      const sent = interruptPids(board.pidsForProject(a.id));
+      await (sent > 0 ? a.showOk() : a.showAlert());
+    } else {
+      const path = board.project(a.id)?.path ?? settings.path;
+      if (!path || !openProject(path)) await a.showAlert();
+    }
+    if (warned) await this.render(a, settings); // repaint over the "release to interrupt" warning
+  }
+
+  /** Clear a key's pending interrupt-warning timer; returns whether one was armed. */
+  private clearHoldWarn(id: string): boolean {
+    const timer = this.holdWarn.get(id);
+    if (timer === undefined) return false;
+    clearTimeout(timer);
+    this.holdWarn.delete(id);
+    return true;
+  }
+
+  /** Fetch the done-diff once, off the hot render path — async + cached, cleared when the project
+   * leaves 'done'. readDiffStat never throws (null on any failure). Repaints project slots when known. */
+  private trackDiff(id: string, status: ProjectStatus, path: string | undefined): void {
+    if (status !== 'done') {
+      this.diffStats.delete(id);
+      this.diffPending.delete(id);
+      return;
+    }
+    if (!path || this.diffStats.has(id) || this.diffPending.has(id)) return;
+    this.diffPending.add(id);
+    void readDiffStat(path).then((stat) => {
+      this.diffPending.delete(id);
+      if (board.project(id)?.path !== path) return; // re-pointed mid-read → drop the stale result
+      this.diffStats.set(id, stat);
+      void this.renderKind('project'); // repaint now the badge is known (cache stops a re-fetch)
+    });
+  }
+
   /**
    * Retarget the slot at a coordinate from a `POST /slot` body — the live-edit path. The SDK offers
    * no key lookup, so we scan the visible instances of this action for the matching coordinate. It's
@@ -216,6 +359,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       const c = visible.coordinates;
       if (!c || c.column !== cmd.column || c.row !== cmd.row) continue;
       await visible.setSettings(cmd.settings); // full replace
+      this.syncProjectRegistry(visible.id, cmd.settings); // setSettings won't re-fire onDidReceiveSettings
       await this.render(visible, cmd.settings);
       return { status: 200, body: JSON.stringify({ ok: true, coord: cmd.coord }) };
     }
@@ -235,6 +379,9 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   async renderKind(kind: SlotKind): Promise<void> {
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
+      // A project key mid-interrupt-hold shows the "release to interrupt" warning — a routine repaint
+      // (board tick / subscription) must not wipe it. Entry lives key-down → key-up.
+      if (kind === 'project' && this.holdWarn.has(visible.id)) continue;
       try {
         const s = await visible.getSettings();
         if (s.kind === kind) await this.render(visible, s);
@@ -258,6 +405,10 @@ export class SlotKey extends SingletonAction<SlotSettings> {
 
   private async render(a: KeyAction, settings: SlotSettings): Promise<void> {
     await a.setTitle('');
+    if (settings.kind === 'project') {
+      await this.renderProject(a, settings);
+      return;
+    }
     const face = this.faceFor(settings);
     // Paint the text/emoji face immediately (also the fallback when there's no image icon)…
     await a.setImage(keyFace(face));
@@ -266,5 +417,31 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     const icon = await resolveSlotIcon(settings);
     if (!icon) return;
     await a.setImage(face.glyph ? keyFace({ ...face, image: icon }) : icon);
+  }
+
+  /** Paint a 'project' slot as a live repo status light — resolving colour/glyph/sub + the done-diff
+   * badge from board state, through the SAME `projectFace` the standalone ProjectKey uses (so the two
+   * never drift). A `label` override renames it; status still drives the colour/glyph. */
+  private async renderProject(a: KeyAction, settings: SlotSettings): Promise<void> {
+    const now = Date.now();
+    const id = a.id;
+    const project = board.project(id);
+    const path = project?.path ?? settings.path;
+    const state = board.byProject()[id] ?? { status: 'none' as const };
+    this.trackDiff(id, state.status, path);
+    const base = projectFace({
+      name: project?.name ?? (settings.name?.trim() || 'project'),
+      configured: Boolean(path),
+      status: state.status,
+      since: state.since,
+      tool: state.tool,
+      answerable: permissions.projectsWithPending(board.projects()).has(id),
+      diffStat: this.diffStats.get(id) ?? null,
+      now,
+      theme: config.get().theme,
+    });
+    // Status drives the DEFAULT colour/glyph/sub, but an explicit override still wins (rename via
+    // `label`, `color`, `sub`, `glyph`, an emoji `icon`) — consistent with every other slot kind.
+    await a.setImage(keyFace(withOverrides(base, settings)));
   }
 }

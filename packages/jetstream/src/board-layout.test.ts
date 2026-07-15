@@ -41,6 +41,11 @@ describe('labelForAction', () => {
     expect(labelForAction('gg.pim.jetstream.slot', { kind: 'empty' })).toBe('·');
     expect(labelForAction('gg.pim.jetstream.slot', { kind: 'app', app: '/x/Foo.app', label: 'Bar' })).toBe('Bar');
   });
+
+  it('labels a folded project slot by name/basename (so the board map is not blank)', () => {
+    expect(labelForAction('gg.pim.jetstream.slot', { kind: 'project', name: 'Falcon', path: '/dev/x' })).toBe('Falcon');
+    expect(labelForAction('gg.pim.jetstream.slot', { kind: 'project', path: '/Users/me/loudini' })).toBe('loudini');
+  });
 });
 
 describe('toSlotKey (native → slot migration)', () => {
@@ -161,6 +166,20 @@ describe('describeKeyForModel', () => {
       describeKeyForModel({ uuid: 'gg.pim.jetstream.project', label: 'Falcon', settings: { path: '/dev/falcon', name: 'Falcon' } }),
     ).toBe('project path="/dev/falcon" name="Falcon"');
     expect(describeKeyForModel({ uuid: 'gg.pim.jetstream.permission', label: 'deny', settings: { decision: 'deny' } })).toBe('deny');
+  });
+
+  it('round-trips a folded project slot (path/name) so a MOVE keeps the repo, not reads it as empty', () => {
+    expect(
+      describeKeyForModel({
+        uuid: 'gg.pim.jetstream.slot',
+        label: 'Loudini',
+        settings: { kind: 'project', path: '/dev/loudini', name: 'Loudini' },
+      }),
+    ).toBe('project path="/dev/loudini" name="Loudini"');
+    // the other folded kinds round-trip as their chat type name too (visible + movable, not 'empty')
+    expect(describeKeyForModel({ uuid: 'gg.pim.jetstream.slot', label: 'fleet', settings: { kind: 'fleet' } })).toBe('fleet');
+    expect(describeKeyForModel({ uuid: 'gg.pim.jetstream.slot', label: 'stop', settings: { kind: 'stopall' } })).toBe('stop-all');
+    expect(describeKeyForModel({ uuid: 'gg.pim.jetstream.slot', label: 'vol+', settings: { kind: 'volup' } })).toBe('volup');
   });
 
   it('round-trips run args/cwd and a custom icon so a tweak/move keeps them', () => {

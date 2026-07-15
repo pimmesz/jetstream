@@ -55,6 +55,15 @@ describe('parseSlotCommand', () => {
   it('clears to an empty slot', () => {
     expect(parseSlotCommand({ coord: 'a1', kind: 'empty' })?.settings).toEqual({ kind: 'empty' });
   });
+  it('builds a project command (path required; name/cosmetics optional)', () => {
+    expect(parseSlotCommand({ coord: 'a7', kind: 'project', path: '/dev/loudini', name: 'Loudini' })?.settings).toEqual({
+      kind: 'project',
+      path: '/dev/loudini',
+      name: 'Loudini',
+    });
+    // no path → rejected: without the validator case, path/name would be stripped and the key bind to nothing
+    expect(parseSlotCommand({ coord: 'a7', kind: 'project' })).toBeNull();
+  });
   it('folds cosmetic fields into any kind — colour normalized, sub, glyph', () => {
     const s = parseSlotCommand({ coord: 'a8', kind: 'app', app: '/x.app', color: 'red', sub: 'chat', glyph: '🚀' })
       ?.settings;

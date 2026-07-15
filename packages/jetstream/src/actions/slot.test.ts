@@ -3,6 +3,7 @@ import { SlotKey, slotFace } from './slot';
 import { stopFace } from './interrupt-all';
 import { modelFace } from './model';
 import { config } from '../config';
+import { board } from '../state';
 
 vi.mock('../switchto'); // spy interruptPids — a stopall press must SIGINT the fleet ONLY when enabled
 import { interruptPids } from '../switchto';
@@ -93,6 +94,33 @@ describe('SlotKey.assign', () => {
     const res = await slotWith([key]).assign({ coord: 'zz' });
     expect(res.status).toBe(400);
     expect(key.setSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe('SlotKey project kind — registration loop guard', () => {
+  it('registers a project on assign, and an UNCHANGED re-assign does NOT re-register (breaks the render loop)', async () => {
+    const key = { ...fakeKey(0, 0), id: 'proj-loop-1' };
+    const slot = slotWith([key]);
+    const setProject = vi.spyOn(board, 'setProject');
+    try {
+      const r1 = await slot.assign({ coord: 'a1', kind: 'project', path: '/dev/loudini', name: 'Loudini' });
+      expect(r1.status).toBe(200);
+      expect(board.project('proj-loop-1')).toMatchObject({ path: '/dev/loudini', name: 'Loudini' });
+      const afterFirst = setProject.mock.calls.length;
+      // The identical settings the SDK echoes via getSettings()→onDidReceiveSettings: the guard must NOT
+      // setProject again — that emit would drive renderBoard → renderKind → getSettings → … forever.
+      await slot.assign({ coord: 'a1', kind: 'project', path: '/dev/loudini', name: 'Loudini' });
+      expect(setProject.mock.calls.length).toBe(afterFirst);
+      // A real re-point DOES re-register.
+      await slot.assign({ coord: 'a1', kind: 'project', path: '/dev/other', name: 'Other' });
+      expect(setProject.mock.calls.length).toBe(afterFirst + 1);
+      // Retargeting away from project deregisters it.
+      await slot.assign({ coord: 'a1', kind: 'empty' });
+      expect(board.project('proj-loop-1')).toBeUndefined();
+    } finally {
+      setProject.mockRestore();
+      board.removeProject('proj-loop-1');
+    }
   });
 });
 

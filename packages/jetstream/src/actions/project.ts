@@ -7,14 +7,15 @@ import type {
   WillAppearEvent,
   WillDisappearEvent,
 } from '@elgato/streamdeck';
-import { colorFor, glyphFor, type ProjectStatus } from '@pimmesz/jetstream-status';
+import { type ProjectStatus } from '@pimmesz/jetstream-status';
 import { board } from '../state';
 import { config } from '../config';
 import { permissions } from '../permissions';
-import { formatDiffStat, readDiffStat, type DiffStat } from '../diffstat';
+import { readDiffStat, type DiffStat } from '../diffstat';
 import { heldMs } from '../press';
-import { formatElapsed, keyFace } from '../render';
+import { keyFace } from '../render';
 import { openProject, interruptPids } from '../switchto';
+import { projectFace } from './project-face';
 
 /** Per-key settings, edited in the property inspector. `path` is the project root
  * whose Claude sessions colour this key; `name` defaults to the folder name.
@@ -23,14 +24,6 @@ import { openProject, interruptPids } from '../switchto';
 export type ProjectSettings = {
   name?: string;
   path?: string;
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  none: '',
-  idle: 'idle',
-  working: 'working',
-  needsInput: 'NEEDS YOU',
-  done: 'done',
 };
 
 @action({ UUID: 'gg.pim.jetstream.project' })
@@ -137,17 +130,22 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
       if (this.holdWarn.has(visible.id)) continue;
       const project = board.project(visible.id);
       const state = byProject[visible.id] ?? { status: 'none' as const };
-      const configured = Boolean(project?.path);
       this.trackDiff(visible.id, state.status, project?.path);
       await visible.setTitle('');
       await visible.setImage(
-        keyFace({
-          color: configured ? colorFor(state.status, theme) : '#26262b',
-          label: project?.name ?? 'project',
-          subMax: 20, // room for the diff badge (`+120/-40 · done 4m`)
-          ...(configured ? { glyph: this.glyph(visible.id, state.status, answerable) } : {}),
-          ...(configured ? this.subLine(visible.id, state, now, answerable) : { sub: 'set path' }),
-        }),
+        keyFace(
+          projectFace({
+            name: project?.name ?? 'project',
+            configured: Boolean(project?.path),
+            status: state.status,
+            since: state.since,
+            tool: state.tool,
+            answerable: answerable.has(visible.id),
+            diffStat: this.diffStats.get(visible.id) ?? null,
+            now,
+            theme,
+          }),
+        ),
       );
     }
   }
@@ -169,34 +167,6 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
       this.diffStats.set(id, stat);
       void this.renderAll(); // repaint now that the badge is known (cache stops a re-fetch)
     });
-  }
-
-  /** C: a needsInput project the deck CAN answer (a held permission) shows `!`; one it
-   * can't (an open elicitation → go to the keyboard) shows `?`. Otherwise the status glyph. */
-  private glyph(id: string, status: ProjectStatus, answerable: Set<string>): string {
-    if (status === 'needsInput') return answerable.has(id) ? '!' : '?';
-    return glyphFor(status);
-  }
-
-  /** The line under the label: `Bash · 12m` (working), `+120/-40 · done 4m` (finished, with
-   * the change size), `approve?`/`answer` (needs you — deck-answerable or not), or the word. */
-  private subLine(
-    id: string,
-    state: { status: ProjectStatus; since?: number; tool?: string },
-    now: number,
-    answerable: Set<string>,
-  ): { sub: string } | Record<string, never> {
-    if (state.status === 'needsInput') return { sub: answerable.has(id) ? 'approve?' : 'answer' };
-    const elapsed = state.since !== undefined ? formatElapsed(now - state.since) : '';
-    if (state.status === 'working' && elapsed) {
-      return { sub: state.tool ? `${state.tool} · ${elapsed}` : `working ${elapsed}` };
-    }
-    if (state.status === 'done' && elapsed) {
-      const badge = formatDiffStat(this.diffStats.get(id) ?? null);
-      return { sub: badge ? `${badge} · done ${elapsed}` : `done ${elapsed}` };
-    }
-    const label = STATUS_LABEL[state.status] ?? '';
-    return label ? { sub: label } : {};
   }
 }
 
