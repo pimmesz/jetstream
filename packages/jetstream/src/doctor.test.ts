@@ -9,7 +9,28 @@ import {
   checkGhForCi,
   commandOnPath,
   hasJetstreamHooks,
+  runDoctor,
+  type DoctorIO,
 } from './doctor';
+
+describe('runDoctor listener check', () => {
+  const io = (listenerAlive: boolean): DoctorIO => ({
+    env: {},
+    claudeOnPath: () => true,
+    ghOnPath: () => true,
+    settingsRaw: () => undefined,
+    projectsRaw: () => undefined,
+    listenerAlive: async () => listenerAlive,
+  });
+  it('warns when the hook listener is not responding (the silent dark-board case)', async () => {
+    const listener = (await runDoctor(io(false))).find((r) => /listener/i.test(r.message));
+    expect(listener?.status).toBe('warn');
+  });
+  it('passes when the listener responds', async () => {
+    const listener = (await runDoctor(io(true))).find((r) => /listener/i.test(r.message));
+    expect(listener?.status).toBe('ok');
+  });
+});
 
 describe('checkAnthropicEnv', () => {
   it('ok when both keys are unset', () => {

@@ -4,9 +4,42 @@ import type { KeyAction, KeyDownEvent } from '@elgato/streamdeck';
 import { colorFor, glyphFor, summarize, worstStatus } from '@pimmesz/jetstream-status';
 import { board } from '../state';
 import { config } from '../config';
+import { isListenerBound } from '../listener-status';
 import { checkHooksPresent } from '../doctor';
 import { defaultSettingsPath } from '../hooks-install';
+import type { Face } from '../render';
 import { keyFace } from '../render';
+
+/** The fleet roll-up face from LIVE board state: worst-status colour + compact `Nw N! N✓` counts, or
+ * a dark "add repos / idle · press?" invite. Shared by the standalone Fleet key and the slot `fleet`
+ * kind so both paint identically. */
+export function fleetFace(): Face {
+  const byProject = board.byProject();
+  const worst = worstStatus(byProject);
+  if (worst === 'none') {
+    // Dark board: an empty fleet is the common first-run cause; otherwise invite the press.
+    const empty = board.projects().length === 0;
+    return { color: empty ? '#b58900' : '#26262b', label: 'fleet', sub: empty ? 'add repos' : 'idle · press?' };
+  }
+  const { working, waiting, done } = summarize(byProject);
+  // Compact enough for a 144px key: e.g. `3w 1! 2✓` (working / waiting / done).
+  return { color: colorFor(worst, config.get().theme), glyph: glyphFor(worst), label: 'fleet', sub: `${working}w ${waiting}! ${done}✓` };
+}
+
+/** The likeliest reason the board shows no sessions, cheapest-signal first — the press-to-doctor
+ * hint on a dark Fleet key. Shared by the standalone key and the slot `fleet` kind. */
+export function darkReason(): string {
+  if (!isListenerBound()) return 'hooks offline'; // the listener never bound → no event can arrive
+  if (board.projects().length === 0) return 'add repos';
+  let raw: string | undefined;
+  try {
+    raw = readFileSync(defaultSettingsPath(), 'utf8');
+  } catch {
+    raw = undefined;
+  }
+  if (checkHooksPresent(raw).status === 'warn') return 'wire hooks';
+  return 'all idle';
+}
 
 /**
  * One always-visible roll-up key so the fleet is legible even when projects outnumber
@@ -29,23 +62,8 @@ export class FleetKey extends SingletonAction {
       await ev.action.showOk();
       return;
     }
-    await ev.action.setImage(
-      keyFace({ color: '#b58900', label: 'why dark?', sub: this.darkReason() }),
-    );
+    await ev.action.setImage(keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
     setTimeout(() => void this.renderOne(ev.action), 2600);
-  }
-
-  /** The likeliest reason the board shows no sessions, cheapest-signal first. */
-  private darkReason(): string {
-    if (board.projects().length === 0) return 'add repos';
-    let raw: string | undefined;
-    try {
-      raw = readFileSync(defaultSettingsPath(), 'utf8');
-    } catch {
-      raw = undefined;
-    }
-    if (checkHooksPresent(raw).status === 'warn') return 'wire hooks';
-    return 'all idle';
   }
 
   async renderAll(): Promise<void> {
@@ -55,28 +73,7 @@ export class FleetKey extends SingletonAction {
   }
 
   private async renderOne(a: KeyAction): Promise<void> {
-    const byProject = board.byProject();
-    const worst = worstStatus(byProject);
-    const { working, waiting, done } = summarize(byProject);
-    let face: string;
-    if (worst === 'none') {
-      // Dark board: an empty fleet is the common first-run cause; otherwise invite the press.
-      const empty = board.projects().length === 0;
-      face = keyFace({
-        color: empty ? '#b58900' : '#26262b',
-        label: 'fleet',
-        sub: empty ? 'add repos' : 'idle · press?',
-      });
-    } else {
-      face = keyFace({
-        color: colorFor(worst, config.get().theme),
-        glyph: glyphFor(worst),
-        label: 'fleet',
-        // Compact enough for a 144px key: e.g. `3w 1! 2✓` (working / waiting / done).
-        sub: `${working}w ${waiting}! ${done}✓`,
-      });
-    }
     await a.setTitle('');
-    await a.setImage(face);
+    await a.setImage(keyFace(fleetFace()));
   }
 }

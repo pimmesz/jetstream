@@ -8,6 +8,7 @@ import { config, type JetstreamConfig } from '../config';
 import { commandOnPath, defaultDoctorIO, runDoctor, type CheckResult } from '../doctor';
 import { expandHome, handleFleetMessage, scanForGitRepos, writeFleetFile } from '../fleet';
 import { hookCommands } from '../cli';
+import { isListenerBound } from '../listener-status';
 import { installHooks } from '../hooks-install';
 import { defaultOpenFile } from '../open-file';
 import {
@@ -74,6 +75,10 @@ function pluginDoctorIO(): ReturnType<typeof defaultDoctorIO> {
     env,
     claudeOnPath: () => commandOnPath('claude', env),
     ghOnPath: () => commandOnPath('gh', env),
+    // In-plugin we know THIS instance's bind state directly. A port probe would report OK when an
+    // orphaned prior plugin still holds the port while this instance failed to bind — a green board
+    // that never updates. isListenerBound() is the same truth the Fleet key uses, so they agree.
+    listenerAlive: async () => isListenerBound(),
   };
 }
 
@@ -101,7 +106,7 @@ export class SettingsKey extends SingletonAction {
     // Health check: the same read-only diagnostics as `jetstream doctor`, in-app, so a
     // plugin-first user whose board stays dark gets an answer without a terminal.
     if (isHealthCheck(ev.payload)) {
-      this.reply({ health: 'report', checks: this.pluginHealth() });
+      this.reply({ health: 'report', checks: await this.pluginHealth() });
       return;
     }
     if (fixId(ev.payload) === 'hooks') {
@@ -121,7 +126,7 @@ export class SettingsKey extends SingletonAction {
       return;
     }
     if (isDiagnostics(ev.payload)) {
-      const checks = runDoctor(pluginDoctorIO());
+      const checks = await runDoctor(pluginDoctorIO());
       const text = [
         'Jetstream diagnostics',
         `platform: ${process.platform}  node: ${process.version}`,
@@ -256,7 +261,7 @@ export class SettingsKey extends SingletonAction {
   /** The in-app setup checklist: the read-only doctor checks PLUS a fleet check. Empty fleet
    * = the board stays dark, so it belongs here even though doctor.ts stays fleet-agnostic
    * (an empty projects.json is legitimately OK for a placed-keys user, per checkProjectsConfig). */
-  private pluginHealth(): CheckResult[] {
+  private async pluginHealth(): Promise<CheckResult[]> {
     const count = board.projects().length;
     const fleet: CheckResult =
       count > 0
@@ -266,7 +271,7 @@ export class SettingsKey extends SingletonAction {
             message: 'No projects yet — add repos so the Fleet/Attention keys light up',
             fixId: 'fleet',
           };
-    return [...runDoctor(pluginDoctorIO()), fleet];
+    return [...(await runDoctor(pluginDoctorIO())), fleet];
   }
 
   /** One-press fix for the 'hooks' checklist item: install the BASE hooks (never the
@@ -276,12 +281,12 @@ export class SettingsKey extends SingletonAction {
     try {
       await installHooks({ commands: hookCommands(pluginBinDir(), false) });
     } catch (error) {
-      const checks = this.pluginHealth();
+      const checks = await this.pluginHealth();
       checks.push({ status: 'warn', message: `Couldn't install hooks: ${errMsg(error)}` });
       this.reply({ health: 'report', checks });
       return;
     }
-    this.reply({ health: 'report', checks: this.pluginHealth() });
+    this.reply({ health: 'report', checks: await this.pluginHealth() });
     void this.renderAll();
   }
 
@@ -300,7 +305,7 @@ export class SettingsKey extends SingletonAction {
     const theme = config.get().theme;
     // Nudge: while setup is incomplete the face shows "setup N/M" (amber); once every check
     // passes it falls back to the contrast state. Open the inspector for the fixable list.
-    const checks = this.pluginHealth();
+    const checks = await this.pluginHealth();
     const warns = checks.filter((c) => c.status === 'warn').length;
     const sub =
       warns > 0

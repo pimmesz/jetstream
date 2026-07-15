@@ -68,6 +68,38 @@ describe('resolvePlacements', () => {
     expect(placements[1]).toMatchObject({ uuid: 'gg.pim.jetstream.usage', settings: null });
   });
 
+  it('places a mic-mute key (a no-settings action wired into the designer)', () => {
+    const { placements, warnings } = resolvePlacements(xl, [{ coord: 'd2', type: 'micmute' }]);
+    expect(warnings).toHaveLength(0); // no longer an "unknown key type"
+    expect(placements[0]).toMatchObject({ column: 1, row: 3, uuid: 'gg.pim.jetstream.micmute', settings: null });
+  });
+
+  it('folds build + stop-all + model + fleet into LIVE slot kinds (uuid slot → sendSlot, no import)', () => {
+    const { placements } = resolvePlacements(xl, [
+      { coord: 'd1', type: 'stop-all' },
+      { coord: 'd2', type: 'build' },
+      { coord: 'd3', type: 'model' },
+      { coord: 'd4', type: 'fleet' },
+    ]);
+    // uuid === gg.pim.jetstream.slot is exactly what puts them in cli.ts onLayout's LIVE bucket
+    // (structural.length === 0) instead of forcing a .streamDeckProfile re-import.
+    expect(placements[0]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'stopall' } });
+    expect(placements[1]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'build' } });
+    expect(placements[2]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'model' } });
+    expect(placements[3]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'fleet' } });
+  });
+
+  it('places volume keys as live slot kinds (volup/voldown/volmute)', () => {
+    const { placements, warnings } = resolvePlacements(xl, [
+      { coord: 'd6', type: 'volup' },
+      { coord: 'd7', type: 'voldown' },
+      { coord: 'd8', type: 'volmute' },
+    ]);
+    expect(warnings).toHaveLength(0);
+    expect(placements.map((p) => (p.settings as { kind?: string } | null)?.kind)).toEqual(['volup', 'voldown', 'volmute']);
+    expect(placements.every((p) => p.uuid === 'gg.pim.jetstream.slot')).toBe(true);
+  });
+
   it('drops — with a warning each — unknown types, off-board coords, dupes, and missing settings', () => {
     const { placements, warnings } = resolvePlacements(xl, [
       { coord: 'a1', type: 'open-app' }, // missing app
@@ -97,7 +129,8 @@ describe('buildLayoutProfile', () => {
       UUID: 'gg.pim.jetstream.slot',
       Settings: { kind: 'app', app: '/Applications/Telegram.app' },
     });
-    expect(m.Actions['0,0']?.UUID).toBe('gg.pim.jetstream.fleet');
+    // fleet is now FOLDED into a live slot kind (so it moves live) rather than a native fleet action.
+    expect(m.Actions['0,0']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'fleet' } });
     // Every other coordinate is filled with an empty self-labeling slot → the whole XL is plugin-owned.
     expect(Object.keys(m.Actions)).toHaveLength(xl.cols * xl.rows);
     expect(m.Actions['3,2']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } });

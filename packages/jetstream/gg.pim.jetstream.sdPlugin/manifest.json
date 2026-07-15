@@ -255,6 +255,20 @@
       ]
     },
     {
+      "UUID": "gg.pim.jetstream.micmute",
+      "Name": "Mic mute",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Toggle your microphone (macOS default input) on/off. Shows 🎙 live vs red MUTED.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/plugin"
+        }
+      ]
+    },
+    {
       "UUID": "gg.pim.jetstream.review",
       "Name": "Review queue",
       "Icon": "imgs/ci",

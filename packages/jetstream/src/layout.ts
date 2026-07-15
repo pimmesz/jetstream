@@ -46,7 +46,18 @@ const NO_SETTINGS: Record<string, string> = {
   model: 'gg.pim.jetstream.model',
   heartbeat: 'gg.pim.jetstream.heartbeat',
   review: 'gg.pim.jetstream.review',
+  micmute: 'gg.pim.jetstream.micmute',
+  // Volume keys are slot-kind ONLY (no standalone action); the uuid here is a placeholder for the
+  // prompt-name derivation and is overridden by the slot-kind KEY_TYPES entries below.
+  volup: 'gg.pim.jetstream.slot',
+  voldown: 'gg.pim.jetstream.slot',
+  volmute: 'gg.pim.jetstream.slot',
 };
+
+/** The no-settings placeable type names, in prompt order. Exported so the chat prompt's key
+ * catalogue derives this tail instead of hand-listing it twice (a new no-settings key auto-appears
+ * in the prompt); the KEY_TYPES ↔ SETUP_SYSTEM drift test guards the rest. */
+export const NO_SETTINGS_TYPE_NAMES: readonly string[] = Object.keys(NO_SETTINGS);
 
 const NO_SETTINGS_NAMES: Record<string, string> = {
   fleet: 'Fleet roll-up',
@@ -59,6 +70,10 @@ const NO_SETTINGS_NAMES: Record<string, string> = {
   model: 'Model toggle',
   heartbeat: 'Heartbeat',
   review: 'Review queue',
+  micmute: 'Mic mute',
+  volup: 'Volume up',
+  voldown: 'Volume down',
+  volmute: 'Mute output',
 };
 
 export const KEY_TYPES: Record<string, KeyType> = {
@@ -146,6 +161,35 @@ export const KEY_TYPES: Record<string, KeyType> = {
   ...Object.fromEntries(
     Object.entries(NO_SETTINGS).map(([type, uuid]) => [type, { uuid, name: NO_SETTINGS_NAMES[type] ?? type }]),
   ),
+  // ── FOLDED into the plugin-owned slot so they MOVE LIVE (POST /slot), no profile re-import. These
+  //    entries OVERRIDE the native-uuid ones from the NO_SETTINGS spread above; the keys stay IN
+  //    NO_SETTINGS only so NO_SETTINGS_TYPE_NAMES (the prompt catalogue) + the drift test still list
+  //    them. See docs/slot-kinds-scoping.md. ──
+  build: {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Build version',
+    build: (f) => ({ settings: { kind: 'build', ...slotCosmetics(f) } }),
+  },
+  'stop-all': {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Stop all',
+    build: (f) => ({ settings: { kind: 'stopall', ...slotCosmetics(f) } }),
+  },
+  model: {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Model toggle',
+    build: (f) => ({ settings: { kind: 'model', ...slotCosmetics(f) } }),
+  },
+  fleet: {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Fleet roll-up',
+    build: (f) => ({ settings: { kind: 'fleet', ...slotCosmetics(f) } }),
+  },
+  // Output-volume keys (macOS): move/mute the default output; work on a volume-fixed interface once a
+  // virtual gain device like Background Music sits in front. Slot kinds → live-placeable, no import.
+  volup: { uuid: 'gg.pim.jetstream.slot', name: 'Volume up', build: (f) => ({ settings: { kind: 'volup', ...slotCosmetics(f) } }) },
+  voldown: { uuid: 'gg.pim.jetstream.slot', name: 'Volume down', build: (f) => ({ settings: { kind: 'voldown', ...slotCosmetics(f) } }) },
+  volmute: { uuid: 'gg.pim.jetstream.slot', name: 'Mute output', build: (f) => ({ settings: { kind: 'volmute', ...slotCosmetics(f) } }) },
 };
 
 /** The placeable type names, for the model prompt + "unknown type" messages. */

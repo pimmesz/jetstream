@@ -21,6 +21,14 @@ export function paintCoordByRow(coord: string, row: number): string {
   return ROW_COLORS[row % ROW_COLORS.length]!(coord);
 }
 
+/** Cycle a list line through a muted palette so a long numbered list is easy to scan — each line a
+ * slightly different colour than the one above it, so the eye can track a row across a wide terminal.
+ * No-op off a colour TTY (piped output, tests) so nothing leaks escape codes. */
+const LINE_COLORS = [cyan, green, yellow, blue, magenta];
+export function paintLine(text: string, i: number): string {
+  return LINE_COLORS[i % LINE_COLORS.length]!(text);
+}
+
 /**
  * A braille spinner on a status line while an async op runs; returns a stop fn that erases it (so the
  * caller can print the result on the freed line). Off a colour TTY it prints the label once and the

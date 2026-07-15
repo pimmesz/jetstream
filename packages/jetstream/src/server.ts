@@ -51,6 +51,15 @@ function readBody(req: IncomingMessage, onDone: (body: string | undefined) => vo
 export function startHookServer(port: number, handlers: HookServerHandlers): Promise<Server> {
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
+      // CSRF guard. The legit callers (the hook scripts + the CLI, all node `http`) never send an
+      // Origin/Referer; a browser ALWAYS attaches Origin on a cross-origin POST, and a simple
+      // text/plain POST fires no CORS preflight — so a malicious webpage the user visits could
+      // otherwise reach 127.0.0.1 and plant/rewrite keys. Reject anything carrying those headers.
+      if (req.headers.origin !== undefined || req.headers.referer !== undefined) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'content-type': 'text/plain' });
         res.end('jetstream');

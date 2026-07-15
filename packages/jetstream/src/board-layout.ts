@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { coordLabel } from './actions/coord';
@@ -84,6 +85,18 @@ export function labelForAction(uuid: string, settings: unknown): string {
       }
     }
     if (s.kind === 'run') return asStr(s.command) ?? 'run';
+    // Folded structural kinds + volume keys — label them so the chat board map doesn't render them as
+    // an empty '·' (which would let the model overwrite a configured key it thinks is blank).
+    const kindLabel: Record<string, string> = {
+      build: 'build',
+      stopall: 'stop',
+      model: 'model',
+      fleet: 'fleet',
+      volup: 'vol+',
+      voldown: 'vol−',
+      volmute: 'mute',
+    };
+    if (typeof s.kind === 'string' && kindLabel[s.kind]) return kindLabel[s.kind]!;
     return '·'; // empty slot
   }
   const seg = uuid.split('.').pop() ?? uuid;
@@ -129,80 +142,111 @@ function readProfileActions(
   return { model, actions };
 }
 
-/** How many CONFIGURED (non-empty) keys a profile has — the yardstick for "the real board" when
- * deciding which duplicate to keep. Empty slots and unreadable profiles count as 0. */
-function countConfiguredKeys(profileDir: string): number {
-  const read = readProfileActions(profileDir);
-  if (!read) return 0;
-  let n = 0;
-  for (const act of Object.values(read.actions)) {
-    const uuid = typeof act.UUID === 'string' ? act.UUID : '';
-    if (!uuid) continue;
-    const s = (act.Settings && typeof act.Settings === 'object' ? act.Settings : {}) as Record<string, unknown>;
-    if (uuid === 'gg.pim.jetstream.slot' && (s.kind ?? 'empty') === 'empty') continue;
-    n++;
+/** UUIDs Stream Deck currently marks as the preferred/active profile (per device), lowercased. macOS
+ * only (reads the app's prefs); [] elsewhere or on failure — the caller then falls back to mtime. */
+function activeProfileUuids(): string[] {
+  if (process.platform !== 'darwin') return [];
+  try {
+    const out = execFileSync('defaults', ['read', 'com.elgato.StreamDeck'], { encoding: 'utf8', timeout: 3000 });
+    return [...out.matchAll(/ESDProfilesPreferred\s*=\s*"?([0-9a-fA-F-]{36})"?/g)].map((m) => m[1]!.toLowerCase());
+  } catch {
+    return [];
   }
-  return n;
 }
 
-/** Delete redundant "Jetstream Custom" profiles from the store, KEEPING the one with the most
- * configured keys (the real board). No-op when 0-1 exist. Only ever touches our own generated
- * "Jetstream Custom*" profiles — never the user's own — and never the kept board, so the active
- * layout is safe. Returns the removed dir basenames. (Stream Deck's in-memory duplicates clear on its
+/** Delete redundant "Jetstream Custom" profiles from the store, KEEPING the one Stream Deck currently
+ * has ACTIVE (its `ESDProfilesPreferred`) — the board you're actually on, even if it's the simplest —
+ * or, when that can't be read, the most RECENTLY modified (the board you just created/edited). NOT the
+ * config count: that's backwards the moment you simplify a board. Only ever touches our own generated
+ * "Jetstream Custom*" profiles (never the user's own), and never the kept board. Returns the removed dir
+ * basenames. `activeUuids` is injectable for tests. (Stream Deck's in-memory duplicates clear on its
  * next restart; this stops the on-disk store from accumulating.) */
-export function pruneCustomProfiles(profilesDir: string = defaultProfilesDir()): string[] {
+export function pruneCustomProfiles(
+  profilesDir: string = defaultProfilesDir(),
+  activeUuids: string[] = activeProfileUuids(),
+): string[] {
   let dirs: string[];
   try {
     dirs = readdirSync(profilesDir).filter((d) => d.endsWith('.sdProfile'));
   } catch {
     return [];
   }
-  const customs: Array<{ dir: string; configured: number }> = [];
+  const customs: Array<{ dir: string; uuid: string; mtimeMs: number; model: string }> = [];
   for (const dir of dirs) {
     const profileDir = join(profilesDir, dir);
     let name = '';
+    let model = '';
     try {
-      name = String(
-        (JSON.parse(readFileSync(join(profileDir, 'manifest.json'), 'utf8')) as { Name?: unknown }).Name ?? '',
-      );
+      const m = JSON.parse(readFileSync(join(profileDir, 'manifest.json'), 'utf8')) as {
+        Name?: unknown;
+        Device?: { Model?: unknown };
+      };
+      name = String(m.Name ?? '');
+      model = typeof m.Device?.Model === 'string' ? m.Device.Model : '';
     } catch {
       continue;
     }
     // EXACT match on our own generated names + Stream Deck's copy suffixes ("copy", "copy 2"). A
     // prefix match would also catch a user's own "Jetstream Custom Work" profile and delete it.
     if (!/^jetstream custom( copy( \d+)?)?$/i.test(name)) continue;
-    customs.push({ dir: profileDir, configured: countConfiguredKeys(profileDir) });
+    let mtimeMs = 0;
+    try {
+      mtimeMs = statSync(profileDir).mtimeMs;
+    } catch {
+      /* keep 0 — treated as oldest */
+    }
+    customs.push({ dir: profileDir, uuid: dir.replace(/\.sdProfile$/i, '').toLowerCase(), mtimeMs, model });
   }
   if (customs.length <= 1) return [];
-  const max = Math.max(...customs.map((c) => c.configured));
-  const removed: string[] = [];
-  // Delete only profiles with STRICTLY fewer configured keys than the richest one. On a tie for the
-  // max, keep ALL of them — the active board is always among the richest, so it can never be deleted.
+
+  // Group by device MODEL so we never prune across devices — an XL "Jetstream Custom" must not cause a
+  // different deck's "Jetstream Custom copy" to be deleted. Within each model, keep the ACTIVE profile(s)
+  // (never delete a board you're on; there can be more than one, one per device), else the newest by mtime.
+  const byModel = new Map<string, typeof customs>();
   for (const c of customs) {
-    if (c.configured >= max) continue;
-    try {
-      rmSync(c.dir, { recursive: true, force: true });
-      removed.push(basename(c.dir));
-    } catch {
-      /* skip a dir we can't remove */
+    const g = byModel.get(c.model);
+    if (g) g.push(c);
+    else byModel.set(c.model, [c]);
+  }
+  const removed: string[] = [];
+  for (const group of byModel.values()) {
+    if (group.length <= 1) continue;
+    const active = group.filter((c) => activeUuids.includes(c.uuid));
+    const keep = new Set(
+      active.length > 0 ? active : [group.reduce((newest, c) => (c.mtimeMs > newest.mtimeMs ? c : newest))],
+    );
+    for (const c of group) {
+      if (keep.has(c)) continue;
+      try {
+        rmSync(c.dir, { recursive: true, force: true });
+        removed.push(basename(c.dir));
+      } catch {
+        /* skip a dir we can't remove */
+      }
     }
   }
   return removed;
 }
 
 /** Read the user's current Jetstream board from the Stream Deck profile store; null if none found.
- * Best-effort (never throws): picks the profile with the most CONFIGURED keys (project keys AND
- * non-empty shortcut slots, so a shortcuts-only board still counts), excluding the Grid/Ops overlays,
- * and matches the device to a DeckModel by model-code prefix (an XL is 20GAT99xx). */
-export function readBoardLayout(profilesDir: string = defaultProfilesDir()): BoardLayout | null {
+ * Best-effort (never throws): prefers the profile Stream Deck currently has ACTIVE (its
+ * `ESDProfilesPreferred`) — the board you're actually on — and only falls back to the most CONFIGURED
+ * profile (project keys AND non-empty shortcut slots) when none is known-active. Excludes the Grid/Ops
+ * overlays, and matches the device to a DeckModel by model-code prefix (an XL is 20GAT99xx).
+ * `activeUuids` is injectable for tests. */
+export function readBoardLayout(
+  profilesDir: string = defaultProfilesDir(),
+  activeUuids: string[] = activeProfileUuids(),
+): BoardLayout | null {
   let dirs: string[];
   try {
     dirs = readdirSync(profilesDir).filter((d) => d.endsWith('.sdProfile'));
   } catch {
     return null;
   }
+  const active = new Set(activeUuids);
   let best: BoardLayout | null = null;
-  let bestConfigured = 0;
+  let bestScore = 0; // a profile with 0 configured keys and not active is not a board → stays null
   for (const dir of dirs) {
     const profileDir = join(profilesDir, dir);
     let name = '';
@@ -220,9 +264,11 @@ export function readBoardLayout(profilesDir: string = defaultProfilesDir()): Boa
     if (!deck) continue;
     const keys = new Map<string, BoardKey>();
     let configured = 0;
+    let jetstreamKeys = 0;
     for (const [coord, act] of Object.entries(read.actions)) {
       const uuid = typeof act.UUID === 'string' ? act.UUID : '';
       if (!uuid) continue;
+      if (uuid.startsWith('gg.pim.jetstream.')) jetstreamKeys++;
       const settings =
         act.Settings && typeof act.Settings === 'object' ? (act.Settings as Record<string, unknown>) : null;
       const isConfigured =
@@ -231,9 +277,15 @@ export function readBoardLayout(profilesDir: string = defaultProfilesDir()): Boa
       if (isConfigured) configured++;
       keys.set(coord, { uuid, settings, label: labelForAction(uuid, settings) });
     }
-    if (configured > bestConfigured) {
+    // Prefer the ACTIVE profile (the board you're on); ties and no-active fall to most-configured.
+    // dir basename is the profile uuid, the same key pruneCustomProfiles matches on.
+    const uuid = dir.replace(/\.sdProfile$/i, '').toLowerCase();
+    // Active bonus only for actual JETSTREAM boards — a non-Jetstream profile that happens to be active
+    // (e.g. a Spotify hotkey page) must not masquerade as your board and get rebuilt by chat.
+    const score = (active.has(uuid) && jetstreamKeys > 0 ? 1_000_000 : 0) + configured;
+    if (score > bestScore) {
       best = { profileName: name, deck, keys };
-      bestConfigured = configured;
+      bestScore = score;
     }
   }
   return best;

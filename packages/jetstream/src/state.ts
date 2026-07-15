@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -53,6 +53,10 @@ export class Board {
   // importantly one a live SessionEnd removed mid-scan (which leaves no trace to override).
   private restoring = false;
   private touchedSessions = new Set<string>();
+  /** Trailing-debounce handle: a busy fleet fires many hook events/sec, so the checkpoint write is
+   * coalesced to one atomic write shortly after the last change rather than a blocking sync write
+   * on the event path. */
+  private persistTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Checkpoint file; injectable so tests don't touch the real home. */
   constructor(private readonly statePath: string = STATE_FILE) {}
@@ -174,12 +178,31 @@ export class Board {
   /** Checkpoint the live board (status + session PIDs). Best-effort — a write failure must
    * never break event handling. */
   private persist(): void {
+    // Coalesce a burst of events into ONE write ~250ms after the last change. The timer reads the
+    // latest state when it fires, so nothing is lost; while one is pending, further calls no-op.
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      this.writeCheckpoint();
+    }, 250);
+    this.persistTimer.unref?.(); // never keep the process alive just to flush the checkpoint
+  }
+
+  /** Force any pending debounced checkpoint to disk right now (a clean-shutdown path could call this;
+   * tests use it to observe the checkpoint synchronously). */
+  flush(): void {
+    if (!this.persistTimer) return;
+    clearTimeout(this.persistTimer);
+    this.persistTimer = undefined;
+    this.writeCheckpoint();
+  }
+
+  private writeCheckpoint(): void {
     try {
       mkdirSync(dirname(this.statePath), { recursive: true });
-      writeFileSync(
-        this.statePath,
-        JSON.stringify({ state: this.state, sessions: [...this.sessions.entries()] }),
-      );
+      const tmp = `${this.statePath}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ state: this.state, sessions: [...this.sessions.entries()] }));
+      renameSync(tmp, this.statePath); // atomic swap — a crash mid-write can't truncate the live checkpoint
     } catch {
       /* disk full / read-only home / … — the board stays correct in memory */
     }

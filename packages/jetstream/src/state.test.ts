@@ -118,6 +118,7 @@ describe('Board', () => {
 
       // A fresh Board (a restart) reads the same checkpoint; only falcon has a live session now,
       // running under a NEW pid (the old 4242 is gone / possibly recycled by another repo).
+      before.flush(); // persist the debounced checkpoint before the "restart" reads it
       const after = new Board(file);
       after.seed(FLEET);
       await after.restore(async () => [{ pid: 9999, cwd: '/Users/me/falcon', active: true }]);
@@ -135,6 +136,7 @@ describe('Board', () => {
       before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
       before.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 }); // checkpoint: working
 
+      before.flush(); // persist the debounced checkpoint before the "restart" reads it
       const after = new Board(file);
       after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
       // A live hook lands (the session finished) BEFORE the async scan resolves:
@@ -151,6 +153,7 @@ describe('Board', () => {
       before.notePid('s1', 4242, '/Users/me/falcon');
       before.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 }); // checkpoint: working
 
+      before.flush(); // persist the debounced checkpoint before the "restart" reads it
       const after = new Board(file);
       after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
       await after.restore(async () => {
@@ -171,6 +174,7 @@ describe('Board', () => {
       before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
       before.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 }); // checkpoint: needsInput
 
+      before.flush(); // persist the debounced checkpoint before the "restart" reads it
       const after = new Board(file);
       after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
       await after.restore(async () => {
@@ -209,6 +213,7 @@ describe('Board', () => {
       before.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 'dead', at: 1 });
       before.dispatch({ event: 'SessionStart', cwd: '/Users/me/falcon', sessionId: 'live', at: 2 });
 
+      before.flush(); // persist the debounced checkpoint before the "restart" reads it
       const after = new Board(file);
       after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
       await after.restore(async () => [{ pid: 7, cwd: '/Users/me/falcon', active: false }]);

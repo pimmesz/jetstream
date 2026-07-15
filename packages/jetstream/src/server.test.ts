@@ -1,6 +1,18 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import type { Server } from 'node:http';
+import { request, type Server } from 'node:http';
 import { startHookServer } from './server';
+
+/** Raw POST so we can set an `Origin` header — undici's `fetch` silently drops it (forbidden name). */
+function rawPost(port: number, path: string, headers: Record<string, string>, body: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path, method: 'POST', headers }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
 
 let server: Server | undefined;
 afterEach(() => {
@@ -95,5 +107,18 @@ describe('startHookServer', () => {
     server = await startHookServer(0, { onPayload: () => {}, onSlot: async () => ({ status: 200, body: '{}' }) });
     const res = await fetch(`http://127.0.0.1:${port(server)}/slot`, { method: 'POST', body: 'not json' });
     expect(res.status).toBe(400);
+  });
+
+  it('CSRF guard: rejects any request carrying an Origin header (a browser cross-origin POST) with 403', async () => {
+    const seen: unknown[] = [];
+    server = await startHookServer(0, { onPayload: (raw) => seen.push(raw) });
+    const status = await rawPost(
+      port(server),
+      '/hook',
+      { origin: 'https://evil.example', 'content-type': 'text/plain' },
+      JSON.stringify({ hook_event_name: 'Stop', cwd: '/p', session_id: 's' }),
+    );
+    expect(status).toBe(403);
+    expect(seen).toEqual([]); // never reached the handler
   });
 });

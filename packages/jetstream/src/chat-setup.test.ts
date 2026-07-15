@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
-import { clarifyingQuestion, parseProposal, runChatSetup } from './chat-setup';
+import { clarifyingQuestion, parseProposal, runChatSetup, SETUP_SYSTEM } from './chat-setup';
+import { KEY_TYPE_NAMES } from './layout';
 import { DECK_MODELS } from './profile';
 
 describe('clarifyingQuestion', () => {
@@ -62,6 +63,25 @@ describe('parseProposal', () => {
     expect(p?.layout?.deck.key).toBe('xl');
     expect(p?.layout?.placements[0]).toMatchObject({ column: 7, row: 0 });
   });
+
+  it('reports dropped keys — an unknown type is refused, not silently placed', () => {
+    const p = parseProposal('{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"usage"},{"coord":"a2","type":"nope"}]}}');
+    expect(p?.layout?.placements).toHaveLength(1); // only usage resolved
+    expect(p?.layout?.dropped).toBe(1); // the unknown "nope" was dropped
+  });
+});
+
+describe('SETUP_SYSTEM ↔ KEY_TYPES coverage', () => {
+  // Guards the hand-authored key catalogue in the prompt: resolvePlacements accepts anything in
+  // KEY_TYPES, so any type the prompt fails to mention is placeable but never proposed. The
+  // no-settings tail is derived from NO_SETTINGS_TYPE_NAMES; this catches drift in the rest.
+  it('documents every placeable key type in the model prompt', () => {
+    const undocumented = KEY_TYPE_NAMES.filter(
+      // Boundary match so "run" isn't satisfied by "runner"; hyphens (open-app, stop-all) count as part of the name.
+      (name) => !new RegExp(`(^|[^\\w-])${name}([^\\w-]|$)`).test(SETUP_SYSTEM),
+    );
+    expect(undocumented).toEqual([]);
+  });
 });
 
 /** Scripted IO: queued answers to `ask`, captured `say` lines. */
@@ -97,6 +117,20 @@ describe('runChatSetup', () => {
     expect(code).toBe(0);
     expect(onWritten).toHaveBeenCalledTimes(1);
     expect(onWritten.mock.calls[0]![0].map((p) => p.name)).toEqual(['Falcon', 'Api']);
+  });
+
+  it('refuses a PARTIAL layout instead of applying a destructive move (a dropped key would delete a source)', async () => {
+    const { io, said } = makeIo(['move things around', 'cancel']);
+    const onLayout = vi.fn(async () => {});
+    // usage resolves at d1, but the unknown "nope" at d2 is dropped → applying would clear/overwrite
+    // without placing everything the model intended. The flow must refuse, not apply the remainder.
+    const reply = '{"layout":{"deck":"xl","keys":[{"coord":"d2","type":"nope"},{"coord":"d1","type":"usage"}]}}';
+    let r = 0;
+    const replies = [reply];
+    const code = await runChatSetup({ io, ask: async () => replies[r++] ?? null, onLayout, configPath: '/x' });
+    expect(code).toBe(0);
+    expect(onLayout).not.toHaveBeenCalled(); // a partial layout is never applied
+    expect(said.some((l) => /NOT applying/.test(l))).toBe(true);
   });
 
   it('a clarifying question loops, then applies on the next turn', async () => {

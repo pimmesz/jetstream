@@ -123,9 +123,14 @@ function fixedLayout(deck: DeckModel): Map<string, ProfileAction> {
     at(2, 3, action('Launch preset', 'gg.pim.jetstream.launch'));
     at(3, 3, action('Approve', 'gg.pim.jetstream.permission', allow));
     at(4, 3, action('Deny', 'gg.pim.jetstream.permission', deny));
-    at(7, 3, action('Jetstream settings', 'gg.pim.jetstream.settings'));
-    // Nav to the Ops page caps the right edge above Settings.
-    at(7, 2, action('Page: Ops', 'gg.pim.jetstream.nav', ops));
+    // Output-volume strip (slot kinds → live-movable). Works on a volume-fixed interface (e.g. a
+    // Scarlett) once a virtual gain device like Background Music sits in front of it.
+    at(5, 3, action('Volume up', 'gg.pim.jetstream.slot', { kind: 'volup' }));
+    at(6, 3, action('Volume down', 'gg.pim.jetstream.slot', { kind: 'voldown' }));
+    at(7, 3, action('Mute output', 'gg.pim.jetstream.slot', { kind: 'volmute' }));
+    // Settings caps the top of the right column (moved off d8 to make room for the volume strip). The
+    // Ops-page nav that used to sit here is removed, so the Ops page is no longer linked from the board.
+    at(7, 2, action('Jetstream settings', 'gg.pim.jetstream.settings'));
     return slots;
   }
 

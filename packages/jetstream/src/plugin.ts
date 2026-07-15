@@ -7,7 +7,8 @@ import { board } from './state';
 import { permissions } from './permissions';
 import { config } from './config';
 import { readConfigFile } from './projects-config';
-import { DEFAULT_PORT, startHookServer } from './server';
+import { DEFAULT_PORT, startHookServer, type HookServerHandlers } from './server';
+import { setListenerBound } from './listener-status';
 import { discoverClaudeSessions } from './discover';
 import { ProjectKey } from './actions/project';
 import { AttentionKey } from './actions/attention';
@@ -27,6 +28,20 @@ import { BuildKey } from './actions/build';
 import { CoordinateKey } from './actions/coord';
 import { GridKey } from './actions/grid';
 import { SlotKey } from './actions/slot';
+import { MicMuteKey } from './actions/micmute';
+
+// Resilience: a long-running Stream Deck plugin must NOT die on a transient async hiccup. The SDK
+// resolves socket commands (getSettings / getGlobalSettings / switchToProfile / …) as promises that
+// reject with "The request timed out" under WebSocket congestion; a background poll (CI/usage/discover)
+// can reject the same way. Node's default is to treat an unhandled rejection as fatal — which was
+// crash-looping the plugin and RESETTING the board (wiping any live `jetstream chat` edits) on respawn.
+// Log and continue instead: one dropped repaint/poll is recoverable; a crashed board is not.
+process.on('unhandledRejection', (reason) => {
+  streamDeck.logger.error('Unhandled promise rejection (continuing — not crashing the plugin)', reason);
+});
+process.on('uncaughtException', (error) => {
+  streamDeck.logger.error('Uncaught exception (continuing — not crashing the plugin)', error);
+});
 
 const projectKey = new ProjectKey();
 const attentionKey = new AttentionKey();
@@ -46,6 +61,7 @@ const buildKey = new BuildKey();
 const coordinateKey = new CoordinateKey();
 const gridKey = new GridKey();
 const slotKey = new SlotKey();
+const micMuteKey = new MicMuteKey();
 
 streamDeck.actions.registerAction(projectKey);
 streamDeck.actions.registerAction(attentionKey);
@@ -65,6 +81,7 @@ streamDeck.actions.registerAction(buildKey);
 streamDeck.actions.registerAction(coordinateKey);
 streamDeck.actions.registerAction(gridKey);
 streamDeck.actions.registerAction(slotKey);
+streamDeck.actions.registerAction(micMuteKey);
 
 // Seed the board + settings from the optional projects.json BEFORE anything subscribes or
 // connects: the Fleet roll-up and Attention doorbell then cover the whole fleet without a
@@ -83,6 +100,9 @@ function renderBoard(): void {
   void fleetKey.renderAll();
   void fleetDialKey.renderAll(); // Stream Deck + touchscreen; no-op when no dial is placed
   void interruptAllKey.renderAll(); // working-count face tracks the board
+  void slotKey.renderKind('stopall'); // stop-all folded as a slot kind — refresh its working-count face
+  void slotKey.renderKind('fleet'); // fleet roll-up folded as a slot kind — refresh on every board change
+  void micMuteKey.renderAll(); // re-read mic state so an external mute (Zoom, …) reflects on the key
 }
 
 function renderAll(): void {
@@ -92,6 +112,7 @@ function renderAll(): void {
   void settingsKey.renderAll();
   void permissionKey.renderAll();
   void modelKey.renderAll(); // repaint the model face on a global-settings change
+  void slotKey.renderKind('model'); // model folded as a slot kind — repaint on the same change
 }
 
 board.subscribe(renderBoard);
@@ -143,7 +164,7 @@ void autoWireHooks({ binDir: dirname(fileURLToPath(import.meta.url)), logger: st
 
 // The loopback port must match the hook scripts (separate processes): env or default.
 const port = Number(process.env.JETSTREAM_PORT) || DEFAULT_PORT;
-startHookServer(port, {
+const hookHandlers: HookServerHandlers = {
   onPayload: (raw) => {
     const event = parseHookPayload(raw, Date.now());
     if (!event) return;
@@ -155,12 +176,29 @@ startHookServer(port, {
   // Live board edits from `jetstream chat`: retarget the slot at a coordinate (setSettings + repaint),
   // so a layout change lands on the deck instantly with no profile re-import.
   onSlot: (raw) => slotKey.assign(raw),
-}).catch((error: unknown) => {
-  streamDeck.logger.error(
-    `Jetstream hook server failed to bind 127.0.0.1:${port} — project status will not update`,
-    error,
-  );
-});
+};
+// Bind with retries: an orphaned prior plugin process (the kill→respawn hazard) can still hold the
+// port for a moment, and giving up on the first EADDRINUSE would leave the board permanently dark —
+// no hook event ever arrives. Record the outcome so the Fleet key can surface "hooks offline".
+void (async () => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await startHookServer(port, hookHandlers);
+      setListenerBound(true);
+      return;
+    } catch (error) {
+      if (attempt === 4) {
+        setListenerBound(false);
+        streamDeck.logger.error(
+          `Jetstream hook server could not bind 127.0.0.1:${port} after retries — project status will not update`,
+          error,
+        );
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    }
+  }
+})();
 
 // Global settings drive theme/thresholds. The listener catches future edits; the
 // initial read must come AFTER connect() (it's a command over the Stream Deck socket).
@@ -182,3 +220,14 @@ async function pollDiscoveredSessions(): Promise<void> {
 }
 void pollDiscoveredSessions();
 setInterval(() => void pollDiscoveredSessions(), 5000);
+
+// The board checkpoint is trailing-debounced (state.ts), so a change in the last ~250ms is only in
+// memory. On a clean shutdown (Stream Deck terminating the plugin, or Ctrl-C in dev) flush it first so
+// the newest status survives the restart. A SIGTERM/SIGINT listener overrides Node's default terminate,
+// so we exit explicitly after the (synchronous, never-throwing) flush. A hard SIGKILL can't be caught.
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    board.flush();
+    process.exit(0);
+  });
+}

@@ -154,7 +154,9 @@ auth (else it bills the API — label loudly). **BUILD VERIFY the metering befor
   health check; `setup` does hooks + a `projects.json` template), the bundled two-page Board/Ops
   profiles (profile.ts), and startup **`projects.json`** seeding of the board's fleet. Depends on the
   three cores via `workspace:*`.
-  Ships via the **Elgato Marketplace** (UUID `gg.pim.jetstream`), not npm.
+  Distribution is **CLI-first**: the packed plugin (UUID `gg.pim.jetstream`) is bundled into the
+  `@pimmesz/afterburner` npm package and installed with `afterburner jetstream install`. The Elgato
+  Marketplace is a parked/later discovery channel, not the primary path.
 
 afterburner is **not** a dependency — it's just a project path on the board. (`usage` can shell out to
 `afterburner statusline print --json` as an optional fallback when present, nothing more.)

@@ -2,7 +2,18 @@ import { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyDownEvent } from '@elgato/streamdeck';
 import { board } from '../state';
 import { interruptPids } from '../switchto';
+import type { Face } from '../render';
 import { keyFace } from '../render';
+
+/** The stop-all face: danger red with a live working-count when sessions run, dim "idle" otherwise.
+ * Pure. Shared by the standalone InterruptAll key and the slot `stopall` kind. */
+export function stopFace(working: number): Face {
+  return {
+    color: working > 0 ? '#e5484d' : '#26262b',
+    label: 'stop all',
+    sub: working > 0 ? `${working} working` : 'idle',
+  };
+}
 
 /**
  * Panic key: one press SIGINTs every running Claude session across the whole fleet — the
@@ -22,16 +33,11 @@ export class InterruptAllKey extends SingletonAction {
 
   async renderAll(): Promise<void> {
     const working = Object.values(board.byProject()).filter((s) => s.status === 'working').length;
+    const face = keyFace(stopFace(working));
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');
-      await visible.setImage(
-        keyFace({
-          color: working > 0 ? '#e5484d' : '#26262b',
-          label: 'stop all',
-          sub: working > 0 ? `${working} working` : 'idle',
-        }),
-      );
+      await visible.setImage(face);
     }
   }
 }

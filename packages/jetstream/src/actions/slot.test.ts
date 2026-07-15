@@ -1,5 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SlotKey, slotFace } from './slot';
+import { stopFace } from './interrupt-all';
+import { modelFace } from './model';
+import { config } from '../config';
+
+vi.mock('../switchto'); // spy interruptPids — a stopall press must SIGINT the fleet ONLY when enabled
+import { interruptPids } from '../switchto';
+vi.mock('../output-volume'); // spy the volume-key presses
+import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
 
 describe('slotFace', () => {
   it('empty → a blank dark key (absent kind = empty)', () => {
@@ -89,12 +97,94 @@ describe('SlotKey.assign', () => {
 });
 
 describe('SlotKey.onKeyDown run gate', () => {
-  it('does NOT execute a run slot while run keys are disabled (the default)', async () => {
-    const showAlert = vi.fn(async () => {});
+  it('does NOT execute a run slot while run keys are disabled — paints a reason instead', async () => {
+    const setImage = vi.fn(async () => {});
     const showOk = vi.fn(async () => {});
-    const ev = { payload: { settings: { kind: 'run', command: 'echo' } }, action: { showAlert, showOk } };
+    const action = {
+      setImage,
+      setTitle: vi.fn(async () => {}),
+      showOk,
+      isKey: () => true,
+      coordinates: { column: 0, row: 0 },
+      getSettings: vi.fn(async () => ({ kind: 'run', command: 'echo' })), // the 2.6s repaint re-reads live settings
+    };
+    const ev = { payload: { settings: { kind: 'run', command: 'echo' } }, action };
     await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
-    expect(showAlert).toHaveBeenCalled(); // inert: never reaches execPlan/runPlan
+    expect(setImage).toHaveBeenCalled(); // the "run off — enable in settings" face, not execution
+    expect(showOk).not.toHaveBeenCalled(); // never reaches execPlan/runPlan
+  });
+});
+
+describe('folded slot kinds: build + stopall', () => {
+  beforeEach(() => vi.mocked(interruptPids).mockReset());
+
+  it('build → the compile-time stamp face (a static kind, no board/timer)', () => {
+    const f = slotFace({ kind: 'build' });
+    expect(f).toMatchObject({ color: '#1f2933', sub: 'build' }); // BUILD_ID drives top/label
+  });
+
+  it('stopFace → red + live working-count when busy, dim idle otherwise (shared pure fn)', () => {
+    expect(stopFace(2)).toMatchObject({ color: '#e5484d', sub: '2 working' });
+    expect(stopFace(0)).toMatchObject({ color: '#26262b', sub: 'idle' });
+  });
+
+  it('modelFace → purple with the override name, or dim "default" (shared pure fn)', () => {
+    expect(modelFace('opus')).toMatchObject({ color: '#7c5cff', sub: 'opus' });
+    expect(modelFace('')).toMatchObject({ color: '#26262b', sub: 'default' });
+  });
+
+  it('volume kinds paint a static face and drive output volume on press (no gate — benign)', async () => {
+    expect(slotFace({ kind: 'volup' })).toMatchObject({ label: 'vol +', sub: 'output' });
+    expect(slotFace({ kind: 'volmute' })).toMatchObject({ label: 'mute', glyph: '🔇' });
+    const press = async (kind: string) => {
+      const action = { showOk: vi.fn(async () => {}), setTitle: vi.fn(async () => {}), setImage: vi.fn(async () => {}), isKey: () => true };
+      await new SlotKey().onKeyDown({ payload: { settings: { kind } }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    };
+    await press('volup');
+    expect(nudgeOutputVolume).toHaveBeenCalledWith(6);
+    await press('voldown');
+    expect(nudgeOutputVolume).toHaveBeenCalledWith(-6);
+    await press('volmute');
+    expect(toggleOutputMute).toHaveBeenCalled();
+  });
+
+  it('stopall is INERT until allowStopKeys — a planted fleet-SIGINT can never fire from /slot', async () => {
+    const setImage = vi.fn(async () => {});
+    const showOk = vi.fn(async () => {});
+    const action = {
+      setImage,
+      showOk,
+      setTitle: vi.fn(async () => {}),
+      isKey: () => true,
+      coordinates: { column: 0, row: 0 },
+      getSettings: vi.fn(async () => ({ kind: 'stopall' })),
+    };
+    const ev = { payload: { settings: { kind: 'stopall' } }, action };
+    await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    expect(setImage).toHaveBeenCalled(); // the "stop off — enable in settings" notice
+    expect(interruptPids).not.toHaveBeenCalled(); // never SIGINTs the fleet while disabled
     expect(showOk).not.toHaveBeenCalled();
+  });
+
+  it('stopall SIGINTs the fleet on press once allowStopKeys is enabled', async () => {
+    vi.mocked(interruptPids).mockReturnValue(2); // pretend two sessions were signalled
+    config.set({ allowStopKeys: true });
+    try {
+      const showOk = vi.fn(async () => {});
+      const action = {
+        showOk,
+        showAlert: vi.fn(async () => {}),
+        setImage: vi.fn(async () => {}),
+        setTitle: vi.fn(async () => {}),
+        isKey: () => true,
+        coordinates: { column: 0, row: 0 },
+      };
+      const ev = { payload: { settings: { kind: 'stopall' } }, action };
+      await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+      expect(interruptPids).toHaveBeenCalled();
+      expect(showOk).toHaveBeenCalled(); // sent > 0 → ack
+    } finally {
+      config.set(undefined); // restore defaults so sibling tests see allowStopKeys=false
+    }
   });
 });

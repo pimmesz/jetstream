@@ -20,6 +20,10 @@ export type JetstreamConfig = {
    * `/slot` endpoint is unauthenticated, so a local process could plant a `run` command; keeping
    * execution opt-in means a planted command is inert until the user deliberately enables this. */
   allowRunKeys: boolean;
+  /** Whether a slot's `stopall` kind may SIGINT the whole fleet on press. OFF by default for the same
+   * reason as {@link allowRunKeys}: the loopback `/slot` endpoint is unauthenticated, so a planted
+   * stopall key stays inert (a fleet-wide interrupt is destructive) until the user opts in. */
+  allowStopKeys: boolean;
 };
 
 export const DEFAULTS: JetstreamConfig = {
@@ -30,6 +34,7 @@ export const DEFAULTS: JetstreamConfig = {
   ciBranchPrefix: 'afterburner/',
   launchModel: '',
   allowRunKeys: false,
+  allowStopKeys: false,
 };
 
 /** The accepted range per numeric setting — single-sourced so the init wizard can
@@ -63,6 +68,7 @@ export function mergeConfig(raw: unknown, base: JetstreamConfig = DEFAULTS): Jet
         : base.ciBranchPrefix,
     launchModel: typeof r.launchModel === 'string' ? r.launchModel.trim() : base.launchModel,
     allowRunKeys: typeof r.allowRunKeys === 'boolean' ? r.allowRunKeys : base.allowRunKeys,
+    allowStopKeys: typeof r.allowStopKeys === 'boolean' ? r.allowStopKeys : base.allowStopKeys,
   };
 }
 

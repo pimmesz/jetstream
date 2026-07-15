@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -64,49 +64,82 @@ describe('toSlotKey (native → slot migration)', () => {
 describe('pruneCustomProfiles', () => {
   const project = (name: string) => ({ UUID: 'gg.pim.jetstream.project', Settings: { path: `/x/${name}`, name } });
   const emptySlot = { UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } };
+  // fakeStore names dirs PROFILE0.sdProfile, PROFILE1.sdProfile, … → the injectable "active uuid" is
+  // the dir basename lowercased (profile0, profile1, …).
+  const older = (store: string, dir: string) => utimesSync(join(store, dir), 1_000, 1_000);
 
-  it('keeps the most-configured Jetstream Custom, deletes the rest, leaves other profiles alone', () => {
+  it('keeps the ACTIVE Jetstream Custom even when it is simpler, deletes the rest, leaves other profiles alone', () => {
     const store = fakeStore([
       { name: 'Default Profile', model: '20GAT9902', actions: { '0,0': project('a'), '1,0': project('b') } },
-      { name: 'Jetstream Custom', model: '20GAT9902', actions: { '0,0': emptySlot } }, // 0 configured → pruned
+      { name: 'Jetstream Custom', model: '20GAT9902', actions: { '0,0': emptySlot } }, // ACTIVE → kept, though emptier
       {
         name: 'Jetstream Custom copy',
         model: '20GAT9902',
-        actions: { '0,0': project('a'), '1,0': project('b'), '2,0': project('c') }, // 3 configured → kept
+        actions: { '0,0': project('a'), '1,0': project('b'), '2,0': project('c') },
       },
     ]);
-    const removed = pruneCustomProfiles(store);
-    expect(removed).toHaveLength(1); // only the emptier Custom
-    // the richer Custom and the (non-Custom) Default both survive
-    expect(existsSync(join(store, 'PROFILE2.sdProfile'))).toBe(true);
-    expect(existsSync(join(store, 'PROFILE0.sdProfile'))).toBe(true);
-    expect(existsSync(join(store, 'PROFILE1.sdProfile'))).toBe(false);
+    const removed = pruneCustomProfiles(store, ['profile1']); // Stream Deck is ON the simpler board
+    expect(removed).toHaveLength(1); // only the non-active copy
+    expect(existsSync(join(store, 'PROFILE1.sdProfile'))).toBe(true); // the active board is never deleted
+    expect(existsSync(join(store, 'PROFILE0.sdProfile'))).toBe(true); // the (non-Custom) Default survives
+    expect(existsSync(join(store, 'PROFILE2.sdProfile'))).toBe(false); // the redundant copy is pruned
+  });
+
+  it('keeps EVERY active Custom (multi-device), pruning only the non-active copy', () => {
+    const acts = { '0,0': project('a') };
+    const store = fakeStore([
+      { name: 'Jetstream Custom', model: '20GAT9902', actions: acts }, // PROFILE0 — active on deck 1
+      { name: 'Jetstream Custom copy', model: '20GAT9902', actions: acts }, // PROFILE1 — active on deck 2
+      { name: 'Jetstream Custom copy 2', model: '20GAT9902', actions: acts }, // PROFILE2 — stale, not active
+    ]);
+    // Two decks report two different preferred profiles — deleting either active board is data loss.
+    const removed = pruneCustomProfiles(store, ['profile0', 'profile1']);
+    expect(removed).toEqual(['PROFILE2.sdProfile']);
+    expect(existsSync(join(store, 'PROFILE0.sdProfile'))).toBe(true); // deck 1's active board kept
+    expect(existsSync(join(store, 'PROFILE1.sdProfile'))).toBe(true); // deck 2's active board kept
+  });
+
+  it('never prunes across device MODELS — a different deck’s board is safe even when inactive', () => {
+    const store = fakeStore([
+      { name: 'Jetstream Custom', model: '20GAT9902', actions: { '0,0': project('a') } }, // PROFILE0 XL — active
+      { name: 'Jetstream Custom copy', model: '20GAT9902', actions: { '0,0': project('a') } }, // PROFILE1 XL — inactive
+      { name: 'Jetstream Custom', model: '20GBA9902', actions: { '0,0': project('b') } }, // PROFILE2 Standard — inactive, other model
+    ]);
+    const removed = pruneCustomProfiles(store, ['profile0']); // only the XL board is active
+    expect(removed).toEqual(['PROFILE1.sdProfile']); // only the redundant SAME-model copy
+    expect(existsSync(join(store, 'PROFILE2.sdProfile'))).toBe(true); // the Standard deck's board survives
+  });
+
+  it('falls back to the most-recently-modified Custom when the active one is unknown', () => {
+    const acts = { '0,0': project('a') };
+    const store = fakeStore([
+      { name: 'Jetstream Custom', model: '20GAT9902', actions: acts },
+      { name: 'Jetstream Custom copy', model: '20GAT9902', actions: acts }, // newest by mtime → kept
+    ]);
+    older(store, 'PROFILE0.sdProfile'); // PROFILE1 is now the newer board
+    const removed = pruneCustomProfiles(store, []); // no active uuid → mtime decides
+    expect(removed).toEqual(['PROFILE0.sdProfile']);
+    expect(existsSync(join(store, 'PROFILE1.sdProfile'))).toBe(true);
   });
 
   it('is a no-op with 0 or 1 Custom profiles', () => {
-    expect(pruneCustomProfiles(fakeStore([{ name: 'Jetstream Custom', model: '20GAT9902', actions: {} }]))).toEqual([]);
-    expect(pruneCustomProfiles('/nonexistent/xyz')).toEqual([]);
+    expect(pruneCustomProfiles(fakeStore([{ name: 'Jetstream Custom', model: '20GAT9902', actions: {} }]), [])).toEqual(
+      [],
+    );
+    expect(pruneCustomProfiles('/nonexistent/xyz', [])).toEqual([]);
   });
 
   it('never touches a user profile whose name merely STARTS with "Jetstream Custom"', () => {
     const store = fakeStore([
-      { name: 'Jetstream Custom', model: '20GAT9902', actions: { '0,0': emptySlot } }, // 0 configured → pruned
+      { name: 'Jetstream Custom', model: '20GAT9902', actions: { '0,0': emptySlot } }, // non-active → pruned
       { name: 'Jetstream Custom Work', model: '20GAT9902', actions: { '0,0': project('a') } }, // user's own → survives
-      { name: 'Jetstream Custom copy', model: '20GAT9902', actions: { '0,0': project('a'), '1,0': project('b') } }, // 2 → kept
+      { name: 'Jetstream Custom copy', model: '20GAT9902', actions: { '0,0': project('a'), '1,0': project('b') } },
     ]);
-    expect(pruneCustomProfiles(store)).toHaveLength(1);
+    older(store, 'PROFILE0.sdProfile'); // make the copy the newest so mtime keeps it
+    expect(pruneCustomProfiles(store, [])).toHaveLength(1);
     expect(existsSync(join(store, 'PROFILE1.sdProfile'))).toBe(true); // "…Work" not matched by the regex
-    expect(existsSync(join(store, 'PROFILE2.sdProfile'))).toBe(true); // richest generated Custom kept
-    expect(existsSync(join(store, 'PROFILE0.sdProfile'))).toBe(false); // empty generated Custom pruned
-  });
-
-  it('keeps ALL profiles tied for the most configured keys (never risks the active board)', () => {
-    const acts = { '0,0': project('a'), '1,0': project('b') };
-    const store = fakeStore([
-      { name: 'Jetstream Custom', model: '20GAT9902', actions: acts },
-      { name: 'Jetstream Custom copy', model: '20GAT9902', actions: acts }, // tie at 2 → both kept
-    ]);
-    expect(pruneCustomProfiles(store)).toEqual([]);
+    expect(existsSync(join(store, 'PROFILE2.sdProfile'))).toBe(true); // newest generated Custom kept
+    expect(existsSync(join(store, 'PROFILE0.sdProfile'))).toBe(false); // older generated Custom pruned
   });
 });
 
@@ -183,7 +216,7 @@ describe('readBoardLayout', () => {
         },
       },
     ]);
-    const layout = readBoardLayout(store);
+    const layout = readBoardLayout(store, []); // no active profile → most-configured fallback
     expect(layout?.profileName).toBe('Jetstream copy');
     expect(layout?.deck.key).toBe('xl');
     expect(layout?.keys.get('0,0')?.label).toBe('headless');
@@ -192,8 +225,47 @@ describe('readBoardLayout', () => {
   });
 
   it('returns null when the store is unreadable or has no configured board', () => {
-    expect(readBoardLayout('/nonexistent/dir/xyz')).toBeNull();
-    expect(readBoardLayout(fakeStore([{ name: 'Default Profile', model: '20GAT9902', actions: {} }]))).toBeNull();
+    expect(readBoardLayout('/nonexistent/dir/xyz', [])).toBeNull();
+    expect(readBoardLayout(fakeStore([{ name: 'Default Profile', model: '20GAT9902', actions: {} }]), [])).toBeNull();
+  });
+
+  it('prefers the ACTIVE profile over a richer inactive one', () => {
+    const store = fakeStore([
+      // PROFILE0 — the board Stream Deck is ON, but only 1 configured key
+      {
+        name: 'Jetstream Custom',
+        model: '20GAT9902',
+        actions: { '0,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'onkey', path: '/x/onkey' } } },
+      },
+      // PROFILE1 — richer (3 keys) but NOT active; the old max-configured heuristic would wrongly pick this
+      {
+        name: 'Jetstream Custom copy',
+        model: '20GAT9902',
+        actions: {
+          '0,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'a', path: '/x/a' } },
+          '1,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'b', path: '/x/b' } },
+          '2,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'c', path: '/x/c' } },
+        },
+      },
+    ]);
+    const layout = readBoardLayout(store, ['profile0']); // Stream Deck is ON the simpler board
+    expect(layout?.profileName).toBe('Jetstream Custom'); // active wins despite fewer keys
+    expect(layout?.keys.get('0,0')?.label).toBe('onkey');
+  });
+
+  it('does NOT let an active NON-Jetstream profile masquerade as your board', () => {
+    const store = fakeStore([
+      // PROFILE0 — the profile Stream Deck is currently ON, but it's a plain hotkey page, no Jetstream keys
+      { name: 'Spotify', model: '20GAT9902', actions: { '0,0': { UUID: 'com.spotify.hotkey', Settings: {} } } },
+      // PROFILE1 — an INACTIVE real Jetstream board
+      {
+        name: 'Jetstream Custom',
+        model: '20GAT9902',
+        actions: { '0,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'falcon', path: '/x/falcon' } } },
+      },
+    ]);
+    const layout = readBoardLayout(store, ['profile0']); // active = the Spotify page
+    expect(layout?.profileName).toBe('Jetstream Custom'); // the Jetstream board wins, not the active non-Jetstream one
   });
 
   it('selects a shortcuts-only board (non-empty slots, zero project keys)', () => {
@@ -209,6 +281,7 @@ describe('readBoardLayout', () => {
           },
         },
       ]),
+      [],
     );
     expect(layout?.profileName).toBe('Jetstream shortcuts'); // 1 configured slot > 0 → picked
     expect(layout?.keys.get('0,0')?.label).toBe('Telegram');
@@ -224,7 +297,7 @@ describe('renderBoardMap', () => {
         actions: { '0,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'falcon', path: '/x/falcon' } } },
       },
     ]);
-    const map = renderBoardMap(readBoardLayout(store)!);
+    const map = renderBoardMap(readBoardLayout(store, [])!);
     expect(map).toContain('a1 falcon'); // top-left, labelled
     expect(map).toContain('a8'); // XL has 8 columns → a8 present
     expect(map.split('\n')).toHaveLength(4); // XL has 4 rows

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { defaultSettingsPath } from './hooks-install';
 import { projectsConfigPath } from './projects-config';
+import { pluginAlive } from './slot-client';
 
 /**
  * `jetstream doctor` — the read-only answer to "why isn't my board lighting up?". Every
@@ -174,6 +175,8 @@ export interface DoctorIO {
   ghOnPath: () => boolean;
   settingsRaw: () => string | undefined;
   projectsRaw: () => string | undefined;
+  /** Is the plugin's hook listener answering on the loopback port? Injected for tests. */
+  listenerAlive: () => Promise<boolean>;
 }
 
 export function defaultDoctorIO(): DoctorIO {
@@ -183,17 +186,32 @@ export function defaultDoctorIO(): DoctorIO {
     ghOnPath: () => commandOnPath('gh'),
     settingsRaw: () => readIfPresent(defaultSettingsPath()),
     projectsRaw: () => readIfPresent(projectsConfigPath()),
+    listenerAlive: () => pluginAlive(),
   };
 }
 
+/** The plugin can be installed + hooks wired yet the board still dark because its listener never
+ * bound (e.g. an orphaned prior process held the port). Probe it so doctor stops reporting all-green
+ * on a dark board. */
+function checkListener(alive: boolean): CheckResult {
+  return alive
+    ? { status: 'ok', message: 'plugin hook listener responding on 127.0.0.1:41321' }
+    : {
+        status: 'warn',
+        message:
+          'plugin hook listener NOT responding on 127.0.0.1:41321 — the board will not update. Is the Stream Deck app running with Jetstream installed? (restart it if so.)',
+      };
+}
+
 /** Run every read-only check. Never mutates, never throws. */
-export function runDoctor(io: DoctorIO = defaultDoctorIO()): CheckResult[] {
+export async function runDoctor(io: DoctorIO = defaultDoctorIO()): Promise<CheckResult[]> {
   return [
     checkClaudeOnPath(io.claudeOnPath()),
     checkAnthropicEnv(io.env),
     checkHooksPresent(io.settingsRaw()),
     checkProjectsConfig(io.projectsRaw()),
     checkGhForCi(io.ghOnPath()),
+    checkListener(await io.listenerAlive()),
   ];
 }
 

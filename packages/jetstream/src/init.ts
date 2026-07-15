@@ -8,6 +8,7 @@ import { installHooks, type HookCommands } from './hooks-install';
 import { defaultOpenFile } from './open-file';
 import { DECK_MODELS, writeProfileFile } from './profile';
 import { parseProjectsConfig, projectsConfigPath } from './projects-config';
+import { paintLine } from './term';
 
 /**
  * `jetstream init` — the guided onboarding: build the whole fleet config in one sitting
@@ -130,7 +131,7 @@ async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]
       io.say(`No git repos found under ${safe(dir)}.`);
     } else {
       io.say(`Found ${repos.length} git repo${repos.length === 1 ? '' : 's'} under ${safe(dir)}:`);
-      repos.forEach((repo, i) => io.say(`  ${i + 1}. ${safe(repo)}`));
+      repos.forEach((repo, i) => io.say(paintLine(`  ${i + 1}. ${safe(repo)}`, i)));
       // A handful of repos fits a deck; a whole home does not. Past MANY_REPOS, "Enter = all"
       // would flood projects.json and overflow every deck but a packed XL — surfacing base-image
       // and course repos on keys instead of the few you actually drive. So for a big list, drop

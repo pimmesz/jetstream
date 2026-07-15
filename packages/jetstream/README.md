@@ -1,16 +1,19 @@
 # Jetstream
 
 _Full Claude control on your Elgato Stream Deck._ One key per project, glowing with that
-project's live Claude Code status — red working, amber needs-you, green done — plus an
-attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./SPEC.md).
+project's live Claude Code status — working, needs-you, done — plus an attention doorbell,
+usage gauges, and preset headless launches. Add app / URL / command shortcut keys, give any
+key a colour, emoji, or the app's real logo, and **build your whole board by talking to it**
+(`jetstream chat`) — live, no re-import. See [SPEC.md](./SPEC.md).
 
-## Install (two parts, same machine — macOS or Windows)
+## Install (CLI-first — macOS or Windows)
 
 1. **Claude Code**, logged in with your subscription (`claude` → `/login`). Leave
    `ANTHROPIC_API_KEY` unset: Jetstream strips it from anything it spawns so a keypress
    can never silently bill the metered API.
-2. **The plugin**: double-click `gg.pim.jetstream.streamDeckPlugin` (or, later, install
-   from the Elgato Marketplace), then drag a key onto your deck. That's it — on **first
+2. **afterburner + the plugin**: `npm i -g @pimmesz/afterburner`, then
+   `afterburner jetstream install` — it hands the bundled plugin to the Stream Deck app; approve
+   the install prompt there. (Updating? Re-run the same two commands.) That's it — on **first
    launch** (once, recorded in a marker next to `projects.json`) the plugin wires two hooks
    into `~/.claude/settings.json`, backing the file up first: the **per-project status
    hook** (lights the board) and the **permission hook** (lets Approve/Deny keys answer
@@ -20,12 +23,15 @@ attention doorbell, usage gauges, and preset headless launches. See [SPEC.md](./
    stay removed — re-wire any time with `jetstream setup`. The usage/statusline hook is
    installed automatically on first launch if you have no statusline yet (re-wirable via the CLI commands below).
 
-   Want the whole board built for you? Run the guided wizard from inside the installed
-   plugin folder:
+   With the plugin installed (step 2 above), set up your fleet — two ways, both via the `afterburner` CLI:
 
    ```sh
-   node "<plugin folder>/bin/jetstream.js" init
+   afterburner jetstream chat   # conversational — "3 repos in ~/dev: …", "add a Telegram key at a8"
+   afterburner jetstream init   # guided wizard — repos, theme/timings, a ready-made layout
    ```
+
+   `chat` lets you describe repos AND arrange keys in plain English (add app/URL/run shortcuts,
+   recolour, rename, set emoji/logo icons), applied live.
 
    `init` asks for your repos (or scans a folder), your theme and timings, writes
    `projects.json` (see below), wires the hooks — and can **prebuild a ready-made key

@@ -18,21 +18,25 @@ import { defaultOpenFile } from './open-file';
 import { projectsConfigPath, PROJECTS_TEMPLATE } from './projects-config';
 
 /**
- * The Jetstream CLI (`bin/jetstream.js`), run from inside the installed .sdPlugin — it
- * ships via the Elgato Marketplace, so there is no `jetstream` command on PATH. One entry
- * with subcommands; `bin/hooks-install.js` is a thin back-compat alias onto `hooks install`.
+ * The Jetstream CLI (`bin/jetstream.js`), which lives inside the installed .sdPlugin and is normally
+ * driven via `afterburner jetstream <command>` (distribution is CLI-first via the afterburner npm
+ * package — no standalone `jetstream` on PATH). One entry with subcommands; `bin/hooks-install.js`
+ * is a thin back-compat alias onto `hooks install`.
  */
 
-const USAGE = `jetstream — Stream Deck plugin CLI (run from inside the installed .sdPlugin)
+const USAGE = `jetstream — Stream Deck plugin CLI (usually run as \`afterburner jetstream <command>\`)
+
+New here? Run \`chat\` — describe your repos and arrange your board in plain English.
 
 Usage:
-  node "<plugin>/bin/jetstream.js" <command> [options]
+  afterburner jetstream <command> [options]
 
 Commands:
+  chat                            Conversational setup: describe your repos AND arrange keys in
+                                  plain English — add app/URL/run shortcuts, recolour, rename, set
+                                  emoji/logo icons; applied LIVE to your deck (uses your subscription)
   init                            Guided setup: build projects.json (your whole fleet) +
                                   settings, wire the Claude hooks, print next steps
-  chat                            Conversational setup: describe your repos in plain English
-                                  and Claude builds your fleet (uses your subscription)
   hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
   doctor                          Read-only health check — why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps
@@ -212,6 +216,10 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           onLayout: async (layout) => {
             const slotEdits = layout.placements.filter((p) => p.uuid === 'gg.pim.jetstream.slot');
             const structural = layout.placements.filter((p) => p.uuid !== 'gg.pim.jetstream.slot');
+            // Run keys are opt-in — flag it at creation so a new one isn't a silent no-op on press.
+            const runNote = layout.placements.some((p) => (p.settings as { kind?: string } | null)?.kind === 'run')
+              ? '\n(Run keys only fire once you enable "allow run keys" in Jetstream settings.)'
+              : '';
             if (structural.length === 0 && slotEdits.length > 0 && (await pluginAlive())) {
               const results = await Promise.all(
                 slotEdits.map(async (p) => {
@@ -224,7 +232,8 @@ export async function run(argv: string[], binDir: string): Promise<number> {
               if (failed.length === 0) {
                 chatIo.say(
                   `\n✓ Applied live to your board — no import needed ` +
-                    `(${slotEdits.length} key${slotEdits.length > 1 ? 's' : ''}: ${results.map((r) => r.coord).join(', ')}).`,
+                    `(${slotEdits.length} key${slotEdits.length > 1 ? 's' : ''}: ${results.map((r) => r.coord).join(', ')}).` +
+                    runNote,
                 );
                 return;
               }
@@ -248,7 +257,8 @@ export async function run(argv: string[], binDir: string): Promise<number> {
             chatIo.say(
               `\nWrote a ${placements.length}-key layout (${layout.placements.length} changed) to ${outPath}.\n` +
                 'Double-click it to import (installs as a new profile — nothing is overwritten).' +
-                (pruned.length ? `\n(Cleaned up ${pruned.length} old duplicate profile${pruned.length > 1 ? 's' : ''}.)` : ''),
+                (pruned.length ? `\n(Cleaned up ${pruned.length} old duplicate profile${pruned.length > 1 ? 's' : ''}.)` : '') +
+                runNote,
             );
           },
         });
@@ -271,11 +281,13 @@ export async function run(argv: string[], binDir: string): Promise<number> {
     }
     case 'hooks':
       return runHooks(rest, binDir);
-    case 'doctor':
+    case 'doctor': {
       // `--json` for a copy-pasteable support bundle (also what the in-app "Copy diagnostics"
       // sends); the default is the human-readable report.
-      console.log(rest.includes('--json') ? JSON.stringify(runDoctor(), null, 2) : formatReport(runDoctor()));
+      const results = await runDoctor();
+      console.log(rest.includes('--json') ? JSON.stringify(results, null, 2) : formatReport(results));
       return 0; // doctor is advisory — always exit 0
+    }
     case 'setup':
       return runSetup(binDir);
     case 'help':

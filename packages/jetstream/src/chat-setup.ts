@@ -3,7 +3,7 @@ import type { JetstreamConfig } from './config';
 import { addToFleet, writeFleetFile } from './fleet';
 import { projectsConfigPath } from './projects-config';
 import { DECK_MODELS, type DeckModel } from './profile';
-import { resolvePlacements, type Placement } from './layout';
+import { NO_SETTINGS_TYPE_NAMES, resolvePlacements, type Placement } from './layout';
 import { boardContext, renderBoardMap, type BoardLayout } from './board-layout';
 
 /**
@@ -35,7 +35,7 @@ export const SETUP_SYSTEM = [
   '  Each key needs "coord" + "type". "type" is one of:',
   '    open-app {app:"/Applications/X.app"} · open-url {url:"https://…"} · run {command, args?} · slot (clear/empty)',
   '    text {text:"…"} · project {path, name?} · launch {prompt, path, model?} · approve · deny · nav {target:"board"|"ops"}',
-  '    fleet · attention · usage · ci · settings · build · stop-all · model · heartbeat · review',
+  `    ${NO_SETTINGS_TYPE_NAMES.join(' · ')}`,
   '  "icon" is the key\'s MAIN picture. An open-app key already auto-shows the app\'s own logo — do NOT set',
   '  "icon" to match it. Set "icon" only to REPLACE the picture: an image path ("icon":"/path/x.png") OR an',
   '  emoji ("icon":"🔥"). "glyph" is a SMALL badge in the corner, over the picture. So "change the icon to a',
@@ -83,8 +83,11 @@ export interface ChatDeps {
 export interface Proposal {
   projects: ProjectConfig[];
   settings: Partial<JetstreamConfig>;
-  /** An optional full-board layout the model designed: which key sits at which coordinate. */
-  layout?: { deck: DeckModel; placements: Placement[]; warnings: string[] };
+  /** An optional full-board layout the model designed: which key sits at which coordinate.
+   * `dropped` = proposed keys resolvePlacements refused (unknown type, off-board, dup, bad settings);
+   * a partial layout is destructive to APPLY (a move whose destination was dropped still clears its
+   * source), so the apply flow refuses when `dropped > 0`. */
+  layout?: { deck: DeckModel; placements: Placement[]; warnings: string[]; dropped: number };
 }
 
 /** The clarifying question in an agent reply, or null if the reply isn't one. */
@@ -165,8 +168,15 @@ function extractLayout(raw: unknown, defaultDeck?: DeckModel): Proposal['layout'
   const deck = DECK_MODELS.find((d) => d.key === l.deck) ?? defaultDeck;
   if (!deck) return undefined;
   const { placements, warnings } = resolvePlacements(deck, l.keys);
-  if (placements.length === 0) return undefined;
-  return { deck, placements, warnings };
+  // Count keys resolvePlacements refused. Not all drops warn (a non-object entry is skipped silently),
+  // so derive it from the input count, not warnings.length.
+  const inputCount = Array.isArray(l.keys) ? l.keys.length : 0;
+  // No keys at all → not a layout. But keep a layout where keys were PROPOSED yet ALL dropped, so its
+  // dropped>0 still reaches the apply-flow's refusal (else a mixed proposal would silently apply the
+  // projects and ignore the requested — possibly destructive — layout).
+  if (placements.length === 0 && inputCount === 0) return undefined;
+  const dropped = Math.max(0, inputCount - placements.length);
+  return { deck, placements, warnings, dropped };
 }
 
 function extractSettings(raw: unknown): Partial<JetstreamConfig> {
@@ -247,6 +257,16 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
     if (proposal.layout) {
       io.say(`  layout: ${proposal.layout.placements.length} key(s) on the ${proposal.layout.deck.label}`);
       for (const w of proposal.layout.warnings) io.say(`    ⚠ ${w}`);
+    }
+    // Refuse a PARTIAL layout. Applying it is destructive: a move whose destination key was dropped
+    // still clears/overwrites its source, silently DELETING it (how a "move micmute to d2" that the
+    // build couldn't place ended up erasing micmute). Loop for a corrected instruction instead.
+    if (proposal.layout && proposal.layout.dropped > 0) {
+      io.say(
+        `\n⚠ ${proposal.layout.dropped} key(s) couldn't be placed — NOT applying, since a partial move ` +
+          `can delete the keys it can't relocate. Tell me a corrected version (or a supported key type).`,
+      );
+      continue;
     }
 
     const decision = io.select

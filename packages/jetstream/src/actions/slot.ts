@@ -6,14 +6,38 @@ import type {
   KeyDownEvent,
   WillAppearEvent,
 } from '@elgato/streamdeck';
+import { worstStatus } from '@pimmesz/jetstream-status';
 import type { Face } from '../render';
 import { keyFace } from '../render';
 import { config } from '../config';
+import { board } from '../state';
+import { interruptPids } from '../switchto';
 import { execPlan, runPlan } from '../slot-exec';
 import { parseSlotCommand } from '../slot-command';
 import { imageMime, resolveSlotIcon } from '../slot-icon';
+import { buildFace } from './build';
+import { stopFace } from './interrupt-all';
+import { modelFace, cycleModel } from './model';
+import { fleetFace, darkReason } from './fleet';
+import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
 
-export type SlotKind = 'empty' | 'app' | 'url' | 'run';
+// FOLDED structural keys + volume keys: rendered + handled here so `jetstream chat` retargets them LIVE
+// (POST /slot) instead of re-importing a profile. 'build' is a static stamp; 'stopall' (gated) SIGINTs
+// the fleet; 'model' cycles the global model override; 'fleet' is the live roll-up; 'volup'/'voldown'/
+// 'volmute' adjust the macOS OUTPUT volume (works on a Scarlett once a virtual gain device like
+// Background Music is in front). None carry per-key settings. See docs/slot-kinds-scoping.md.
+export type SlotKind =
+  | 'empty'
+  | 'app'
+  | 'url'
+  | 'run'
+  | 'build'
+  | 'stopall'
+  | 'model'
+  | 'fleet'
+  | 'volup'
+  | 'voldown'
+  | 'volmute';
 
 /** A generic, plugin-owned board key. Empty slots self-label with their coordinate; a configured
  * slot is an app / URL / command shortcut. A type ALIAS (not interface) to satisfy the SDK's
@@ -53,6 +77,14 @@ function baseFace(s: SlotSettings): Face {
       return { color: '#0091ff', label: 'open', sub: hostLabel(s.url), subMax: 20 };
     case 'run':
       return { color: '#0091ff', label: s.command ?? 'run', sub: 'run', glyph: '▸' };
+    case 'build':
+      return buildFace(); // static, from the compile-time stamp — settings-independent
+    case 'volup':
+      return { color: '#1f6feb', label: 'vol +', sub: 'output' };
+    case 'voldown':
+      return { color: '#1f6feb', label: 'vol −', sub: 'output' };
+    case 'volmute':
+      return { color: '#26262b', label: 'mute', sub: 'output', glyph: '🔇' };
     default:
       return { color: '#1c1c20', label: '' }; // empty → a blank dark key; coordinates live on the Grid toggle
   }
@@ -67,9 +99,12 @@ function isEmojiIcon(icon: string): boolean {
 /** The face a slot renders. User overrides — label, colour, subtitle, glyph — win over the per-kind
  * defaults, so "make a8 red", "put 🚀 on b2", and "add subtitle 'prod'" all just paint. An emoji set
  * as the `icon` becomes the big main visual (replacing an app logo). Pure. */
-export function slotFace(s: SlotSettings): Face {
+/** Apply the user cosmetic overrides (label/colour/sub/glyph + an emoji main-icon) on top of any base
+ * face. Split out so LIVE kinds (whose base comes from plugin state, not settings) share the same
+ * override rules as the settings-derived kinds. */
+function withOverrides(base: Face, s: SlotSettings): Face {
   const face: Face = {
-    ...baseFace(s),
+    ...base,
     ...(s.label ? { label: s.label } : {}),
     ...(s.color ? { color: s.color } : {}),
     ...(s.sub ? { sub: s.sub } : {}),
@@ -80,6 +115,10 @@ export function slotFace(s: SlotSettings): Face {
   // The emoji IS the main visual; drop a corner glyph that just duplicates it (models often set both).
   if (face.glyph === icon) delete face.glyph;
   return { ...face, emoji: icon };
+}
+
+export function slotFace(s: SlotSettings): Face {
+  return withOverrides(baseFace(s), s);
 }
 
 /**
@@ -101,10 +140,57 @@ export class SlotKey extends SingletonAction<SlotSettings> {
 
   override async onKeyDown(ev: KeyDownEvent<SlotSettings>): Promise<void> {
     const settings = ev.payload.settings;
+    // `stopall` SIGINTs the whole fleet — destructive, so (like the run gate) it stays inert until
+    // opted in, so a webpage that plants it via the unauthenticated /slot endpoint can't fire it.
+    if (settings.kind === 'stopall') {
+      if (!config.get().allowStopKeys) {
+        await ev.action.setImage(keyFace({ color: '#b58900', label: 'stop off', sub: 'enable in settings' }));
+        setTimeout(() => void this.repaint(ev.action), 2600);
+        return;
+      }
+      const sent = interruptPids(board.allPids());
+      await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
+      return;
+    }
+    if (settings.kind === 'model') {
+      await cycleModel(); // benign — cycles the global model override; face repaints on the round-trip
+      return;
+    }
+    if (settings.kind === 'fleet') {
+      // Board lit → ack blip; dark → press-to-doctor: paint the reason for a beat, then repaint live.
+      if (worstStatus(board.byProject()) !== 'none') {
+        await ev.action.showOk();
+        return;
+      }
+      await ev.action.setImage(keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
+      setTimeout(() => void this.repaint(ev.action), 2600);
+      return;
+    }
+    // Output-volume keys — benign (they only move the macOS output volume), so no /slot gate needed.
+    if (settings.kind === 'volup') {
+      await nudgeOutputVolume(6);
+      await ev.action.showOk();
+      return;
+    }
+    if (settings.kind === 'voldown') {
+      await nudgeOutputVolume(-6);
+      await ev.action.showOk();
+      return;
+    }
+    if (settings.kind === 'volmute') {
+      await toggleOutputMute();
+      await ev.action.showOk();
+      return;
+    }
+    if (settings.kind === 'build') return; // a static "which build am I?" key — no press action
     // `run` executes an arbitrary command; keep it OPT-IN so a command planted via the unauthenticated
-    // loopback /slot endpoint stays inert until the user enables run keys in Jetstream settings.
+    // loopback /slot endpoint stays inert until the user enables run keys in Jetstream settings. Don't
+    // dead-end silently — say WHY on the face for a beat, then restore the key.
     if (settings.kind === 'run' && !config.get().allowRunKeys) {
-      await ev.action.showAlert();
+      await ev.action.setImage(keyFace({ color: '#b58900', label: 'run off', sub: 'enable in settings' }));
+      // Repaint from the slot's LIVE settings when the notice clears: if a chat live-edit retargeted
+      // this coordinate within the 2.6s, we must not paint the stale run face back over the new key.
+      setTimeout(() => void this.repaint(ev.action), 2600);
       return;
     }
     const plan = execPlan(settings);
@@ -136,9 +222,43 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     return { status: 404, body: JSON.stringify({ error: `no slot key at ${cmd.coord}` }) };
   }
 
+  /** Repaint a slot from its CURRENT settings (used after the transient "run off" notice), so a
+   * concurrent live-edit that retargeted the coordinate wins over the face we captured on press. */
+  private async repaint(a: KeyAction): Promise<void> {
+    if (!a.isKey()) return;
+    await this.render(a, await a.getSettings());
+  }
+
+  /** Repaint only the visible slots of a given KIND. The board tick / a poll / a subscription calls
+   * this to refresh LIVE kinds (e.g. 'stopall' working-count) without touching static slots. Timers
+   * stay in plugin.ts (one per kind); this is the O(kinds) redirect target. */
+  async renderKind(kind: SlotKind): Promise<void> {
+    for (const visible of this.actions) {
+      if (!visible.isKey()) continue;
+      try {
+        const s = await visible.getSettings();
+        if (s.kind === kind) await this.render(visible, s);
+      } catch {
+        /* a transient getSettings/render timeout for one slot must not abort the rest (or reject) */
+      }
+    }
+  }
+
+  /** The face for a slot, resolving LIVE kinds (e.g. 'stopall' reads the board working-count) from
+   * plugin state; settings-derived kinds go through the pure `slotFace`. */
+  private faceFor(settings: SlotSettings): Face {
+    if (settings.kind === 'stopall') {
+      const working = Object.values(board.byProject()).filter((s) => s.status === 'working').length;
+      return withOverrides(stopFace(working), settings);
+    }
+    if (settings.kind === 'model') return withOverrides(modelFace(config.get().launchModel), settings);
+    if (settings.kind === 'fleet') return withOverrides(fleetFace(), settings);
+    return slotFace(settings);
+  }
+
   private async render(a: KeyAction, settings: SlotSettings): Promise<void> {
     await a.setTitle('');
-    const face = slotFace(settings);
+    const face = this.faceFor(settings);
     // Paint the text/emoji face immediately (also the fallback when there's no image icon)…
     await a.setImage(keyFace(face));
     // …then resolve the image icon (app logo / custom image) and swap. A plain logo paints as the raw
