@@ -4,7 +4,8 @@
   "description": "Full Claude control on your Elgato Stream Deck — one key per project, live Claude Code status, deck approvals, usage gauges.",
   "license": "Apache-2.0",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "type": "module",
   "engines": {
