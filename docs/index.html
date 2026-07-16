@@ -72,6 +72,13 @@
     --jet-2: #7dd3fc;
     --amber: #f59e0b;
     --green: #22c55e;
+    /* The product's real status colours (packages/status colorFor, default theme). The page
+       legend must teach what the deck actually lights up, so these are the shipped values,
+       not brand-adjacent approximations. Red is reserved for danger and never a status. */
+    --st-working: #f76808;
+    --st-needs: #ffb224;
+    --st-done: #30a46c;
+    --st-idle: #8e8e93;
     --radius: 14px;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -129,10 +136,43 @@
     text-align: center;
     padding: 84px 0 68px;
   }
-  .logo { width: 96px; height: 96px; border-radius: 24px; margin-bottom: 22px; box-shadow: 0 12px 40px rgba(56,189,248,0.28); }
+  /* The mark is a circular disk, so it takes a circular glow — a 24px-radius box on round
+     art clipped the corners of the cream and read as a square badge with bites out of it. */
+  .logo {
+    width: 104px; height: 104px; border-radius: 50%; margin-bottom: 22px;
+    filter: drop-shadow(0 10px 34px rgba(56,189,248,0.42));
+  }
   h1 { font-size: 2.9rem; line-height: 1.08; margin: 0 0 14px; letter-spacing: -0.02em; }
   .tag { font-size: 1.22rem; color: var(--muted); max-width: 640px; margin: 0 auto 30px; }
   .jetword { color: var(--jet); }
+
+  /* Hero board: the page sells "your fleet, lit up" but showed no lit keys above the fold.
+     Six real key faces in the real status colours, cycling the way a board actually does.
+     CSS-only — no script, no request, and it costs the page nothing. */
+  .board { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 34px 0 4px; }
+  .key {
+    width: 74px; height: 74px; border-radius: 12px; position: relative;
+    display: grid; place-items: center; gap: 0;
+    font-family: var(--mono); font-size: 0.72rem; font-weight: 700; color: #fff;
+    background: var(--k); box-shadow: 0 8px 22px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.16);
+    animation: pulse 6s var(--d, 0s) ease-in-out infinite;
+  }
+  .key .kg { position: absolute; top: 6px; left: 8px; font-size: 0.8rem; opacity: 0.95; }
+  .key .kn { font-size: 0.78rem; letter-spacing: -0.01em; }
+  .k-work { --k: var(--st-working); }
+  .k-need { --k: var(--st-needs); }
+  .k-done { --k: var(--st-done); }
+  .k-idle { --k: var(--st-idle); }
+  .k-none { --k: #1b1d24; color: var(--dim); box-shadow: inset 0 0 0 1px var(--line); }
+  /* needs-you escalates by flashing, mirroring the real attention behaviour. */
+  .k-need { animation: flash 1.6s var(--d, 0s) ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+  @keyframes flash { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
+  .legend { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin: 16px 0 0; font-size: 0.8rem; color: var(--dim); }
+  .legend b { font-family: var(--mono); font-weight: 700; margin-right: 5px; }
+  @media (prefers-reduced-motion: reduce) {
+    .key { animation: none; }
+  }
   .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   .btn {
     display: inline-block; padding: 12px 22px; border-radius: 999px;
@@ -194,9 +234,9 @@
   .card h3 .k { color: var(--jet); font-family: var(--mono); font-size: 0.8rem; margin-right: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
   .card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
   .glyph { font-family: var(--mono); font-weight: 700; }
-  .g-work { color: var(--jet); }
-  .g-need { color: var(--amber); }
-  .g-done { color: var(--green); }
+  .g-work { color: var(--st-working); }
+  .g-need { color: var(--st-needs); }
+  .g-done { color: var(--st-done); }
 
   footer { padding: 44px 0 60px; text-align: center; color: var(--dim); font-size: 0.9rem; }
   footer a { color: var(--muted); }
@@ -221,6 +261,20 @@
       <a class="btn btn-primary" href="https://github.com/pimmesz/jetstream">View on GitHub</a>
       <a class="btn btn-ghost" href="#quickstart">Install guide</a>
     </div>
+    <div class="board" aria-label="A Stream Deck board lit with live Claude Code status: falcon working, api needs you, web done, docs working, infra idle">
+      <div class="key k-work" style="--d:0s"><span class="kg">⋯</span><span class="kn">falcon</span></div>
+      <div class="key k-need" style="--d:.2s"><span class="kg">!</span><span class="kn">api</span></div>
+      <div class="key k-done" style="--d:.4s"><span class="kg">✓</span><span class="kn">web</span></div>
+      <div class="key k-work" style="--d:.6s"><span class="kg">⋯</span><span class="kn">docs</span></div>
+      <div class="key k-idle" style="--d:.8s"><span class="kg">·</span><span class="kn">infra</span></div>
+      <div class="key k-none"><span class="kn">+</span></div>
+    </div>
+    <p class="legend">
+      <span><b class="g-work">⋯</b>working</span>
+      <span><b class="g-need">!</b>needs you</span>
+      <span><b class="g-done">✓</b>done</span>
+      <span><b style="color:var(--st-idle)">·</b>idle</span>
+    </p>
     <div class="pills">
       <span class="pill">Works on any Stream Deck</span>
       <span class="pill">Approve / Deny from the deck</span>
