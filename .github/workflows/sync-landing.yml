@@ -1,0 +1,61 @@
+name: Sync landing page
+
+# Keep docs/index.html's "Full documentation" block in sync with README.md.
+# README.md is the single source of truth; scripts/render-landing.mjs renders it
+# between the README:START / README:END markers and this workflow commits the
+# result. Runs only on push to main (never on pull_request), and only renders
+# the README — it does not execute repo/PR code, so holding a write token is safe.
+#
+# NOTE: the automated release bump (ci.yml's bump-version job) CANNOT reach this
+# workflow — its commit carries [skip ci] and is pushed with GITHUB_TOKEN, and
+# GITHUB_TOKEN pushes never re-run workflows. So ci.yml re-renders the landing
+# page in-job as part of the same bump commit (keeping the JSON-LD softwareVersion
+# honest); this workflow covers the other case: a human pushing a README / package
+# / script change straight to main.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - packages/jetstream/package.json
+      - scripts/render-landing.mjs
+      - .github/workflows/sync-landing.yml
+
+# Read-only by default; the single job elevates to write to commit the result.
+permissions:
+  contents: read
+
+# Serialize so back-to-back README merges can't race on the same file.
+concurrency:
+  group: sync-landing
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Render README into the landing page
+        run: node scripts/render-landing.mjs
+
+      - name: Commit if the landing page or llms.txt changed
+        run: |
+          if git diff --quiet -- docs/index.html docs/llms.txt; then
+            echo "Landing page and llms.txt already in sync — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html docs/llms.txt
+          # docs/ is not a trigger path and GITHUB_TOKEN pushes do not
+          # re-run workflows; [skip ci] is belt-and-braces against a loop.
+          git commit -m "docs: sync landing page + llms.txt from README [skip ci]"
+          git push

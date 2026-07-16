@@ -1,10 +1,12 @@
 # Jetstream
 
-_Full Claude control on your Elgato Stream Deck._ One key per project, glowing with that
-project's live Claude Code status — working, needs-you, done — plus an attention doorbell,
-usage gauges, and preset headless launches. Add app / URL / command shortcut keys, give any
-key a colour, emoji, or the app's real logo, and **build your whole board by talking to it**
-(`jetstream chat`) — live, no re-import. See [SPEC.md](./packages/jetstream/SPEC.md).
+> Full Claude Code control on your Elgato Stream Deck. One key per project, glowing with that project's live status — working, needs-you, done — plus an attention doorbell, usage gauges, deck-answerable permission prompts, and preset headless launches. Build the whole board by talking to it.
+
+- [Website](https://pimmesz.github.io/jetstream/)
+- [Source (GitHub)](https://github.com/pimmesz/jetstream)
+- [npm package](https://www.npmjs.com/package/@pimmesz/jetstream)
+
+## Full documentation
 
 ## Install (CLI-first — macOS or Windows)
 

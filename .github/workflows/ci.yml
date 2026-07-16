@@ -71,9 +71,11 @@ jobs:
           AFTER: ${{ github.sha }}
         run: |
           # The tarball is built from packages/** (the plugin bundle inlines all four
-          # packages), so any change there is shippable. Only .github/ (CI) and top-level
-          # docs are absent from it. Fail safe toward publishing: an unknown base (first
-          # push / rewritten history) => shipped.
+          # packages), so any change there is shippable. Absent from it: .github/ (CI),
+          # top-level docs, docs/ (the landing page), and scripts/ (the landing renderer)
+          # — a landing-page edit must not cut an npm release of an identical tarball.
+          # Fail safe toward publishing: an unknown base (first push / rewritten
+          # history) => shipped.
           if ! git rev-parse --verify --quiet "${BEFORE}^{commit}" >/dev/null; then
             echo "base ${BEFORE} unavailable; treating as a shippable change"
             echo "shipped=true" >> "$GITHUB_OUTPUT"
@@ -85,7 +87,7 @@ jobs:
           if [ -z "${files}" ]; then
             echo "no file delta — nothing to publish"
             echo "shipped=false" >> "$GITHUB_OUTPUT"
-          elif grep -qvE '^(\.github/|README\.md$|LICENSE$)' <<< "${files}"; then
+          elif grep -qvE '^(\.github/|docs/|scripts/|README\.md$|LICENSE$)' <<< "${files}"; then
             echo "a published file changed — release will proceed"
             echo "shipped=true" >> "$GITHUB_OUTPUT"
           else
@@ -181,6 +183,12 @@ jobs:
           await writeFile(process.env.GITHUB_OUTPUT, `version=${next}\n`, { flag: 'a' });
           EOF
 
+      # This commit carries [skip ci] and is pushed with GITHUB_TOKEN, so it can never
+      # reach sync-landing.yml — re-render here or the landing page's JSON-LD
+      # softwareVersion goes stale on every release.
+      - name: Re-render the landing page for the new version
+        run: node scripts/render-landing.mjs
+
       - name: Commit version bump
         id: commit
         env:
@@ -188,7 +196,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages/jetstream/package.json
+          git add packages/jetstream/package.json docs/index.html docs/llms.txt
           git commit -m "chore(release): bump version to ${VERSION} [skip ci]"
           # Belt and braces against pushes that landed since checkout; only the
           # version line can conflict, and only this bot edits it.

@@ -3,6 +3,10 @@ dist/
 coverage/
 pnpm-lock.yaml
 LICENSE
+# Landing page: docs/index.html is hand-designed HTML with a machine-generated
+# README block (scripts/render-landing.mjs); neither it nor the generated
+# llms.txt is Prettier-conformant.
+docs/
 # Build artifacts + Elgato-authored files (profiles are machine-generated JSON blobs;
 # the ui/ property inspectors are hand-authored HTML against Elgato's own conventions).
 packages/jetstream/gg.pim.jetstream.sdPlugin/bin/
