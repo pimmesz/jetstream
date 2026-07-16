@@ -146,33 +146,16 @@
   .tag { font-size: 1.22rem; color: var(--muted); max-width: 640px; margin: 0 auto 30px; }
   .jetword { color: var(--jet); }
 
-  /* Hero board: the page sells "your fleet, lit up" but showed no lit keys above the fold.
-     Six real key faces in the real status colours, cycling the way a board actually does.
-     CSS-only — no script, no request, and it costs the page nothing. */
-  .board { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 34px 0 4px; }
-  .key {
-    width: 74px; height: 74px; border-radius: 12px; position: relative;
-    display: grid; place-items: center; gap: 0;
-    font-family: var(--mono); font-size: 0.72rem; font-weight: 700; color: #fff;
-    background: var(--k); box-shadow: 0 8px 22px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.16);
-    animation: pulse 6s var(--d, 0s) ease-in-out infinite;
+  /* Hero deck: a photoreal Stream Deck MK.2 render whose 15 keys carry the real status
+     board — working orange, needs-you amber, done green, idle gray. Replaces the earlier
+     CSS-only key row: the physical device makes "on your Stream Deck" literal at a glance. */
+  .deck {
+    max-width: 720px; margin: 34px auto 4px; border-radius: 18px; overflow: hidden;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.55), 0 0 60px rgba(56,189,248,0.10);
   }
-  .key .kg { position: absolute; top: 6px; left: 8px; font-size: 0.8rem; opacity: 0.95; }
-  .key .kn { font-size: 0.78rem; letter-spacing: -0.01em; }
-  .k-work { --k: var(--st-working); }
-  .k-need { --k: var(--st-needs); }
-  .k-done { --k: var(--st-done); }
-  .k-idle { --k: var(--st-idle); }
-  .k-none { --k: #1b1d24; color: var(--dim); box-shadow: inset 0 0 0 1px var(--line); }
-  /* needs-you escalates by flashing, mirroring the real attention behaviour. */
-  .k-need { animation: flash 1.6s var(--d, 0s) ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
-  @keyframes flash { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
+  .deck img { display: block; width: 100%; height: auto; }
   .legend { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin: 16px 0 0; font-size: 0.8rem; color: var(--dim); }
   .legend b { font-family: var(--mono); font-weight: 700; margin-right: 5px; }
-  @media (prefers-reduced-motion: reduce) {
-    .key { animation: none; }
-  }
   .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   .btn {
     display: inline-block; padding: 12px 22px; border-radius: 999px;
@@ -261,13 +244,9 @@
       <a class="btn btn-primary" href="https://github.com/pimmesz/jetstream">View on GitHub</a>
       <a class="btn btn-ghost" href="#quickstart">Install guide</a>
     </div>
-    <div class="board" aria-label="A Stream Deck board lit with live Claude Code status: falcon working, api needs you, web done, docs working, infra idle">
-      <div class="key k-work" style="--d:0s"><span class="kg">⋯</span><span class="kn">falcon</span></div>
-      <div class="key k-need" style="--d:.2s"><span class="kg">!</span><span class="kn">api</span></div>
-      <div class="key k-done" style="--d:.4s"><span class="kg">✓</span><span class="kn">web</span></div>
-      <div class="key k-work" style="--d:.6s"><span class="kg">⋯</span><span class="kn">docs</span></div>
-      <div class="key k-idle" style="--d:.8s"><span class="kg">·</span><span class="kn">infra</span></div>
-      <div class="key k-none"><span class="kn">+</span></div>
+    <div class="deck">
+      <img src="./deck-hero.jpg" width="1672" height="941" fetchpriority="high"
+        alt="A Stream Deck MK.2 running Jetstream: 15 keys showing a live Claude Code status board — fleet and attention amber, an Opus usage gauge and web done in green, falcon and docs working in orange, approve and settings keys, infra idle in gray, bottom row unlit" />
     </div>
     <p class="legend">
       <span><b class="g-work">⋯</b>working</span>
