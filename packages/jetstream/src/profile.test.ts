@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import {
   buildOpsProfile,
   crc32,
   deckForDeviceType,
+  detectConnectedDeck,
   defaultProfileName,
   opsProfileName,
   profileForDeviceType,
@@ -39,6 +40,34 @@ const hasUnzip = (() => {
     return false;
   }
 })();
+
+describe('detectConnectedDeck', () => {
+  const makeStore = (models: string[]): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-profiles-'));
+    tmpDirs.push(dir);
+    models.forEach((model, i) => {
+      const p = join(dir, `P${i}.sdProfile`);
+      mkdirSync(p, { recursive: true });
+      writeFileSync(join(p, 'manifest.json'), JSON.stringify({ Model: model, Name: 'x' }));
+    });
+    return dir;
+  };
+
+  it('returns the deck when exactly one family is present in the store', () => {
+    expect(detectConnectedDeck(makeStore([XL.model, XL.model]))?.key).toBe('xl');
+  });
+  it('returns undefined when two families are present (ambiguous → let the user pick)', () => {
+    expect(detectConnectedDeck(makeStore([XL.model, MINI.model]))).toBeUndefined();
+  });
+  it('returns undefined for an empty store or a missing directory', () => {
+    expect(detectConnectedDeck(makeStore([]))).toBeUndefined();
+    expect(detectConnectedDeck(join(tmpdir(), 'jetstream-no-such-store-xyz'))).toBeUndefined();
+  });
+  it('matches by 7-char prefix, so a device revision still resolves', () => {
+    // An XL revision like 20GAT9902 shares the 20GAT99 prefix with the pinned 20GAT9901.
+    expect(detectConnectedDeck(makeStore(['20GAT9902']))?.key).toBe('xl');
+  });
+});
 
 describe('profileForDeviceType', () => {
   it('maps the three bundled device types to their manifest profile names', () => {
@@ -73,22 +102,26 @@ describe('buildProfile', () => {
   it('XL: controls anchor the bottom row, projects fill the top-left with name+path settings', () => {
     const { manifest, placedProjects, skippedProjects } = buildProfile(XL, projects(3));
     const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    // Control strip along the bottom row + a nav cap above Settings. Fleet + Attention are
-    // dropped on the XL (redundant when every project has its own key).
+    // The XL default board is projects + two touches: the Usage gauge (d1) and the Jetstream mark
+    // (a8). CI, Launch, Approve/Deny and Settings are intentionally OFF the default XL board; the
+    // volume strip, Ops nav and Grid toggle are gone too.
     expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage');
-    expect(actions['1,3']!.UUID).toBe('gg.pim.jetstream.ci');
-    expect(actions['2,3']!.UUID).toBe('gg.pim.jetstream.launch');
-    expect(actions['3,3']).toMatchObject({ UUID: 'gg.pim.jetstream.permission', Settings: { decision: 'allow' } });
-    expect(actions['4,3']).toMatchObject({ UUID: 'gg.pim.jetstream.permission', Settings: { decision: 'deny' } });
-    // d6-d8 are the output-volume strip (slot kinds); Settings moved up to c8 (7,2); Ops nav + Grid gone.
-    expect(actions['5,3']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'volup' } });
-    expect(actions['7,3']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'volmute' } });
-    expect(actions['7,2']!.UUID).toBe('gg.pim.jetstream.settings');
+    expect(actions['7,0']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'logo' } });
+    const slotKinds = Object.values(actions)
+      .filter((a) => a.UUID === 'gg.pim.jetstream.slot')
+      .map((a) => (a.Settings as { kind?: string } | null)?.kind);
+    expect(slotKinds).not.toContain('volup');
+    expect(slotKinds).not.toContain('voldown');
+    expect(slotKinds).not.toContain('volmute');
     const xlUuids = Object.values(actions).map((a) => a.UUID);
     expect(xlUuids).not.toContain('gg.pim.jetstream.fleet');
     expect(xlUuids).not.toContain('gg.pim.jetstream.attention');
     expect(xlUuids).not.toContain('gg.pim.jetstream.nav'); // Ops page no longer linked from the board
     expect(xlUuids).not.toContain('gg.pim.jetstream.grid'); // Grid toggle removed
+    expect(xlUuids).not.toContain('gg.pim.jetstream.ci'); // control keys dropped from the XL default
+    expect(xlUuids).not.toContain('gg.pim.jetstream.launch');
+    expect(xlUuids).not.toContain('gg.pim.jetstream.permission');
+    expect(xlUuids).not.toContain('gg.pim.jetstream.settings');
     // Projects fill the top row left-to-right, starting top-left.
     expect(actions['0,0']).toMatchObject({
       UUID: 'gg.pim.jetstream.project',
@@ -102,14 +135,13 @@ describe('buildProfile', () => {
     expect(manifest.Version).toBe('1.0');
   });
 
-  it('XL overflow: projects fill the top rows, capped at the free slots', () => {
-    const { manifest, placedProjects } = buildProfile(XL, projects(30));
+  it('XL overflow: projects fill the free slots, capped by the two fixed keys', () => {
+    const { manifest, placedProjects } = buildProfile(XL, projects(40));
     const actions = manifest.Actions as Record<string, { UUID: string }>;
-    // 32 slots − 8 bottom-row controls (usage/ci/launch/approve/deny + volume strip) − 1 Settings (c8)
-    // = 23 project slots. (Ops nav + Grid removed.)
-    expect(placedProjects).toBe(23);
+    // 32 slots − 1 Usage gauge (d1) − 1 logo (a8) = 30 project slots. Every other control was dropped.
+    expect(placedProjects).toBe(30);
     expect(actions['0,0']!.UUID).toBe('gg.pim.jetstream.project'); // top-left is a project
-    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // bottom stays controls
+    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // Usage still anchors d1
   });
 
   it('caps project keys at the free slots and reports the overflow', () => {
@@ -169,16 +201,21 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
   it('XL: fixed board + six UNCONFIGURED project invitations, zero user data', () => {
     const { manifest } = buildDefaultProfile(XL);
     const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
-    // The whole board is plugin-owned now: 7 controls + 6 invitations + the rest filled with empty slots.
+    // The whole board is plugin-owned now: 2 controls (Usage on d1 + the mark on a8) + 6 invitations
+    // + the rest filled with empty slots. CI/Launch/Approve/Deny/Settings are off the XL default.
     expect(Object.keys(actions)).toHaveLength(XL.cols * XL.rows);
     for (const slot of ['0,0', '1,0', '2,0', '3,0', '4,0', '5,0']) {
       expect(actions[slot]).toMatchObject({ UUID: 'gg.pim.jetstream.project', Settings: null });
     }
-    expect(actions['7,2']!.UUID).toBe('gg.pim.jetstream.settings'); // Ops nav removed; Settings relocated here
-    expect(actions['7,3']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'volmute' } });
-    expect(actions['2,3']).toMatchObject({ UUID: 'gg.pim.jetstream.launch', Settings: null });
-    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // controls anchor the bottom
+    expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // Usage gauge anchors d1
+    expect(actions['7,0']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'logo' } }); // a8 mark
+    // The dropped control slots (c8 Settings, d3 Launch) are now plain empty slots.
+    expect(actions['7,2']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } });
+    expect(actions['2,3']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } });
     expect(actions['6,0']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } }); // unplaced → slot
+    const defUuids = Object.values(actions).map((a) => a.UUID);
+    expect(defUuids).not.toContain('gg.pim.jetstream.settings');
+    expect(defUuids).not.toContain('gg.pim.jetstream.ci');
     expect(manifest.Name).toBe('Jetstream XL');
     // Baked at publish time: no path/name may appear anywhere in the manifest.
     expect(JSON.stringify(manifest)).not.toMatch(/"path"|"name"/);
@@ -270,7 +307,7 @@ describe('zip writer', () => {
   it('archive bytes are reproducible ACROSS runs (pinned digest — catches run-dependent bytes)', () => {
     const built = buildProfile(XL, projects(2));
     const digest = createHash('sha256').update(renderProfileArchive(built, 'fixed-id')).digest('hex');
-    expect(digest).toBe('060b52e7d817afac1a1576f742d277d54e4f97a23000d96d79b200484274af62');
+    expect(digest).toBe('9ffcba8b7219c00ba41ea1ec6c401d5a0967e351f42aba65b8ca5bf65414acab');
   });
 
   it.skipIf(!hasUnzip && !process.env.CI)('a real unzip extracts the archive and the manifest round-trips', () => {

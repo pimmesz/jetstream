@@ -36,9 +36,12 @@ describe('cli dispatch', () => {
 });
 
 describe('hookCommands', () => {
-  it('builds node-quoted absolute hook commands', () => {
+  it('builds guarded node-quoted absolute hook commands', () => {
     const cmds = hookCommands(BIN, false);
-    expect(cmds.status).toBe(`"${process.execPath}" "/plugin/bin/status-hook.js"`);
+    // Missing-file guard (mid-rebuild bin must not crash the hook), then exec some node.
+    expect(cmds.status).toMatch(
+      /^\[ -f "\/plugin\/bin\/status-hook\.js" \] \|\| exit 0; exec "[^"]+" "\/plugin\/bin\/status-hook\.js"$/,
+    );
     expect(cmds.permission).toContain('permission-hook.js');
     expect(cmds.usage).toContain('usage-hook.js');
     expect(cmds.toolDetail).toBe(false);

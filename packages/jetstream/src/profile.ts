@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import type { NavSettings } from './actions/nav';
 import type { PermissionSettings } from './actions/permission';
@@ -33,6 +35,35 @@ export const DECK_MODELS: DeckModel[] = [
   { key: 'standard', label: 'Stream Deck / MK.2 (15 keys)', model: '20GBA9901', cols: 5, rows: 3 },
   { key: 'xl', label: 'Stream Deck XL (32 keys)', model: '20GAT9901', cols: 8, rows: 4 },
 ];
+
+/** The Stream Deck the app currently has profiles for, sniffed from its ProfilesV3 store by
+ * DeviceModel prefix (each deck family has a stable 7-char code — see DECK_MODELS). Returns the
+ * matched DeckModel, or undefined when nothing matches or MORE than one family is present
+ * (ambiguous → let the user pick). Best-effort and side-effect-free: any read error → undefined.
+ * `profilesDir` is injectable so tests never touch the real store. */
+export function detectConnectedDeck(
+  profilesDir = join(homedir(), 'Library', 'Application Support', 'com.elgato.StreamDeck', 'ProfilesV3'),
+): DeckModel | undefined {
+  const byPrefix = new Map(DECK_MODELS.map((d) => [d.model.slice(0, 7), d]));
+  const found = new Set<DeckModel>();
+  try {
+    for (const entry of readdirSync(profilesDir)) {
+      if (!entry.endsWith('.sdProfile')) continue;
+      let model: string | undefined;
+      try {
+        const raw = readFileSync(join(profilesDir, entry, 'manifest.json'), 'utf8');
+        model = /"Model"\s*:\s*"(20[0-9A-Z]+)"/.exec(raw)?.[1];
+      } catch {
+        continue; // a profile without a readable manifest tells us nothing — skip it
+      }
+      const deck = model && byPrefix.get(model.slice(0, 7));
+      if (deck) found.add(deck);
+    }
+  } catch {
+    return undefined; // no store / unreadable dir — fall back to asking
+  }
+  return found.size === 1 ? [...found][0] : undefined;
+}
 
 /** One placed action, in the shape the V1 profile manifest expects. */
 interface ProfileAction {
@@ -114,23 +145,13 @@ function fixedLayout(deck: DeckModel): Map<string, ProfileAction> {
   }
 
   if (deck.key === 'xl') {
-    // On the XL every project gets its own key, so the Fleet roll-up and Attention doorbell
-    // are redundant (they summarize what you can already see) — dropped here, kept on the
-    // smaller decks where projects overflow. Bottom row is the control strip; rows 0-2 are
-    // projects.
+    // On the XL every project gets its own key, so the roll-up + control keys are dropped: the board
+    // is projects plus two touches — the Usage gauge on d1, and the Jetstream mark in the top-right
+    // corner (a8). CI, Launch, Approve/Deny and Settings are left OFF the default here (they add
+    // little when every repo has a key); add any of them in the app or via `jetstream chat`. The
+    // smaller decks keep their control strips, where projects overflow and those keys earn their spot.
     at(0, 3, action('Usage gauge', 'gg.pim.jetstream.usage'));
-    at(1, 3, action('CI / PR status', 'gg.pim.jetstream.ci'));
-    at(2, 3, action('Launch preset', 'gg.pim.jetstream.launch'));
-    at(3, 3, action('Approve', 'gg.pim.jetstream.permission', allow));
-    at(4, 3, action('Deny', 'gg.pim.jetstream.permission', deny));
-    // Output-volume strip (slot kinds → live-movable). Works on a volume-fixed interface (e.g. a
-    // Scarlett) once a virtual gain device like Background Music sits in front of it.
-    at(5, 3, action('Volume up', 'gg.pim.jetstream.slot', { kind: 'volup' }));
-    at(6, 3, action('Volume down', 'gg.pim.jetstream.slot', { kind: 'voldown' }));
-    at(7, 3, action('Mute output', 'gg.pim.jetstream.slot', { kind: 'volmute' }));
-    // Settings caps the top of the right column (moved off d8 to make room for the volume strip). The
-    // Ops-page nav that used to sit here is removed, so the Ops page is no longer linked from the board.
-    at(7, 2, action('Jetstream settings', 'gg.pim.jetstream.settings'));
+    at(7, 0, action('Jetstream', 'gg.pim.jetstream.slot', { kind: 'logo' }));
     return slots;
   }
 

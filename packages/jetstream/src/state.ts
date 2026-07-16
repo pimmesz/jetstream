@@ -293,11 +293,14 @@ export class Board {
           by[id] = { status: session.active ? 'working' : 'idle' };
         } else if (
           session.active &&
-          (status === 'done' || status === 'needsInput' || status === 'idle') &&
+          (status === 'done' || status === 'idle') &&
           this.sustainedActive(session.cwd, now)
         ) {
           // Resting per hooks, but the process tree has been busy a while → a background task is
           // running; show working. Keep the prior `since` so the elapsed reflects how long.
+          // 'needsInput' is deliberately EXCLUDED: an "answer me" prompt must stay amber even when
+          // the repo is busy (a subagent can churn while the main turn waits on you), so the key
+          // agrees with the Attention doorbell instead of hiding the act-now signal.
           by[id] = { status: 'working', ...(by[id]?.since !== undefined ? { since: by[id]!.since } : {}) };
         }
       }

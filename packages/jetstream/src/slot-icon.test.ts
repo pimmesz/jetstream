@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { appIconDataUri, imageMime, resolveIcnsPath, resolveSlotIcon } from './slot-icon';
+import { appIconDataUri, imageMime, logoDataUri, resolveIcnsPath, resolveSlotIcon } from './slot-icon';
 
 describe('imageMime', () => {
   it('maps supported image extensions, undefined otherwise', () => {
@@ -62,6 +62,27 @@ describe('resolveSlotIcon', () => {
     const big = join(dir, 'big.png');
     writeFileSync(big, Buffer.alloc(600 * 1024)); // > the 512 KB cap
     expect(await resolveSlotIcon({ kind: 'app', app: '/x.app', icon: big })).toBeUndefined();
+  });
+  it('a logo slot paints the bundled mark, and an explicit icon still wins', async () => {
+    // The default bundle asset can't be read from the source tree, so an explicit icon proves the
+    // logo path resolves an image; a data: URI still overrides it.
+    expect(await resolveSlotIcon({ kind: 'logo', icon: 'data:image/png;base64,ZZZ' })).toBe(
+      'data:image/png;base64,ZZZ',
+    );
+  });
+});
+
+describe('logoDataUri', () => {
+  it('reads the given asset into a PNG data URI', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'slot-icon-'));
+    tmpDirs.push(dir);
+    const png = join(dir, 'plugin.png');
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    writeFileSync(png, bytes);
+    expect(logoDataUri(png)).toBe(`data:image/png;base64,${bytes.toString('base64')}`);
+  });
+  it('is undefined when the asset is missing (e.g. running outside the plugin bundle)', () => {
+    expect(logoDataUri('/nope/does-not-exist.png')).toBeUndefined();
   });
 });
 

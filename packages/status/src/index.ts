@@ -17,7 +17,9 @@ export type HookEventName =
   | 'PostToolUse'
   | 'Notification'
   | 'Stop'
-  | 'SessionEnd';
+  | 'SessionEnd'
+  | 'SubagentStart'
+  | 'SubagentStop';
 
 const HOOK_EVENTS: readonly HookEventName[] = [
   'SessionStart',
@@ -27,6 +29,8 @@ const HOOK_EVENTS: readonly HookEventName[] = [
   'Notification',
   'Stop',
   'SessionEnd',
+  'SubagentStart',
+  'SubagentStop',
 ];
 
 export interface HookEvent {
@@ -37,6 +41,9 @@ export interface HookEvent {
   at: number;
   /** The tool being called, on a `PreToolUse` event (opt-in tool detail). */
   toolName?: string;
+  /** The subagent's id, on a `SubagentStart`/`SubagentStop` event — fired in the PARENT session,
+   * so this tracks which background agents are still running under it. */
+  agentId?: string;
 }
 
 /** A configured project key: an id, a display name, and the filesystem path whose
@@ -68,7 +75,8 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
   if (typeof event !== 'string' || !isHookEvent(event)) return null;
   if (typeof cwd !== 'string' || typeof sessionId !== 'string') return null;
   const toolName = typeof r?.tool_name === 'string' ? r.tool_name : undefined;
-  return { event, cwd, sessionId, at, ...(toolName ? { toolName } : {}) };
+  const agentId = typeof r?.agent_id === 'string' ? r.agent_id : undefined;
+  return { event, cwd, sessionId, at, ...(toolName ? { toolName } : {}), ...(agentId ? { agentId } : {}) };
 }
 
 const norm = (p: string): string => p.replace(/\/+$/, '');
@@ -98,6 +106,11 @@ interface SessionState {
   since: number;
   /** The tool active during a `PreToolUse`→`PostToolUse` window (opt-in detail). */
   tool?: string;
+  /** Ids of subagents still running under this session (SubagentStart without a matching Stop).
+   * A non-empty set means background work is in flight, so the session reads 'working' even after
+   * its main turn yielded (Stop → 'done'). In-memory only — dropped on checkpoint restore, since a
+   * subagent that outlives a plugin restart is unknowable. */
+  inflight?: string[];
 }
 
 export interface StatusState {
@@ -108,7 +121,11 @@ export function initialState(): StatusState {
   return { sessions: {} };
 }
 
-function statusForEvent(event: HookEventName): ProjectStatus | 'remove' {
+/** The lifecycle events that map DIRECTLY to a status. Subagent start/stop are handled apart
+ * (they move the in-flight set, not the base status). */
+type LifecycleEvent = Exclude<HookEventName, 'SubagentStart' | 'SubagentStop'>;
+
+function statusForEvent(event: LifecycleEvent): ProjectStatus | 'remove' {
   switch (event) {
     case 'SessionStart':
       return 'idle';
@@ -125,20 +142,50 @@ function statusForEvent(event: HookEventName): ProjectStatus | 'remove' {
   }
 }
 
-/** Apply one hook event. `SessionEnd` forgets the session; everything else stamps its
- * session's current status. Pure — returns a new state. */
+/** Apply one hook event. `SessionEnd` forgets the session; a subagent event only updates the
+ * in-flight set (a workflow/Task's background agents fire Start/Stop in the PARENT session);
+ * every other event stamps the session's base status. Pure — returns a new state. */
 export function reduce(state: StatusState, event: HookEvent): StatusState {
   const next: Record<string, SessionState> = { ...state.sessions };
+  const prev = next[event.sessionId];
+
+  if (event.event === 'SubagentStart' || event.event === 'SubagentStop') {
+    // A SubagentStop for a session we don't know (its SessionEnd already fired, or it was lost
+    // across a plugin restart) must NOT resurrect it — only a Start may seed a first-seen session.
+    if (!prev && event.event === 'SubagentStop') return state;
+    const inflight = new Set(prev?.inflight);
+    if (event.agentId) {
+      if (event.event === 'SubagentStart') inflight.add(event.agentId);
+      else inflight.delete(event.agentId);
+    }
+    // Base status/cwd/since are the PARENT's — a subagent event never moves them; it only tracks
+    // whether background work is still in flight. A first-seen session (no prior lifecycle event
+    // reached this instance) starts 'working', since a running subagent means active work.
+    next[event.sessionId] = {
+      cwd: prev?.cwd ?? event.cwd,
+      status: prev?.status ?? 'working',
+      since: prev?.since ?? event.at,
+      ...(prev?.tool ? { tool: prev.tool } : {}),
+      ...(inflight.size ? { inflight: [...inflight] } : {}),
+    };
+    return { sessions: next };
+  }
+
   const status = statusForEvent(event.event);
   if (status === 'remove') {
-    delete next[event.sessionId];
-  } else {
-    const session: SessionState = { cwd: event.cwd, status, since: event.at };
-    // Show the tool only during its own PreToolUse→PostToolUse window; every other
-    // working event (UserPromptSubmit / PostToolUse / Stop) leaves `tool` cleared.
-    if (event.event === 'PreToolUse' && event.toolName) session.tool = event.toolName;
-    next[event.sessionId] = session;
+    delete next[event.sessionId]; // SessionEnd forgets the session AND its in-flight set
+    return { sessions: next };
   }
+  const session: SessionState = { cwd: event.cwd, status, since: event.at };
+  // Show the tool only during its own PreToolUse→PostToolUse window; every other
+  // working event (UserPromptSubmit / PostToolUse / Stop) leaves `tool` cleared.
+  if (event.event === 'PreToolUse' && event.toolName) session.tool = event.toolName;
+  // Carry in-flight subagents across a base-status change so a Stop that yields to a running workflow
+  // stays 'working' — EXCEPT on UserPromptSubmit: a fresh user turn means the prior turn's agents are
+  // no longer why the key is lit (the prompt itself stamps 'working'), and dropping them here
+  // self-heals a lost SubagentStop instead of pinning the key 'working' for the rest of the session.
+  if (event.event !== 'UserPromptSubmit' && prev?.inflight?.length) session.inflight = prev.inflight;
+  next[event.sessionId] = session;
   return { sessions: next };
 }
 
@@ -158,6 +205,14 @@ export interface ProjectState {
   tool?: string;
 }
 
+/** How the board should read a session's status: a session with in-flight subagents (a running
+ * workflow/Task) counts as at least 'working', even after its main turn yielded (Stop → 'done') —
+ * otherwise a waiting workflow, whose process burns no CPU, would read as idle/done. Pure. */
+function effectiveStatus(session: SessionState): ProjectStatus {
+  if (session.inflight?.length && RANK[session.status] < RANK.working) return 'working';
+  return session.status;
+}
+
 /** Collapse all live sessions into one status per configured project. A project takes
  * its highest-priority session (needsInput > working > done > idle), earliest `since`
  * within that status — so `working` shows how long it's been busy. Pure. */
@@ -170,14 +225,15 @@ export function statusByProject(
   for (const session of Object.values(state.sessions)) {
     const id = matchProject(session.cwd, projects);
     if (id === undefined) continue;
+    const status = effectiveStatus(session);
     const current = acc[id] ?? { status: 'none' };
-    const higher = RANK[session.status] > RANK[current.status];
+    const higher = RANK[status] > RANK[current.status];
     const sameEarlier =
-      RANK[session.status] === RANK[current.status] &&
+      RANK[status] === RANK[current.status] &&
       (current.since === undefined || session.since < current.since);
     if (higher || sameEarlier) {
       acc[id] = {
-        status: session.status,
+        status,
         since: session.since,
         ...(session.tool ? { tool: session.tool } : {}),
       };

@@ -16,14 +16,15 @@ function feed(fiveHour?: number, sevenDay?: number): UsageFeed {
 }
 
 describe('gaugeColor', () => {
-  it('is green with headroom, including a data-less feed', () => {
+  it('is green with headroom (under half the budget), including a data-less feed', () => {
     expect(gaugeColor(feed(0, 0))).toBe(GREEN);
-    expect(gaugeColor(feed(74.9, 10))).toBe(GREEN);
+    expect(gaugeColor(feed(49.9, 10))).toBe(GREEN);
     expect(gaugeColor(feed())).toBe(GREEN); // no windows at all → 0 used
   });
 
-  it('turns amber at exactly 75 and red at exactly 90', () => {
-    expect(gaugeColor(feed(75, 0))).toBe(AMBER);
+  it('turns amber at exactly 50 and red at exactly 90', () => {
+    expect(gaugeColor(feed(49.9, 0))).toBe(GREEN);
+    expect(gaugeColor(feed(50, 0))).toBe(AMBER);
     expect(gaugeColor(feed(89.9, 0))).toBe(AMBER);
     expect(gaugeColor(feed(90, 0))).toBe(RED);
     expect(gaugeColor(feed(100, 0))).toBe(RED);
@@ -32,7 +33,7 @@ describe('gaugeColor', () => {
   it('follows the tighter window when one is undefined', () => {
     expect(gaugeColor(feed(undefined, 91))).toBe(RED);
     expect(gaugeColor(feed(80, undefined))).toBe(AMBER);
-    expect(gaugeColor(feed(undefined, 50))).toBe(GREEN);
+    expect(gaugeColor(feed(undefined, 49))).toBe(GREEN);
   });
 
   it('takes the max of both windows', () => {

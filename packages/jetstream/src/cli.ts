@@ -2,13 +2,13 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { runClaude } from '@pimmesz/jetstream-claude';
 import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { installHooks, type HookCommands } from './hooks-install';
 import { runDoctor, formatReport } from './doctor';
 import { offerProfile, runInit } from './init';
-import { buildLayoutProfile, renderProfileArchive, type DeckModel } from './profile';
+import { buildLayoutProfile, detectConnectedDeck, renderProfileArchive, type DeckModel } from './profile';
 import { mergeBoard, pruneCustomProfiles, readBoardLayout, renderBoardMap } from './board-layout';
 import { coordLabel } from './actions/coord';
 import { selectOne } from './select';
@@ -45,7 +45,14 @@ Commands:
 /** Build the node-quoted hook commands pointing at the sibling bundled hook scripts, so
  * they install with correct absolute paths wherever the .sdPlugin lives. */
 export function hookCommands(binDir: string, toolDetail: boolean): HookCommands {
-  const cmd = (file: string): string => `"${process.execPath}" "${join(binDir, file)}"`;
+  // Stable node symlink survives a Homebrew upgrade; fall back to the installing node.
+  const node = existsSync('/opt/homebrew/bin/node') ? '/opt/homebrew/bin/node' : process.execPath;
+  // Skip cleanly if the script is missing (e.g. mid-rebuild), otherwise exec node so
+  // its real exit code and errors still surface.
+  const cmd = (file: string): string => {
+    const script = join(binDir, file);
+    return `[ -f "${script}" ] || exit 0; exec "${node}" "${script}"`;
+  };
   return {
     status: cmd('status-hook.js'),
     permission: cmd('permission-hook.js'),
@@ -164,6 +171,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
             say: (line) => console.log(line),
           },
           commands: hookCommands(binDir, false),
+          detectDeck: detectConnectedDeck,
         });
       } catch {
         console.error('\nAborted — nothing further was written.');

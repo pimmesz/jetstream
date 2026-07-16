@@ -6,9 +6,9 @@ import { DEFAULTS, LIMITS, type JetstreamConfig } from './config';
 import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos } from './fleet';
 import { installHooks, type HookCommands } from './hooks-install';
 import { defaultOpenFile } from './open-file';
-import { DECK_MODELS, writeProfileFile } from './profile';
+import { DECK_MODELS, type DeckModel, writeProfileFile } from './profile';
 import { parseProjectsConfig, projectsConfigPath } from './projects-config';
-import { paintLine } from './term';
+import { selectMany } from './select';
 
 /**
  * `jetstream init` — the guided onboarding: build the whole fleet config in one sitting
@@ -42,6 +42,9 @@ export interface InitDeps {
    * tests; defaults to a real spawn on macOS/Windows and UNDEFINED elsewhere — when
    * undefined the "open it now?" question isn't asked at all. */
   openFile?: (path: string) => void;
+  /** Detects the connected Stream Deck so init can skip the "which deck?" question.
+   * Injected so tests stay deterministic; when omitted, init falls back to the picker. */
+  detectDeck?: () => DeckModel | undefined;
 }
 
 const yes = (answer: string): boolean => /^y(es)?$/i.test(answer.trim());
@@ -49,30 +52,6 @@ const yes = (answer: string): boolean => /^y(es)?$/i.test(answer.trim());
 /** Strip control bytes (incl. ESC) from untrusted on-disk names before they hit the
  * terminal — a directory named with ANSI escapes must not steer the user's console. */
 const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '');
-
-/** Above this many scanned repos, init stops defaulting the pick to "all": a whole-home scan
- * (30+ repos) shouldn't flood the fleet and bury the handful you actually drive with Claude.
- * Sits above a comfortable single-deck project count, well under a full home. */
-const MANY_REPOS = 12;
-
-/** Parse a "1,3,5" style pick against a 1-based list of `count` items. Empty or 'all'
- * selects everything; only fully numeric tokens count (so "1-3" is dropped rather than
- * misread as 1); out-of-range numbers are dropped; duplicates collapse. Returns 0-based
- * indices in selection order. */
-export function parseSelection(input: string, count: number): number[] {
-  const trimmed = input.trim().toLowerCase();
-  if (trimmed === '' || trimmed === 'all') return Array.from({ length: count }, (_, i) => i);
-  const seen = new Set<number>();
-  const out: number[] = [];
-  for (const part of trimmed.split(/[\s,]+/)) {
-    if (!/^\d+$/.test(part)) continue;
-    const n = Number.parseInt(part, 10);
-    if (n < 1 || n > count || seen.has(n - 1)) continue;
-    seen.add(n - 1);
-    out.push(n - 1);
-  }
-  return out;
-}
 
 /** Ask for a number, defaulting on Enter. Answers outside [min, max] keep the default
  * with a warning — the plugin clamps to that range at runtime anyway (config.LIMITS),
@@ -130,39 +109,25 @@ async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]
     if (repos.length === 0) {
       io.say(`No git repos found under ${safe(dir)}.`);
     } else {
-      io.say(`Found ${repos.length} git repo${repos.length === 1 ? '' : 's'} under ${safe(dir)}:`);
-      repos.forEach((repo, i) => io.say(paintLine(`  ${i + 1}. ${safe(repo)}`, i)));
-      // A handful of repos fits a deck; a whole home does not. Past MANY_REPOS, "Enter = all"
-      // would flood projects.json and overflow every deck but a packed XL — surfacing base-image
-      // and course repos on keys instead of the few you actually drive. So for a big list, drop
-      // the all-default: Enter skips, an explicit 'all' still adds every one, and a numeric pick
-      // becomes your keys in pick order. Small lists keep the Enter = all convenience.
-      const many = repos.length > MANY_REPOS;
-      const picked = (
-        await io.ask(
-          many
-            ? `That's a lot for one deck — pick the repos you actively drive with Claude (e.g. 1,3,5; 'all' for every one; Enter to skip): `
-            : 'Add which? (numbers like 1,3 — Enter for all): ',
-        )
-      ).trim();
-      let selection: number[];
-      if (many && picked === '') {
-        io.say('  (skipped — add specific repos by path below, or place keys in the app later)');
-        selection = [];
-      } else if (many && /^all$/i.test(picked)) {
-        selection = Array.from({ length: repos.length }, (_, i) => i);
-      } else {
-        selection = parseSelection(picked, repos.length);
-        if (picked !== '' && selection.length === 0) {
-          io.say(
-            `  (couldn't read "${safe(picked)}" — use numbers like 1,3${many ? ", or 'all'" : ', or Enter for all'})`,
-          );
-        }
+      io.say(
+        `Found ${repos.length} git repo${repos.length === 1 ? '' : 's'} under ${safe(dir)}.`,
+      );
+      // Check the repos you drive with Claude; the order you check them is the order their keys
+      // land on the deck (a full home would flood every key, so nothing is selected by default).
+      const choices = repos.map((repo) => ({
+        label: safe(basename(repo)),
+        hint: safe(repo),
+        value: repo,
+      }));
+      const picked = await selectMany(
+        { question: io.ask },
+        'Select the repos you drive with Claude',
+        choices,
+      );
+      if (picked.length === 0) {
+        io.say('  (none selected — add specific repos by path below, or place keys in the app later)');
       }
-      for (const i of selection) {
-        const repo = repos[i]!;
-        add(repo, basename(repo));
-      }
+      for (const repo of picked) add(repo, basename(repo));
     }
   }
 
@@ -185,6 +150,29 @@ async function collectProjects(io: InitIo, cwd: string): Promise<ProjectConfig[]
   return projects;
 }
 
+/** Choose the deck to build a layout for: auto-detect + confirm when a single connected deck is
+ * found, else the numbered picker. Returns undefined when the user skips (Enter) or picks junk. */
+async function pickDeck(
+  io: InitIo,
+  detectDeck: (() => DeckModel | undefined) | undefined,
+): Promise<DeckModel | undefined> {
+  const detected = detectDeck?.();
+  if (detected) {
+    // Confirm rather than silently assume — a leftover store or a second deck are both possible.
+    const reply = (await io.ask(`Detected ${detected.label} — build a layout for it? [Y/n] `)).trim();
+    if (!/^n(o)?$/i.test(reply)) return detected;
+  }
+  DECK_MODELS.forEach((deck, i) => io.say(`  ${i + 1}. ${deck.label}`));
+  const answer = (await io.ask('Which Stream Deck do you have? (number, Enter to skip): ')).trim();
+  if (answer === '') return undefined;
+  const deck = DECK_MODELS[Number.parseInt(answer, 10) - 1];
+  if (!deck) {
+    io.say(`  (no deck matches "${safe(answer)}" — skipping the layout; drag keys by hand instead)`);
+    return undefined;
+  }
+  return deck;
+}
+
 /** Offer a ready-made key layout as a double-clickable .streamDeckProfile (see profile.ts
  * for the grounded-format rationale). Optional and best-effort: skipping or a write failure
  * never fails init — the drag-keys path always remains. Returns the artifact path when one
@@ -196,16 +184,11 @@ export async function offerProfile(
   projects: ProjectConfig[],
   openFile: ((path: string) => void) | undefined,
   downloadsDir: string = join(homedir(), 'Downloads'),
+  detectDeck?: () => DeckModel | undefined,
 ): Promise<string | undefined> {
   io.say('Optional: prebuild a ready-made key layout you can import with a double-click.');
-  DECK_MODELS.forEach((deck, i) => io.say(`  ${i + 1}. ${deck.label}`));
-  const answer = (await io.ask('Which Stream Deck do you have? (number, Enter to skip): ')).trim();
-  if (answer === '') return undefined;
-  const deck = DECK_MODELS[Number.parseInt(answer, 10) - 1];
-  if (!deck) {
-    io.say(`  (no deck matches "${safe(answer)}" — skipping the layout; drag keys by hand instead)`);
-    return undefined;
-  }
+  const deck = await pickDeck(io, detectDeck);
+  if (!deck) return undefined;
   const outPath = join(downloadsDir, 'Jetstream.streamDeckProfile');
   try {
     // Never follow a pre-existing file or symlink blindly: confirm, then remove the
@@ -356,6 +339,7 @@ export async function runInit(deps: InitDeps): Promise<number> {
     projects,
     deps.openFile ?? defaultOpenFile(),
     deps.downloadsDir,
+    deps.detectDeck,
   );
 
   io.say('');

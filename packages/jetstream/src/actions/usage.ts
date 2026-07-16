@@ -47,10 +47,12 @@ export class UsageKey extends SingletonAction {
   }
 }
 
-/** Green with headroom, amber when the tighter window passes 75%, red past 90%. */
+/** Green while under half the budget, amber from 50%, red once either window is close to full
+ * (90%+). Driven by max(5h, 7d) — whichever window is nearest its limit colours the key, so a
+ * tight 5-hour OR a tight 7-day window warns you. */
 export function gaugeColor(feed: UsageFeed): string {
   const used = Math.max(feed.fiveHour?.usedPct ?? 0, feed.sevenDay?.usedPct ?? 0);
   if (used >= 90) return '#e5484d';
-  if (used >= 75) return '#ffb224';
+  if (used >= 50) return '#ffb224';
   return '#30a46c';
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { selectOne } from './select';
+import { selectOne, selectMany } from './select';
 
 // In vitest stdin/stdout aren't TTYs, so selectOne takes the numbered-list fallback — which is also
 // the piped-input path in production. That's the branch these tests exercise.
@@ -28,5 +28,25 @@ describe('selectOne (numbered fallback)', () => {
   });
   it('throws for an empty choice list', async () => {
     await expect(selectOne(rlWith([]), 'x', [])).rejects.toThrow();
+  });
+});
+
+describe('selectMany (numbered fallback)', () => {
+  it('returns the picked values IN PICK ORDER, not list order', async () => {
+    expect(await selectMany(rlWith(['3,1']), 'Pick', choices)).toEqual(['cancel', 'apply']);
+  });
+  it("'all' selects everything in list order", async () => {
+    expect(await selectMany(rlWith(['all']), 'Pick', choices)).toEqual(['apply', 'refine', 'cancel']);
+  });
+  it('empty input selects nothing', async () => {
+    expect(await selectMany(rlWith(['']), 'Pick', choices)).toEqual([]);
+  });
+  it('drops junk, out-of-range, and duplicate numbers', async () => {
+    expect(await selectMany(rlWith(['2, 2, 9, x, 1']), 'Pick', choices)).toEqual(['refine', 'apply']);
+  });
+  it('returns [] for an empty choice list without asking', async () => {
+    const rl = rlWith([]);
+    expect(await selectMany(rl, 'Pick', [])).toEqual([]);
+    expect(rl.question).not.toHaveBeenCalled();
   });
 });

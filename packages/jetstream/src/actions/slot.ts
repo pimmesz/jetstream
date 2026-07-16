@@ -47,7 +47,8 @@ export type SlotKind =
   | 'project'
   | 'volup'
   | 'voldown'
-  | 'volmute';
+  | 'volmute'
+  | 'logo'; // a decorative key painting the bundled Jetstream mark; ships on the default board, removable
 
 /** A generic, plugin-owned board key. Empty slots self-label with their coordinate; a configured
  * slot is an app / URL / command shortcut. A type ALIAS (not interface) to satisfy the SDK's
@@ -97,6 +98,10 @@ function baseFace(s: SlotSettings): Face {
       return { color: '#1f6feb', label: 'vol −', sub: 'output' };
     case 'volmute':
       return { color: '#26262b', label: 'mute', sub: 'output', glyph: '🔇' };
+    case 'logo':
+      // Fallback only — the render path paints the bundled mark over this. Shown if the asset
+      // can't be read (e.g. running outside the plugin bundle).
+      return { color: '#0b0d12', label: 'jetstream' };
     default:
       return { color: '#1c1c20', label: '' }; // empty → a blank dark key; coordinates live on the Grid toggle
   }
@@ -247,6 +252,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       return;
     }
     if (settings.kind === 'build') return; // a static "which build am I?" key — no press action
+    if (settings.kind === 'logo') return; // decorative brand key — no press action
     // `run` executes an arbitrary command; keep it OPT-IN so a command planted via the unauthenticated
     // loopback /slot endpoint stays inert until the user enables run keys in Jetstream settings. Don't
     // dead-end silently — say WHY on the face for a beat, then restore the key.

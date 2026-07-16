@@ -5,13 +5,17 @@ import { homedir } from 'node:os';
 
 /** The lifecycle events the board needs. Deliberately NOT PreToolUse/PostToolUse:
  * those fire on every tool call and would spawn a node process each time; the
- * board's states are fully derivable from these five. */
+ * board's states are fully derivable from these. SubagentStart/SubagentStop fire only
+ * per background agent (a Task/workflow), far coarser than per-tool — they keep a key
+ * 'working' while a workflow runs in the background after the main turn has yielded. */
 export const HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
   'Notification',
   'Stop',
   'SessionEnd',
+  'SubagentStart',
+  'SubagentStop',
 ] as const;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

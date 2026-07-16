@@ -14,6 +14,8 @@ describe('slotFace', () => {
   it('empty → a blank dark key (absent kind = empty)', () => {
     expect(slotFace({ kind: 'empty' })).toMatchObject({ label: '', color: '#1c1c20' });
     expect(slotFace({})).toMatchObject({ label: '' });
+    // 'logo' carries a branded fallback face; the render path paints the bundled mark over it.
+    expect(slotFace({ kind: 'logo' })).toMatchObject({ label: 'jetstream', color: '#0b0d12' });
   });
   it('app → app name (basename minus .app), overridable by label', () => {
     expect(slotFace({ kind: 'app', app: '/Applications/Telegram.app' }).label).toBe('Telegram');

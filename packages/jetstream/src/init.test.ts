@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstallResult } from './hooks-install';
 import { expandHome, renderProjectsJson, scanForGitRepos, slugId } from './fleet';
-import { parseSelection, runInit } from './init';
+import { runInit } from './init';
+import { DECK_MODELS } from './profile';
 import { parseProjectsConfig, parseSettingsPreset } from './projects-config';
 
 const COMMANDS = {
@@ -111,11 +112,11 @@ describe('runInit', () => {
     expect(parseProjectsConfig(raw)).toEqual([{ id: 'beta', name: 'beta', path: beta }]);
     // All-default settings → no settings block at all (a clean file documents only choices).
     expect(raw).not.toContain('"settings"');
-    expect(said.join('\n')).toContain('1. '); // the scan listed the repos it found
+    expect(said.join('\n')).toContain('Found 2 git repos'); // the scan reported what it found
     expect(said.join('\n')).not.toContain('not-a-repo'); // …and never the .git-less dir
   });
 
-  it('big scan (> MANY_REPOS): Enter no longer adds all — it skips', async () => {
+  it('big scan: Enter selects nothing — no accidental fleet flood', async () => {
     const parent = makeTmp();
     for (let i = 0; i < 13; i++) makeRepo(parent, `r${String(i).padStart(2, '0')}`);
     const configPath = join(makeTmp(), 'projects.json');
@@ -134,8 +135,8 @@ describe('runInit', () => {
     expect(code).toBe(0);
     expect(parseProjectsConfig(readFileSync(configPath, 'utf8'))).toEqual([]);
     const log = said.join('\n');
-    expect(log).toContain('pick the repos you actively drive'); // the big-list prompt, not "Enter for all"
-    expect(log).toContain('skipped'); // and the skip note
+    expect(log).toContain('Found 13 git repos'); // the scan reported the big list
+    expect(log).toContain('none selected'); // and the empty-pick note
   });
 
   it('big scan: explicit "all" adds every repo; a numeric pick adds only those, in order', async () => {
@@ -354,6 +355,39 @@ describe('runInit', () => {
     expect(said.join('\n')).toContain('Drag a Fleet key'); // fallback next steps
   });
 
+  it('detects the connected deck and confirms it instead of asking which model', async () => {
+    const cwd = makeTmp();
+    const configPath = join(makeTmp(), 'projects.json');
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+    const { io, said } = makeIo([
+      'n', // skip scan
+      '', // no projects
+      '', // theme
+      '', // escalate
+      '', // long-press
+      '', // refresh
+      '', // "Detected Stream Deck XL — build a layout for it? [Y/n]" → Enter = yes
+      'n', // do NOT open
+    ]);
+
+    const code = await runInit({
+      io,
+      commands: COMMANDS,
+      configPath,
+      install: okInstall,
+      cwd,
+      downloadsDir: cwd,
+      openFile: () => {},
+      detectDeck: () => xl,
+    });
+
+    expect(code).toBe(0);
+    // Confirmed the detected deck and built its layout without ever showing the numbered picker.
+    expect(said.join('\n')).toContain(`Detected ${xl.label}`);
+    expect(said.join('\n')).not.toContain('Which Stream Deck do you have?');
+    expect(readFileSync(join(cwd, 'Jetstream.streamDeckProfile')).subarray(0, 2).toString()).toBe('PK');
+  });
+
   it('skipping the deck question leaves no profile artifact and keeps the drag-keys steps', async () => {
     const cwd = makeTmp();
     const configPath = join(makeTmp(), 'projects.json');
@@ -396,14 +430,6 @@ describe('init helpers', () => {
     expect(slugId('Hawk Prod', taken)).toBe('hawk-prod');
     expect(slugId('hawk prod', taken)).toBe('hawk-prod-2');
     expect(slugId('***', taken)).toBe('project');
-  });
-
-  it('parseSelection: empty/all → everything; junk and out-of-range dropped; dedup', () => {
-    expect(parseSelection('', 3)).toEqual([0, 1, 2]);
-    expect(parseSelection('all', 3)).toEqual([0, 1, 2]);
-    expect(parseSelection('2, 2, 9, x, 1', 3)).toEqual([1, 0]);
-    // Range syntax is NOT supported — "1-3" must be dropped, never misread as 1.
-    expect(parseSelection('1-3', 3)).toEqual([]);
   });
 
   it('expandHome: ~ and ~/x expand, anything else untouched', () => {

@@ -236,13 +236,14 @@ describe('Board', () => {
       expect(board.byProject(14_000)['falcon']).toEqual({ status: 'working', since: 1_000 });
     });
 
-    it('upgrades an idle_prompt→needsInput project to working when the repo stays busy (the amber case)', () => {
+    it('keeps a needsInput project AMBER even when the repo stays busy (act-now must not be hidden)', () => {
       const board = new Board(tmpFile());
       board.seed([falcon]);
       board.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 's1', at: 1_000 }); // needsInput
       board.setDiscovered(busy, 1_000);
-      board.setDiscovered(busy, 14_000);
-      expect(board.byProject(14_000)['falcon']?.status).toBe('working');
+      board.setDiscovered(busy, 14_000); // busy past the 12s threshold — but "answer me" still wins,
+      // so the project key agrees with the Attention doorbell (needsAttention, which skips this layer).
+      expect(board.byProject(14_000)['falcon']?.status).toBe('needsInput');
     });
 
     it('does NOT flicker a genuine done to working on a brief post-Stop CPU spike', () => {

@@ -57,24 +57,40 @@ describe('autoWireHooks (first-launch onboarding)', () => {
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
     expect(existsSync(markerPath)).toBe(true);
-    expect(readFileSync(markerPath, 'utf8')).toMatch(/\d{4}-\d{2}-\d{2}T/); // when it ran
+    expect(readFileSync(markerPath, 'utf8').trim()).toBe('2'); // the wire-schema version it recorded
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
-    // A user who later removes the hooks is not fought on every launch.
+    // Same version → a user who later removes the hooks is not fought on every launch.
     expect(install).toHaveBeenCalledTimes(1);
   });
 
-  it('a pre-existing marker means no install call at all', async () => {
+  it('a current-version marker means no install call at all', async () => {
     const logger = makeLogger();
     const markerPath = makeMarkerPath();
     mkdirSync(dirname(markerPath), { recursive: true });
-    writeFileSync(markerPath, 'earlier\n');
+    writeFileSync(markerPath, '2\n'); // already wired for the current hook set
     const install = vi.fn(async (): Promise<InstallResult> => ({ changed: false, settingsPath: '' }));
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
 
     expect(install).not.toHaveBeenCalled();
     expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it('a stale marker (old timestamp format) re-wires ONCE to deliver newly-added hooks', async () => {
+    const logger = makeLogger();
+    const markerPath = makeMarkerPath();
+    mkdirSync(dirname(markerPath), { recursive: true });
+    writeFileSync(markerPath, '2026-07-16T00:00:00.000Z\n'); // pre-versioned marker from an older install
+    const install = vi.fn(async (): Promise<InstallResult> => ({ changed: true, settingsPath: '/s.json' }));
+
+    await autoWireHooks({ binDir: BIN, logger, markerPath, install });
+    expect(install).toHaveBeenCalledTimes(1); // the fix: an old marker no longer blocks new hooks
+    expect(readFileSync(markerPath, 'utf8').trim()).toBe('2'); // stamped to the current wire version
+
+    // …and now that it matches, a subsequent launch skips.
+    await autoWireHooks({ binDir: BIN, logger, markerPath, install });
+    expect(install).toHaveBeenCalledTimes(1);
   });
 
   it('stays silent when the hooks were already installed (no noise, marker still written)', async () => {

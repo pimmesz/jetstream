@@ -72,9 +72,7 @@
       "Name": "Project status",
       "Icon": "imgs/project",
       "Tooltip": "One project per key: glows with its live Claude status (working / needs you / done). Press to jump into it.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/project"
@@ -87,9 +85,7 @@
       "Name": "Fleet roll-up",
       "Icon": "imgs/fleet",
       "Tooltip": "One always-visible key summarising every project: N working / waiting / done. Colour = the worst state present, so 'is anything waiting on me?' is answerable even when projects outnumber keys.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/fleet"
@@ -101,9 +97,7 @@
       "Name": "Attention",
       "Icon": "imgs/attention",
       "Tooltip": "Lights up when any project's Claude needs your input. Press to jump there.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/attention"
@@ -115,9 +109,7 @@
       "Name": "Usage gauge",
       "Icon": "imgs/usage",
       "Tooltip": "Your Claude subscription's 5-hour and 7-day usage, live.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/usage"
@@ -129,9 +121,7 @@
       "Name": "CI / PR status",
       "Icon": "imgs/ci",
       "Tooltip": "One always-visible key: the worst CI state across your open afterburner PRs (green / red / running), flashing when CI newly fails. Needs the `gh` CLI, logged in.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/ci"
@@ -143,9 +133,7 @@
       "Name": "Launch preset",
       "Icon": "imgs/launch",
       "Tooltip": "Fire a preset headless `claude -p` prompt in a project. Subscription auth; the API key is stripped.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/launch"
@@ -160,9 +148,7 @@
       "Icon": "imgs/permission",
       "Tooltip": "Approve or deny the oldest pending Claude permission request from the deck. Place one Approve key and one Deny key.",
       "PropertyInspectorPath": "ui/permission.html",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/permission"
@@ -175,9 +161,7 @@
       "Icon": "imgs/settings",
       "Tooltip": "Plugin settings + manage your fleet (add/scan repos, no terminal) + a health check + switch to the Jetstream layout. Press to toggle high-contrast colours.",
       "PropertyInspectorPath": "ui/settings.html",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/settings"
@@ -189,9 +173,7 @@
       "Name": "Page nav",
       "Icon": "imgs/plugin",
       "Tooltip": "Switch between the Board (status) and Ops (controls) pages of the bundled two-page Jetstream deck.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/plugin"
@@ -203,9 +185,7 @@
       "Name": "Build version",
       "Icon": "imgs/plugin",
       "Tooltip": "Shows the compile-time build stamp, so you can confirm which build is loaded on the deck.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/plugin"
@@ -217,9 +197,7 @@
       "Name": "Grid coordinate",
       "Icon": "imgs/plugin",
       "Tooltip": "A grid-reference key that renders its own a8-style coordinate. The bundled Grid overlay places one on every slot; press any of them to return to your board.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/plugin"
@@ -231,9 +209,7 @@
       "Name": "Grid toggle",
       "Icon": "imgs/plugin",
       "Tooltip": "Flip the deck to a coordinate grid (a1…hN) to reference key positions, then press any key on the grid to return to your board. No import needed.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/plugin"
@@ -245,9 +221,7 @@
       "Name": "Slot",
       "Icon": "imgs/plugin",
       "Tooltip": "A self-labeling board slot: an empty key shows its a8-style coordinate; configure it as an app / URL / command shortcut, or retarget it live from jetstream chat.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/plugin"
@@ -259,9 +233,7 @@
       "Name": "Mic mute",
       "Icon": "imgs/plugin",
       "Tooltip": "Toggle your microphone (macOS default input) on/off. Shows 🎙 live vs red MUTED.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/plugin"
@@ -273,9 +245,7 @@
       "Name": "Review queue",
       "Icon": "imgs/ci",
       "Tooltip": "Open afterburner PRs and how many are green (ready). Press to open the top ready PR in your browser. Needs the separate `afterburner` CLI + gh.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/ci"
@@ -287,9 +257,7 @@
       "Name": "Afterburner heartbeat",
       "Icon": "imgs/plugin",
       "Tooltip": "Is the afterburner engine alive (schedule armed, last cycle, benched tasks)? Long-press to fire a run-once cycle. Needs the separate `afterburner` CLI installed.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/plugin"
@@ -301,9 +269,7 @@
       "Name": "Stop all",
       "Icon": "imgs/attention",
       "Tooltip": "Panic key: one press interrupts (SIGINT) every running Claude session across your fleet. The face shows how many are working.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/attention"
@@ -315,9 +281,7 @@
       "Name": "Model toggle",
       "Icon": "imgs/launch",
       "Tooltip": "Cycle the model your Launch keys use (default → opus → sonnet → haiku). A Launch key's own model still wins.",
-      "Controllers": [
-        "Keypad"
-      ],
+      "Controllers": ["Keypad"],
       "States": [
         {
           "Image": "imgs/launch"
@@ -329,9 +293,7 @@
       "Name": "Fleet dial",
       "Icon": "imgs/fleet",
       "Tooltip": "Stream Deck +: rotate to scan your whole fleet, the touchscreen shows the selected project's live Claude status. Press to jump in; long-press to interrupt.",
-      "Controllers": [
-        "Encoder"
-      ],
+      "Controllers": ["Encoder"],
       "Encoder": {
         "layout": "layouts/fleet.json",
         "TriggerDescription": {

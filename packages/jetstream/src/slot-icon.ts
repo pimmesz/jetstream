@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { SlotSettings } from './actions/slot';
 
@@ -96,11 +97,25 @@ async function extractAppIcon(appPath: string): Promise<string | undefined> {
   }
 }
 
+/** The bundled Jetstream mark as a data URI, for the 'logo' slot kind. `imgs/plugin.png` ships
+ * inside the .sdPlugin next to the bundled `bin/`, so we resolve it relative to THIS module at
+ * runtime — correct wherever the plugin is installed. Cached (the asset never changes); returns
+ * undefined outside the bundle (e.g. tests) so the caller falls back to the text face. `assetPath`
+ * is injectable for tests. */
+let logoCache: string | null | undefined;
+export function logoDataUri(assetPath?: string): string | undefined {
+  if (assetPath !== undefined) return fileToDataUri(assetPath); // test path — never cached
+  if (logoCache === undefined) {
+    logoCache = fileToDataUri(fileURLToPath(new URL('../imgs/plugin.png', import.meta.url))) ?? null;
+  }
+  return logoCache ?? undefined;
+}
+
 /**
  * The image a slot should paint, as a data URI, or undefined → render the text face. An explicit
- * `icon` (a data URI or an image file path) wins; otherwise an app slot shows the app's own icon —
- * so an app shortcut looks like the real thing (the Telegram key shows the Telegram logo), with no
- * command needed.
+ * `icon` (a data URI or an image file path) wins; a 'logo' slot shows the bundled Jetstream mark;
+ * otherwise an app slot shows the app's own icon — so an app shortcut looks like the real thing
+ * (the Telegram key shows the Telegram logo), with no command needed.
  */
 export async function resolveSlotIcon(
   settings: SlotSettings,
@@ -108,6 +123,7 @@ export async function resolveSlotIcon(
 ): Promise<string | undefined> {
   const icon = settings.icon?.trim();
   if (icon) return icon.startsWith('data:') ? icon : fileToDataUri(icon);
+  if (settings.kind === 'logo') return logoDataUri();
   if (settings.kind === 'app' && settings.app) return appIconDataUri(settings.app, platform);
   return undefined;
 }

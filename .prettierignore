@@ -12,6 +12,10 @@ docs/
 packages/jetstream/gg.pim.jetstream.sdPlugin/bin/
 packages/jetstream/gg.pim.jetstream.sdPlugin/profiles/
 packages/jetstream/gg.pim.jetstream.sdPlugin/ui/
+# The manifest is Elgato's schema, rewritten by the Stream Deck tooling and by editors.
+# Keeping it in the gate has taken CI red twice over pure whitespace, so it joins the
+# rest of the sdPlugin/ tree here.
+packages/jetstream/gg.pim.jetstream.sdPlugin/manifest.json
 packages/jetstream/assets/
 # Inherited unformatted: afterburner excluded packages/ from its root Prettier gate
 # ("workspace packages format via their own gate") — a gate they never actually had.
