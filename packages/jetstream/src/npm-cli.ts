@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,10 +35,9 @@ export function errRed(message: string, stream: { isTTY?: boolean } = process.st
   return fancy ? `\u001b[31m${message}\u001b[39m` : message;
 }
 
-/** Locate the packed `.streamDeckPlugin` by walking up from this module to the package root
- * (the dir with package.json). Works both in the published package (dist/npm-cli.js → root)
- * and in a dev checkout (src/ → packages/jetstream). */
-export function bundledPluginPath(moduleUrl: string = import.meta.url): string {
+/** The package root (the dir holding package.json), walked up from this module. Works both in
+ * the published package (dist/npm-cli.js → root) and in a dev checkout (src/ → packages/jetstream). */
+function packageRoot(moduleUrl: string): string {
   let dir = dirname(fileURLToPath(moduleUrl));
   for (let i = 0; i < 8; i++) {
     if (existsSync(join(dir, 'package.json'))) break;
@@ -46,7 +45,41 @@ export function bundledPluginPath(moduleUrl: string = import.meta.url): string {
     if (parent === dir) break; // hit the filesystem root
     dir = parent;
   }
-  return join(dir, BUNDLED_PLUGIN_REL);
+  return dir;
+}
+
+/** Locate the packed `.streamDeckPlugin` shipped inside this npm package. */
+export function bundledPluginPath(moduleUrl: string = import.meta.url): string {
+  return join(packageRoot(moduleUrl), BUNDLED_PLUGIN_REL);
+}
+
+/** This npm package's version, read from its own package.json at runtime — so it always matches
+ * the installed tarball, including CI's auto-bumped releases. 'unknown' if unreadable. */
+export function packageVersion(moduleUrl: string = import.meta.url): string {
+  try {
+    const raw = readFileSync(join(packageRoot(moduleUrl), 'package.json'), 'utf8');
+    const version = (JSON.parse(raw) as { version?: unknown }).version;
+    return typeof version === 'string' ? version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** The INSTALLED plugin's manifest version, or null when the plugin isn't installed / readable.
+ * The npm package and the deck plugin version independently (npm auto-bumps per release, the
+ * sdPlugin manifest moves per plugin submission), so `--version` reports both. */
+export function installedPluginVersion(
+  resolve: () => string | null = resolveJetstreamCli,
+): string | null {
+  const cli = resolve();
+  if (!cli) return null;
+  try {
+    const raw = readFileSync(join(dirname(cli), '..', 'manifest.json'), 'utf8');
+    const version = (JSON.parse(raw) as { Version?: unknown }).Version;
+    return typeof version === 'string' ? version : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The OS command that hands a file to its default app — the Stream Deck app registers the
@@ -152,6 +185,15 @@ export function installPlugin(deps: RunJetstreamDeps = {}): void {
  * wiring, exit-code propagation) are unit-testable without a real plugin or child. */
 export function runJetstream(deps: RunJetstreamDeps = {}): void {
   const args = deps.args ?? forwardedArgs();
+  // `--version` is this package's own verb: the npm package and the deck plugin version
+  // independently, so report the package version plus the installed plugin's when present.
+  if (args[0] === '--version' || args[0] === '-v' || args[0] === 'version') {
+    const say = deps.say ?? ((m: string) => console.log(m));
+    say(`@pimmesz/jetstream ${packageVersion()}`);
+    const plugin = installedPluginVersion(deps.resolve ?? resolveJetstreamCli);
+    if (plugin) say(`plugin ${plugin} (installed)`);
+    return;
+  }
   // `install` is this package's own verb, not forwarded: the plugin CLI lives INSIDE the
   // plugin, so it can't be what installs the plugin. It opens the packed .streamDeckPlugin.
   if (args[0] === 'install') {

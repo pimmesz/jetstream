@@ -8,7 +8,9 @@ import {
   bundledPluginPath,
   errRed,
   forwardedArgs,
+  installedPluginVersion,
   installPlugin,
+  packageVersion,
   resolveJetstreamCli,
   runJetstream,
 } from './npm-cli';
@@ -89,6 +91,38 @@ describe('forwardedArgs', () => {
 
   it('is empty when the bin is invoked bare', () => {
     expect(forwardedArgs(['node', '/usr/local/bin/jetstream'])).toEqual([]);
+  });
+});
+
+describe('version', () => {
+  it("packageVersion reads this package's own semver at runtime", () => {
+    expect(packageVersion()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it('installedPluginVersion reads the resolved plugin manifest; null when not installed', () => {
+    const dir = makeTmp();
+    const bin = join(dir, 'gg.pim.jetstream.sdPlugin', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(dir, 'gg.pim.jetstream.sdPlugin', 'manifest.json'),
+      JSON.stringify({ Version: '9.9.9.9' }),
+    );
+    expect(installedPluginVersion(() => join(bin, 'jetstream.js'))).toBe('9.9.9.9');
+    expect(installedPluginVersion(() => null)).toBeNull();
+  });
+
+  it('--version is intercepted by the package itself: prints its version, never spawns', () => {
+    const said: string[] = [];
+    const spawn = vi.fn();
+    runJetstream({
+      args: ['--version'],
+      say: (m) => said.push(m),
+      resolve: () => null, // plugin not installed → package line only
+      spawn: spawn as unknown as typeof spawnType,
+    });
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatch(/^@pimmesz\/jetstream \d+\.\d+\.\d+/);
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
 

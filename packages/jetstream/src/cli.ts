@@ -18,18 +18,18 @@ import { defaultOpenFile } from './open-file';
 import { projectsConfigPath, PROJECTS_TEMPLATE } from './projects-config';
 
 /**
- * The Jetstream CLI (`bin/jetstream.js`), which lives inside the installed .sdPlugin and is normally
- * driven via `afterburner jetstream <command>` (distribution is CLI-first via the afterburner npm
- * package — no standalone `jetstream` on PATH). One entry with subcommands; `bin/hooks-install.js`
- * is a thin back-compat alias onto `hooks install`.
+ * The Jetstream CLI (`bin/jetstream.js`), which lives inside the installed .sdPlugin and is
+ * normally driven via the standalone `jetstream` npm bin (`npm i -g @pimmesz/jetstream`), which
+ * forwards every verb here. One entry with subcommands; `bin/hooks-install.js` is a thin
+ * back-compat alias onto `hooks install`.
  */
 
-const USAGE = `jetstream — Stream Deck plugin CLI (usually run as \`afterburner jetstream <command>\`)
+const USAGE = `jetstream — Stream Deck plugin CLI
 
 New here? Run \`chat\` — describe your repos and arrange your board in plain English.
 
 Usage:
-  afterburner jetstream <command> [options]
+  jetstream <command> [options]
 
 Commands:
   chat                            Conversational setup: describe your repos AND arrange keys in
@@ -150,9 +150,28 @@ async function runSetup(binDir: string): Promise<number> {
  * exit code. Never calls `process.exit`, so the dispatch is unit-testable. `binDir` is the
  * CLI's own directory at runtime, where the bundled hook scripts sit alongside it.
  */
+/** The installed plugin's own version, from the manifest that ships one level above bin/. */
+function pluginVersion(binDir: string): string {
+  try {
+    const raw = readFileSync(join(binDir, '..', 'manifest.json'), 'utf8');
+    const version = (JSON.parse(raw) as { Version?: unknown }).Version;
+    return typeof version === 'string' ? version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function run(argv: string[], binDir: string): Promise<number> {
   const [command, ...rest] = argv;
   switch (command) {
+    case 'version':
+    case '--version':
+    case '-v': {
+      // The PLUGIN's version (its sdPlugin manifest). The npm wrapper answers `--version`
+      // itself with the package version and adds this line when the plugin is installed.
+      console.log(`Jetstream plugin ${pluginVersion(binDir)}`);
+      return 0;
+    }
     case 'init': {
       // The one interactive command: a real readline over stdin/stdout. runInit itself
       // takes injected io, so the wizard is unit-tested without a tty; only this thin

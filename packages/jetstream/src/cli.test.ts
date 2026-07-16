@@ -24,6 +24,12 @@ describe('cli dispatch', () => {
     expect(log.mock.calls.join('\n')).toContain('Usage:');
   });
 
+  it('--version → the plugin manifest version (unknown off-bundle) + zero exit', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(await run(['--version'], BIN)).toBe(0); // BIN is fake → no manifest → 'unknown'
+    expect(log.mock.calls.join('\n')).toContain('Jetstream plugin unknown');
+  });
+
   it('unknown hooks subcommand → non-zero exit (does not install)', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(await run(['hooks', 'wat'], BIN)).toBe(1);
