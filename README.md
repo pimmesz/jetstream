@@ -63,7 +63,7 @@ its inspector sets escalation/long-press/refresh). Amber keys distinguish a deck
 
 Every state also carries a **glyph** (`⋯` working, `!` needs-you, `✓` done), so the board reads
 without relying on colour — and the settings key's high-contrast theme swaps the red/green pair
-for orange/blue.
+for orange/blue
 
 ## Works on any Stream Deck
 
