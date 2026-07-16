@@ -184,20 +184,6 @@
   pre .f { color: var(--jet-2); }
   code.inline { font-family: var(--mono); font-size: 0.86em; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
 
-  /* coming-soon notice */
-  .notice {
-    display: flex; gap: 14px; align-items: flex-start;
-    background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.4);
-    border-radius: var(--radius); padding: 16px 18px; margin: 0 0 22px;
-  }
-  .notice .badge {
-    flex: none; font-family: var(--mono); font-size: 0.7rem; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase; color: #2a1a02;
-    background: var(--amber); border-radius: 6px; padding: 3px 8px; margin-top: 3px;
-  }
-  .notice p { margin: 0; color: var(--muted); font-size: 0.93rem; }
-  .notice strong { color: var(--ink); }
-
   /* shots */
   .shot { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg-soft); margin: 0 0 10px; }
   .shot img { display: block; width: 100%; height: auto; }
@@ -294,10 +280,6 @@
 <section id="quickstart">
   <div class="wrap">
     <h2>Quickstart</h2>
-    <div class="notice">
-      <span class="badge">Coming soon</span>
-      <p><strong>The npm package isn't published yet.</strong> <code class="inline">@pimmesz/jetstream</code> is minutes away from its first release, and until it lands the install command below will 404. Building from source works today — clone the repo and run <code class="inline">pnpm install &amp;&amp; pnpm build</code>. <a href="https://github.com/pimmesz/jetstream">Watch the repo</a> and this page updates the moment it ships.</p>
-    </div>
     <p class="lead">Needs an Elgato Stream Deck (any model), Node.js 22.12+, and Claude Code logged in with your subscription (<code class="inline">claude</code> → <code class="inline">/login</code>). Leave <code class="inline">ANTHROPIC_API_KEY</code> unset — Jetstream strips it from anything it spawns, so a keypress can never silently bill the metered API.</p>
 <pre>npm i -g <span class="f">@pimmesz/jetstream</span>
 jetstream install            <span class="c"># hands the plugin to the Stream Deck app — approve there</span>
