@@ -38,7 +38,7 @@
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "macOS, Windows",
       "description": "An Elgato Stream Deck plugin for Claude Code. One key per project, lit with that project's live status — working, needs-you, done — plus a fleet roll-up, an attention doorbell, 5h/7d usage gauges, deck-answerable permission prompts, and preset headless launches.",
-      "softwareVersion": "1.1.1",
+      "softwareVersion": "1.1.2",
       "license": "https://www.apache.org/licenses/LICENSE-2.0",
       "downloadUrl": "https://www.npmjs.com/package/@pimmesz/jetstream",
       "softwareRequirements": "Node.js >=22.12, Elgato Stream Deck, Claude Code",
@@ -146,33 +146,16 @@
   .tag { font-size: 1.22rem; color: var(--muted); max-width: 640px; margin: 0 auto 30px; }
   .jetword { color: var(--jet); }
 
-  /* Hero board: the page sells "your fleet, lit up" but showed no lit keys above the fold.
-     Six real key faces in the real status colours, cycling the way a board actually does.
-     CSS-only — no script, no request, and it costs the page nothing. */
-  .board { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 34px 0 4px; }
-  .key {
-    width: 74px; height: 74px; border-radius: 12px; position: relative;
-    display: grid; place-items: center; gap: 0;
-    font-family: var(--mono); font-size: 0.72rem; font-weight: 700; color: #fff;
-    background: var(--k); box-shadow: 0 8px 22px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.16);
-    animation: pulse 6s var(--d, 0s) ease-in-out infinite;
+  /* Hero deck: a photoreal Stream Deck MK.2 render whose 15 keys carry the real status
+     board — working orange, needs-you amber, done green, idle gray. Replaces the earlier
+     CSS-only key row: the physical device makes "on your Stream Deck" literal at a glance. */
+  .deck {
+    max-width: 720px; margin: 34px auto 4px; border-radius: 18px; overflow: hidden;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.55), 0 0 60px rgba(56,189,248,0.10);
   }
-  .key .kg { position: absolute; top: 6px; left: 8px; font-size: 0.8rem; opacity: 0.95; }
-  .key .kn { font-size: 0.78rem; letter-spacing: -0.01em; }
-  .k-work { --k: var(--st-working); }
-  .k-need { --k: var(--st-needs); }
-  .k-done { --k: var(--st-done); }
-  .k-idle { --k: var(--st-idle); }
-  .k-none { --k: #1b1d24; color: var(--dim); box-shadow: inset 0 0 0 1px var(--line); }
-  /* needs-you escalates by flashing, mirroring the real attention behaviour. */
-  .k-need { animation: flash 1.6s var(--d, 0s) ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
-  @keyframes flash { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
+  .deck img { display: block; width: 100%; height: auto; }
   .legend { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin: 16px 0 0; font-size: 0.8rem; color: var(--dim); }
   .legend b { font-family: var(--mono); font-weight: 700; margin-right: 5px; }
-  @media (prefers-reduced-motion: reduce) {
-    .key { animation: none; }
-  }
   .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   .btn {
     display: inline-block; padding: 12px 22px; border-radius: 999px;
@@ -200,20 +183,6 @@
   pre .c { color: var(--dim); }
   pre .f { color: var(--jet-2); }
   code.inline { font-family: var(--mono); font-size: 0.86em; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
-
-  /* coming-soon notice */
-  .notice {
-    display: flex; gap: 14px; align-items: flex-start;
-    background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.4);
-    border-radius: var(--radius); padding: 16px 18px; margin: 0 0 22px;
-  }
-  .notice .badge {
-    flex: none; font-family: var(--mono); font-size: 0.7rem; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase; color: #2a1a02;
-    background: var(--amber); border-radius: 6px; padding: 3px 8px; margin-top: 3px;
-  }
-  .notice p { margin: 0; color: var(--muted); font-size: 0.93rem; }
-  .notice strong { color: var(--ink); }
 
   /* shots */
   .shot { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg-soft); margin: 0 0 10px; }
@@ -261,13 +230,9 @@
       <a class="btn btn-primary" href="https://github.com/pimmesz/jetstream">View on GitHub</a>
       <a class="btn btn-ghost" href="#quickstart">Install guide</a>
     </div>
-    <div class="board" aria-label="A Stream Deck board lit with live Claude Code status: falcon working, api needs you, web done, docs working, infra idle">
-      <div class="key k-work" style="--d:0s"><span class="kg">⋯</span><span class="kn">falcon</span></div>
-      <div class="key k-need" style="--d:.2s"><span class="kg">!</span><span class="kn">api</span></div>
-      <div class="key k-done" style="--d:.4s"><span class="kg">✓</span><span class="kn">web</span></div>
-      <div class="key k-work" style="--d:.6s"><span class="kg">⋯</span><span class="kn">docs</span></div>
-      <div class="key k-idle" style="--d:.8s"><span class="kg">·</span><span class="kn">infra</span></div>
-      <div class="key k-none"><span class="kn">+</span></div>
+    <div class="deck">
+      <img src="./deck-hero.jpg" width="1672" height="941" fetchpriority="high"
+        alt="A Stream Deck MK.2 running Jetstream: 15 keys showing a live Claude Code status board — fleet and attention amber, an Opus usage gauge and web done in green, falcon and docs working in orange, approve and settings keys, infra idle in gray, bottom row unlit" />
     </div>
     <p class="legend">
       <span><b class="g-work">⋯</b>working</span>
@@ -315,10 +280,6 @@
 <section id="quickstart">
   <div class="wrap">
     <h2>Quickstart</h2>
-    <div class="notice">
-      <span class="badge">Coming soon</span>
-      <p><strong>The npm package isn't published yet.</strong> <code class="inline">@pimmesz/jetstream</code> is minutes away from its first release, and until it lands the install command below will 404. Building from source works today — clone the repo and run <code class="inline">pnpm install &amp;&amp; pnpm build</code>. <a href="https://github.com/pimmesz/jetstream">Watch the repo</a> and this page updates the moment it ships.</p>
-    </div>
     <p class="lead">Needs an Elgato Stream Deck (any model), Node.js 22.12+, and Claude Code logged in with your subscription (<code class="inline">claude</code> → <code class="inline">/login</code>). Leave <code class="inline">ANTHROPIC_API_KEY</code> unset — Jetstream strips it from anything it spawns, so a keypress can never silently bill the metered API.</p>
 <pre>npm i -g <span class="f">@pimmesz/jetstream</span>
 jetstream install            <span class="c"># hands the plugin to the Stream Deck app — approve there</span>

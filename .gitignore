@@ -19,3 +19,4 @@ packages/jetstream/assets/*.streamDeckPlugin
 
 # npm pack output
 *.tgz
+scratch/
