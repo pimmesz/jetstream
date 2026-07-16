@@ -8,9 +8,13 @@
 <link rel="canonical" href="https://pimmesz.github.io/jetstream/" />
 <link rel="icon" type="image/png" href="./jetstream-logo.png" />
 
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+
 <!-- Open Graph -->
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Jetstream" />
+<meta property="og:title" content="Jetstream — Claude Code on your Stream Deck" />
 <meta property="og:description" content="Full Claude Code control on your Elgato Stream Deck. One key per project, live status on every key, and permission prompts you answer with a keypress." />
 <meta property="og:url" content="https://pimmesz.github.io/jetstream/" />
 <meta property="og:image" content="https://pimmesz.github.io/jetstream/og-card.png" />
@@ -21,7 +25,7 @@
 
 <!-- Twitter / X -->
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Jetstream" />
+<meta name="twitter:title" content="Jetstream — Claude Code on your Stream Deck" />
 <meta name="twitter:description" content="Full Claude Code control on your Elgato Stream Deck. One key per project, live status on every key, and permission prompts you answer with a keypress." />
 <meta name="twitter:image" content="https://pimmesz.github.io/jetstream/og-card.png" />
 <meta name="twitter:image:alt" content="A Stream Deck running Jetstream — one key per project, each lit with its live Claude Code status" />
@@ -68,10 +72,15 @@
     --ink: #f4f5f7;
     --muted: #a2a7b4;
     --dim: #6f7583;
-    --jet: #38bdf8;
-    --jet-2: #7dd3fc;
-    --amber: #f59e0b;
-    --green: #22c55e;
+    /* The accent IS the product's shipped working-state colour (#f76808), not Anthropic
+       terracotta — evoke Claude, don't impersonate. Terracotta (#d97757) appears exactly
+       once, as the ::selection cameo. Amber #ffb224 is reserved exclusively for the
+       needs-you state — never decorative. The only other orange is the light tint
+       --jet-2 (hue ~24°, clearly redder and lighter than amber's ~39°), used for
+       links/code/kickers in prose where the needs-you glyph never appears. */
+    --jet: #f76808;
+    --jet-2: #ff9d5c;
+    --jet-glow: rgba(247, 104, 8, 0.16);
     /* The product's real status colours (packages/status colorFor, default theme). The page
        legend must teach what the deck actually lights up, so these are the shipped values,
        not brand-adjacent approximations. Red is reserved for danger and never a status. */
@@ -82,6 +91,7 @@
     --radius: 14px;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --display: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -93,9 +103,18 @@
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
   }
+  /* Film grain: kills gradient banding on cheap panels and gives the dark some texture.
+     One rule, zero requests. Keep opacity ≤ .05 or it reads as dirt. */
+  body::after {
+    content: ""; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none;
+    opacity: 0.035; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  ::selection { background: rgba(217, 119, 87, 0.30); }
   a { color: var(--jet-2); text-decoration: none; }
   a:hover { text-decoration: underline; }
   .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+  h1, h2, .btn, .step h3, .card h3 { font-family: var(--display); }
 
   /* rendered README block */
   .readme-doc { font-size: 0.96rem; color: var(--muted); }
@@ -130,49 +149,105 @@
     position: relative;
     overflow: hidden;
     border-bottom: 1px solid var(--line);
+    /* Warm key-light from above (the product's working glow), a faint low cyan wash that
+       echoes the photo's blue rim-light so the dark doesn't go muddy brown. */
     background:
-      radial-gradient(900px 380px at 50% -160px, rgba(56,189,248,0.18), transparent 70%),
+      radial-gradient(900px 380px at 50% -160px, rgba(247, 104, 8, 0.14), transparent 70%),
+      radial-gradient(1100px 420px at 50% 115%, rgba(56, 189, 248, 0.05), transparent 65%),
       linear-gradient(180deg, #0b0d12, var(--bg));
     text-align: center;
-    padding: 84px 0 68px;
+    padding: 64px 0 56px;
   }
-  /* The mark is a circular disk, so it takes a circular glow — a 24px-radius box on round
-     art clipped the corners of the cream and read as a square badge with bites out of it. */
+  /* The mark is a circular disk, so it takes a circular glow. Main warm halo keyed to the
+     orange jet flames; a faint upward cyan trace from the visor. */
   .logo {
-    width: 104px; height: 104px; border-radius: 50%; margin-bottom: 22px;
-    filter: drop-shadow(0 10px 34px rgba(56,189,248,0.42));
+    width: 84px; height: 84px; border-radius: 50%; margin-bottom: 18px;
+    filter: drop-shadow(0 10px 30px rgba(247, 104, 8, 0.38)) drop-shadow(0 -4px 18px rgba(56, 189, 248, 0.14));
   }
-  h1 { font-size: 2.9rem; line-height: 1.08; margin: 0 0 14px; letter-spacing: -0.02em; }
-  .tag { font-size: 1.22rem; color: var(--muted); max-width: 640px; margin: 0 auto 30px; }
-  .jetword { color: var(--jet); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.76rem; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--jet); margin: 0 0 16px;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5.5vw, 3.4rem); line-height: 1.1;
+    margin: 0 auto 16px; max-width: 780px; letter-spacing: -0.02em;
+  }
+  .tag { font-size: 1.18rem; color: var(--muted); max-width: 660px; margin: 0 auto 26px; }
+  /* "needs you" glows in the needs-you amber→working orange the deck actually lights. */
+  .jetword {
+    background: linear-gradient(90deg, var(--st-needs), var(--st-working));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+
+  /* Copyable install strip — the conversion action, in the hero. */
+  .install-strip {
+    display: inline-flex; align-items: center; gap: 10px; margin: 0 0 22px;
+    padding: 10px 8px 10px 18px; background: var(--bg-soft);
+    border: 1px solid var(--line); border-radius: 999px;
+    font-family: var(--mono); font-size: 0.92rem; color: var(--ink);
+    box-shadow: 0 0 26px var(--jet-glow);
+  }
+  .install-strip .ps1 { color: var(--jet); user-select: none; }
+  .install-strip .copy {
+    border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+    border-radius: 999px; padding: 5px 14px; font: inherit; font-size: 0.8rem; cursor: pointer;
+  }
+  .install-strip .copy:hover { border-color: var(--jet); color: var(--ink); }
 
   /* Hero deck: a photoreal Stream Deck MK.2 render whose 15 keys carry the real status
-     board — working orange, needs-you amber, done green, idle gray. Replaces the earlier
-     CSS-only key row: the physical device makes "on your Stream Deck" literal at a glance. */
+     board. Unboxed: the photo's near-black backdrop dissolves into the page via a mask,
+     so the deck reads as a lit object floating over an orange under-glow. */
   .deck {
-    max-width: 720px; margin: 34px auto 4px; border-radius: 18px; overflow: hidden;
-    box-shadow: 0 24px 70px rgba(0,0,0,0.55), 0 0 60px rgba(56,189,248,0.10);
+    position: relative; isolation: isolate;
+    max-width: 820px; margin: 30px auto 0;
   }
-  .deck img { display: block; width: 100%; height: auto; }
-  .legend { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin: 16px 0 0; font-size: 0.8rem; color: var(--dim); }
-  .legend b { font-family: var(--mono); font-weight: 700; margin-right: 5px; }
+  .deck img {
+    display: block; width: 100%; height: auto;
+    -webkit-mask-image: radial-gradient(115% 100% at 50% 42%, #000 52%, transparent 76%);
+    mask-image: radial-gradient(115% 100% at 50% 42%, #000 52%, transparent 76%);
+  }
+  .deck::after {
+    content: ""; position: absolute; z-index: -1;
+    left: 12%; right: 12%; top: 30%; bottom: 4%;
+    background: radial-gradient(55% 55% at 50% 65%, rgba(247, 104, 8, 0.20), transparent 72%);
+    filter: blur(28px);
+  }
+
+  /* Legend chips: tiny deck keys in the shipped colours — the page's visual language IS
+     the product's. Solid chips keep working-orange vs needs-amber trivially distinguishable. */
+  .legend {
+    display: flex; gap: 18px; justify-content: center; flex-wrap: wrap;
+    margin: 10px 0 0; font-size: 0.92rem; color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .legend b {
+    width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+    font-family: var(--mono); font-weight: 700; font-size: 0.85rem; color: #16130f;
+  }
+  .legend .g-work b { background: var(--st-working); box-shadow: 0 0 12px rgba(247, 104, 8, 0.55); }
+  .legend .g-need b { background: var(--st-needs); }
+  .legend .g-done b { background: var(--st-done); }
+  .legend .g-idle b { background: var(--st-idle); }
+
   .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   .btn {
     display: inline-block; padding: 12px 22px; border-radius: 999px;
     font-weight: 600; font-size: 0.98rem; border: 1px solid transparent;
   }
-  .btn-primary { background: linear-gradient(180deg, var(--jet-2), var(--jet)); color: #04141d; }
+  .btn-primary { background: linear-gradient(180deg, var(--jet-2), var(--jet)); color: #1f0c00; }
   .btn-primary:hover { text-decoration: none; filter: brightness(1.06); }
   .btn-ghost { border-color: var(--line); color: var(--ink); background: var(--panel); }
   .btn-ghost:hover { text-decoration: none; border-color: var(--jet); }
 
   /* pills */
-  .pills { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 30px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 26px; }
   .pill { font-size: 0.78rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; background: rgba(255,255,255,0.02); }
 
   section { padding: 60px 0; border-bottom: 1px solid var(--line); }
-  h2 { font-size: 1.5rem; letter-spacing: -0.01em; margin: 0 0 8px; }
+  section:nth-of-type(even) { background: #0b0d11; }
+  h2 { font-size: 1.55rem; letter-spacing: -0.01em; margin: 0 0 8px; }
   .lead { color: var(--muted); margin: 0 0 28px; }
+  .lead strong { color: var(--ink); }
 
   /* code block */
   pre {
@@ -184,6 +259,13 @@
   pre .f { color: var(--jet-2); }
   code.inline { font-family: var(--mono); font-size: 0.86em; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
 
+  /* chat transcript */
+  .term { font-family: var(--mono); font-size: 0.9rem; line-height: 1.75; }
+  .term .in { color: var(--ink); }
+  .term .in::before { content: "> "; color: var(--jet); }
+  .term .ok { color: var(--st-done); }
+  .term .cmd { color: var(--jet-2); }
+
   /* shots */
   .shot { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg-soft); margin: 0 0 10px; }
   .shot img { display: block; width: 100%; height: auto; }
@@ -192,13 +274,20 @@
   /* steps */
   .steps { display: grid; gap: 14px; }
   .step { display: flex; gap: 16px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
-  .num { flex: none; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 0.9rem; color: #04141d; background: linear-gradient(180deg, var(--jet-2), var(--jet)); }
+  .num { flex: none; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 0.9rem; color: #1f0c00; background: linear-gradient(180deg, var(--jet-2), var(--jet)); }
   .step h3 { margin: 2px 0 4px; font-size: 1.02rem; }
   .step p { margin: 0; color: var(--muted); font-size: 0.95rem; }
 
-  /* feature grid */
+  /* feature grid: gradient top-edge "key light" echoing the deck, gentle hover lift */
   .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+  .card {
+    border: 1px solid transparent; border-radius: var(--radius); padding: 18px 20px;
+    background:
+      linear-gradient(var(--panel), var(--panel)) padding-box,
+      linear-gradient(180deg, rgba(247, 104, 8, 0.22), var(--line) 55%) border-box;
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+  }
+  .card:hover { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); }
   .card h3 { margin: 0 0 6px; font-size: 1rem; }
   .card h3 .k { color: var(--jet); font-family: var(--mono); font-size: 0.8rem; margin-right: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
   .card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
@@ -207,15 +296,49 @@
   .g-need { color: var(--st-needs); }
   .g-done { color: var(--st-done); }
 
+  /* closing CTA band */
+  #get { text-align: center; background:
+    radial-gradient(700px 300px at 50% 120%, rgba(247, 104, 8, 0.12), transparent 70%), var(--bg); }
+
+  /* collapsed README mirror */
+  .docs-fold summary {
+    cursor: pointer; color: var(--jet-2); font-size: 1rem; padding: 14px 0;
+    font-weight: 600;
+  }
+  .docs-fold summary:hover { color: var(--ink); }
+  .docs-fold[open] summary { margin-bottom: 12px; }
+
   footer { padding: 44px 0 60px; text-align: center; color: var(--dim); font-size: 0.9rem; }
   footer a { color: var(--muted); }
   .foot-links { margin-bottom: 14px; display: flex; gap: 18px; justify-content: center; flex-wrap: wrap; }
 
+  /* Motion — all of it opt-out via prefers-reduced-motion. Budget: at most two loops in
+     any viewport (the headline breathe + the working chip pulse share the hero). */
+  @media (prefers-reduced-motion: no-preference) {
+    .jetword { animation: breathe 3s ease-in-out infinite; }
+    @keyframes breathe {
+      0%, 100% { filter: drop-shadow(0 0 10px rgba(247, 104, 8, 0.25)); }
+      50% { filter: drop-shadow(0 0 26px rgba(247, 104, 8, 0.55)); }
+    }
+    .legend .g-work b { animation: keypulse 2.4s ease-in-out infinite; }
+    @keyframes keypulse {
+      0%, 100% { box-shadow: 0 0 12px rgba(247, 104, 8, 0.55); }
+      50% { box-shadow: 0 0 3px rgba(247, 104, 8, 0.25); }
+    }
+    /* Scroll reveals as progressive enhancement: browsers with animation-timeline get the
+       polish, everything else gets the normal static page. */
+    @supports (animation-timeline: view()) {
+      section .wrap { animation: rise both; animation-timeline: view(); animation-range: entry 0% entry 35%; }
+      @keyframes rise { from { opacity: 0; transform: translateY(18px); } }
+    }
+  }
+
   @media (max-width: 640px) {
-    h1 { font-size: 2.1rem; }
+    h1 { font-size: 2rem; }
     .tag { font-size: 1.05rem; }
     .grid { grid-template-columns: 1fr; }
     section { padding: 46px 0; }
+    .install-strip { font-size: 0.8rem; padding-left: 12px; }
   }
 </style>
 </head>
@@ -224,36 +347,42 @@
 <header class="hero">
   <div class="wrap">
     <img class="logo" src="./jetstream-logo.png" alt="Jetstream logo" />
-    <h1>Your Claude fleet, <span class="jetword">lit up</span> on your Stream Deck.</h1>
-    <p class="tag">One key per project, glowing with that project's live Claude Code status — working, needs-you, done. Answer permission prompts with a keypress, watch your 5h and 7d usage on a gauge, and build the whole board by talking to it.</p>
+    <p class="eyebrow">Jetstream — free, open-source Stream Deck plugin for Claude Code</p>
+    <h1>Stop checking terminals.<br />Your Stream Deck knows when Claude <span class="jetword">needs you</span>.</h1>
+    <p class="tag">One key per Claude Code project — working orange, needs-you amber, done green. Approve permission prompts with a keypress, watch your real 5h/7d usage, and build the whole board by talking to it.</p>
+    <div class="install-strip">
+      <span class="ps1">$</span><code>npm i -g @pimmesz/jetstream</code>
+      <button class="copy" type="button" data-copy="npm i -g @pimmesz/jetstream">copy</button>
+    </div>
     <div class="cta">
-      <a class="btn btn-primary" href="https://github.com/pimmesz/jetstream">View on GitHub</a>
-      <a class="btn btn-ghost" href="#quickstart">Install guide</a>
+      <a class="btn btn-primary" href="#quickstart">Install in 2 minutes</a>
+      <a class="btn btn-ghost" href="https://github.com/pimmesz/jetstream">Star on GitHub</a>
     </div>
     <div class="deck">
       <img src="./deck-hero.jpg" width="1672" height="941" fetchpriority="high"
         alt="A Stream Deck MK.2 running Jetstream: 15 keys showing a live Claude Code status board — fleet and attention amber, an Opus usage gauge and web done in green, falcon and docs working in orange, approve and settings keys, infra idle in gray, bottom row unlit" />
     </div>
     <p class="legend">
-      <span><b class="g-work">⋯</b>working</span>
-      <span><b class="g-need">!</b>needs you</span>
-      <span><b class="g-done">✓</b>done</span>
-      <span><b style="color:var(--st-idle)">·</b>idle</span>
+      <span class="g-work"><b>⋯</b>working</span>
+      <span class="g-need"><b>!</b>needs you</span>
+      <span class="g-done"><b>✓</b>done</span>
+      <span class="g-idle"><b>·</b>idle</span>
     </p>
+    <p class="caption" style="margin-top:8px">The exact colours the deck lights — orange means Claude is working.</p>
     <div class="pills">
-      <span class="pill">Works on any Stream Deck</span>
-      <span class="pill">Approve / Deny from the deck</span>
+      <span class="pill">Free &amp; open source · Apache-2.0</span>
       <span class="pill">Local only — never the network</span>
-      <span class="pill">Colour-blind safe glyphs</span>
       <span class="pill">Subscription auth, no API key</span>
+      <span class="pill">Approve / Deny from the deck</span>
+      <span class="pill">Works on any Stream Deck</span>
     </div>
   </div>
 </header>
 
 <section id="what">
   <div class="wrap">
-    <h2>What it does</h2>
-    <p class="lead">Run Claude Code across several repos and the hard question stops being "what is it doing" and becomes "is anything waiting on <em>me</em>?" Jetstream answers that from across the room. Every project gets a key that carries its own live state — <span class="glyph g-work">⋯</span> working, <span class="glyph g-need">!</span> needs-you, <span class="glyph g-done">✓</span> done — so an idle agent stuck on a prompt is visible instead of silently burning your afternoon.</p>
+    <h2>Is anything waiting on you?</h2>
+    <p class="lead"><strong>"Is anything waiting on me?"</strong> — that's the real question when Claude Code runs across five repos, and Jetstream answers it from across the room. Every project gets a key with its own live state: <span class="glyph g-work">⋯</span> working, <span class="glyph g-need">!</span> needs-you, <span class="glyph g-done">✓</span> done. A stuck agent is a glowing amber key — not a silently wasted afternoon.</p>
     <div class="shot"><img src="./gallery-board.png" alt="A Stream Deck board running Jetstream: one key per project, each lit with its live Claude Code status" loading="lazy" /></div>
     <p class="caption">One key per project, each carrying its own name, path, and live state.</p>
     <div class="grid">
@@ -264,16 +393,6 @@
       <div class="card"><h3><span class="k">Attention</span></h3><p>A doorbell key that flashes when a request goes unanswered, covering every repo in your config.</p></div>
       <div class="card"><h3><span class="k">Launch preset</span></h3><p>Preset headless <code class="inline">claude -p</code> launches, usable inside Stream Deck multi-actions.</p></div>
     </div>
-  </div>
-</section>
-
-<section id="controls">
-  <div class="wrap">
-    <h2>Build the board by talking to it</h2>
-    <p class="lead"><code class="inline">jetstream chat</code> takes plain English and applies it live — no re-import, no dragging. Describe your repos, add an app, URL, or command shortcut key, recolour something, set an emoji or the app's real logo as an icon. <code class="inline">jetstream init</code> is the guided version: it scans a folder for repos, writes your config, wires the hooks, and can prebuild a ready-made layout for a Mini, MK.2, or XL.</p>
-    <div class="shot"><img src="./gallery-controls.png" alt="Jetstream control keys on a Stream Deck — approve, deny, usage gauge, and fleet roll-up" loading="lazy" /></div>
-    <p class="caption">Control keys: approve, deny, the usage gauge, and the fleet roll-up.</p>
-    <p class="lead" style="margin-bottom:0;">Every state also carries a glyph (<span class="glyph g-work">⋯</span> <span class="glyph g-need">!</span> <span class="glyph g-done">✓</span>), so the board reads without relying on colour — and the settings key's high-contrast theme swaps the red/green pair for orange/blue.</p>
   </div>
 </section>
 
@@ -291,28 +410,50 @@ jetstream doctor             <span class="c"># read-only health check when the b
   </div>
 </section>
 
+<section id="controls">
+  <div class="wrap">
+    <h2>Then build the board by talking to it</h2>
+    <p class="lead"><code class="inline">jetstream chat</code> takes plain English and applies it live — no re-import, no dragging:</p>
+    <pre class="term"><span class="cmd">$ jetstream chat</span>
+<span class="in">add falcon and api from ~/dev, put the usage gauge at a3</span>
+<span class="ok">✓ 2 project keys placed · usage gauge at a3</span>
+<span class="in">make docs purple, give the telegram key its real logo</span>
+<span class="ok">✓ board updated — live, no re-import</span></pre>
+    <p class="lead" style="margin-top:22px;"><code class="inline">jetstream init</code> is the guided version: it scans a folder for repos, writes your config, wires the hooks, and can prebuild a ready-made layout for a Mini, MK.2, or XL.</p>
+    <div class="shot"><img src="./gallery-controls.png" alt="Jetstream control keys on a Stream Deck — model switch, PR review, launch presets, and stop-all" loading="lazy" /></div>
+    <p class="caption">Control the whole loop: switch models, review PRs, fire saved launches, or stop every running agent.</p>
+    <p class="lead" style="margin-bottom:0;">Every state also carries a glyph (<span class="glyph g-work">⋯</span> <span class="glyph g-need">!</span> <span class="glyph g-done">✓</span>), so the board reads without relying on colour — and the settings key's high-contrast theme swaps the red/green pair for orange/blue.</p>
+  </div>
+</section>
+
 <section id="how">
   <div class="wrap">
-    <h2>How it works</h2>
-    <p class="lead">Nothing is device-specific, nothing phones home, and watching costs you no quota.</p>
+    <h2>How it works — local hooks, nothing phones home</h2>
+    <p class="lead">Nothing is device-specific, nothing leaves your machine, and watching costs you no quota.</p>
     <div class="steps">
       <div class="step"><div class="num">1</div><div><h3>Hooks report locally</h3><p>Claude Code's own hooks tell the plugin what each session is doing over <code class="inline">127.0.0.1</code> — never the network. The status hook reports lifecycle events; the permission hook additionally holds a pending prompt briefly so a deck key can answer it.</p></div></div>
       <div class="step"><div class="num">2</div><div><h3>Keys light up</h3><p>Each Project key holds its own name and path, so everyone's board is their own. Drag as many as your device has — Mini 6, MK.2 15, XL 32, Neo — or let <code class="inline">init</code> prebuild a starting layout.</p></div></div>
       <div class="step"><div class="num">3</div><div><h3>You press back</h3><p>Open the project, interrupt a run, approve or deny a permission prompt, or fire a preset headless launch. The deck stops being a read-only dashboard.</p></div></div>
       <div class="step"><div class="num">4</div><div><h3>One config, whole fleet</h3><p><code class="inline">projects.json</code> defines every repo in one place, so the Fleet roll-up and Attention doorbell cover projects you never gave a key.</p></div></div>
     </div>
+    <h3 style="margin:34px 0 12px;font-size:1.15rem;">Will this burn my quota?</h3>
+    <div class="grid">
+      <div class="card"><h3><span class="k">Watching is free</span></h3><p>The hooks only talk to the plugin locally. Lighting the board costs no quota at all. The usage gauge shows your real interactive 5h/7d windows — the same numbers <code class="inline">/usage</code> reports.</p></div>
+      <div class="card"><h3><span class="k">Subscription, not API</span></h3><p>Launch presets run headless <code class="inline">claude -p</code> on the separate Agent-SDK allotment — the 5h/7d gauge doesn't move. And <code class="inline">ANTHROPIC_API_KEY</code> is stripped from every spawned process.</p></div>
+    </div>
   </div>
 </section>
 
-<section id="meters">
+<section id="get">
   <div class="wrap">
-    <h2>Which meter does what</h2>
-    <p class="lead">Worth being precise about, because the two allotments are separate and it's easy to assume otherwise.</p>
-    <div class="grid">
-      <div class="card"><h3><span class="k">Usage gauge</span></h3><p>Shows your interactive 5h and 7d subscription windows — the same numbers <code class="inline">/usage</code> reports.</p></div>
-      <div class="card"><h3><span class="k">Launch preset</span></h3><p>Runs headless <code class="inline">claude -p</code>, which draws the separate Agent-SDK allotment. It does <strong>not</strong> move the 5h/7d gauge.</p></div>
-      <div class="card"><h3><span class="k">Watching is free</span></h3><p>The hooks only talk to the plugin locally. Lighting the board costs no quota at all.</p></div>
-      <div class="card"><h3><span class="k">Subscription, not API</span></h3><p><code class="inline">ANTHROPIC_API_KEY</code> is stripped from every spawned process, so a keypress can't silently bill the metered API.</p></div>
+    <h2>Your agents are already running. Give them a dashboard.</h2>
+    <p class="lead" style="margin-bottom:22px;">Free · Apache-2.0 · works on any Stream Deck</p>
+    <div class="install-strip">
+      <span class="ps1">$</span><code>npm i -g @pimmesz/jetstream</code>
+      <button class="copy" type="button" data-copy="npm i -g @pimmesz/jetstream">copy</button>
+    </div>
+    <div class="cta" style="margin-top:6px;">
+      <a class="btn btn-ghost" href="https://github.com/pimmesz/jetstream">View source on GitHub</a>
     </div>
   </div>
 </section>
@@ -321,7 +462,9 @@ jetstream doctor             <span class="c"># read-only health check when the b
   <div class="wrap">
     <h2>Full documentation</h2>
     <p class="lead">Mirrored automatically from the <a href="https://github.com/pimmesz/jetstream#readme">README</a> — the single source of truth.</p>
-    <div class="readme-doc">
+    <details class="docs-fold">
+      <summary>Read the full README — install details, config file, Elgato MCP, development</summary>
+      <div class="readme-doc">
       <!-- README:START -->
 <!-- Generated from README.md by scripts/render-landing.mjs — do not edit by hand. -->
 <h2 id="install-cli-first-macos-or-windows">Install (CLI-first — macOS or Windows)</h2>
@@ -427,7 +570,8 @@ pnpm --filter &#39;@pimmesz/jetstream&#39; run validate # Elgato manifest valida
 pnpm --filter &#39;@pimmesz/jetstream&#39; run pack     # produce the .streamDeckPlugin
 </code></pre>
 <!-- README:END -->
-    </div>
+      </div>
+    </details>
   </div>
 </section>
 
@@ -443,6 +587,22 @@ pnpm --filter &#39;@pimmesz/jetstream&#39; run pack     # produce the .streamDec
     <p>Apache-2.0 · built by <a href="https://github.com/pimmesz">pimmesz</a> · not affiliated with Elgato or Anthropic</p>
   </div>
 </footer>
+
+<script>
+  // Copy-to-clipboard for the install strips. No inline handlers; degrades to a no-op
+  // where the Clipboard API is unavailable (the command is still selectable text).
+  document.querySelectorAll('.copy').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const text = btn.getAttribute('data-copy');
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(text).then(() => {
+        const prev = btn.textContent;
+        btn.textContent = 'copied ✓';
+        setTimeout(() => { btn.textContent = prev; }, 1600);
+      });
+    });
+  });
+</script>
 
 </body>
 </html>
