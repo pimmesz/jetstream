@@ -125,20 +125,22 @@ permissions.subscribe(() => {
 config.subscribe(renderAll);
 
 // Elapsed-time tick for working keys; usage refresh on its configured cadence.
-setInterval(renderBoard, 30_000);
+setInterval(renderBoard, 30_000).unref();
 let usageTimer = setInterval(() => void usageKey.refresh(), config.get().usageRefreshSec * 1000);
+usageTimer.unref();
 config.subscribe(() => {
   clearInterval(usageTimer);
   usageTimer = setInterval(() => void usageKey.refresh(), config.get().usageRefreshSec * 1000);
+  usageTimer.unref();
 });
 
 // CI/PR status polls gh on a fixed cadence; refresh() no-ops when no CI key is placed.
-setInterval(() => void ciKey.refresh(), CI_REFRESH_MS);
+setInterval(() => void ciKey.refresh(), CI_REFRESH_MS).unref();
 
 // afterburner heartbeat + review queue: poll the sibling CLI on a slow cadence. Both no-op
 // (never spawn) when no such key is placed, so a board without them costs nothing.
-setInterval(() => void heartbeatKey.refresh(), 60_000);
-setInterval(() => void reviewKey.refresh(), 120_000);
+setInterval(() => void heartbeatKey.refresh(), 60_000).unref();
+setInterval(() => void reviewKey.refresh(), 120_000).unref();
 
 // After the machine sleeps, the interval timers pause/drift — so the moment it wakes, refresh
 // everything now instead of waiting up to a full poll cycle (a usage window may have reset, CI
@@ -179,24 +181,30 @@ const hookHandlers: HookServerHandlers = {
   onSlot: (raw) => slotKey.assign(raw),
 };
 // Bind with retries: an orphaned prior plugin process (the kill→respawn hazard) can still hold the
-// port for a moment, and giving up on the first EADDRINUSE would leave the board permanently dark —
-// no hook event ever arrives. Record the outcome so the Fleet key can surface "hooks offline".
+// port, and giving up early would leave the board permanently dark — no hook event ever arrives.
+// The predecessor now unrefs its server + timers so it exits as soon as its handles drain, but a
+// held /permission request (up to ~90s) or an in-flight poll can delay that, so keep retrying at a
+// steady 1s for ~90s to outlast the worst case rather than a 4s window. Record the outcome so the
+// Fleet key can surface "hooks offline".
 void (async () => {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  const RETRY_MS = 1_000;
+  const MAX_WAIT_MS = 90_000;
+  const deadline = Date.now() + MAX_WAIT_MS;
+  for (;;) {
     try {
       await startHookServer(port, hookHandlers);
       setListenerBound(true);
       return;
     } catch (error) {
-      if (attempt === 4) {
+      if (Date.now() >= deadline) {
         setListenerBound(false);
         streamDeck.logger.error(
-          `Jetstream hook server could not bind 127.0.0.1:${port} after retries — project status will not update`,
+          `Jetstream hook server could not bind 127.0.0.1:${port} within ${MAX_WAIT_MS / 1000}s — project status will not update`,
           error,
         );
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
     }
   }
 })();
@@ -220,7 +228,7 @@ async function pollDiscoveredSessions(): Promise<void> {
   }
 }
 void pollDiscoveredSessions();
-setInterval(() => void pollDiscoveredSessions(), 5000);
+setInterval(() => void pollDiscoveredSessions(), 5000).unref();
 
 // The board checkpoint is trailing-debounced (state.ts), so a change in the last ~250ms is only in
 // memory. On a clean shutdown (Stream Deck terminating the plugin, or Ctrl-C in dev) flush it first so

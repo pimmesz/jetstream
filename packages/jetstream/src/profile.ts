@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
@@ -36,14 +36,53 @@ export const DECK_MODELS: DeckModel[] = [
   { key: 'xl', label: 'Stream Deck XL (32 keys)', model: '20GAT9901', cols: 8, rows: 4 },
 ];
 
+/** The Stream Deck app's ProfilesV3 store, per OS. Linux has no Stream Deck app; the darwin
+ * path is returned there and every reader falls back safely when it doesn't exist. */
+function profilesStoreDir(): string {
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA?.trim() || join(homedir(), 'AppData', 'Roaming');
+    return join(appData, 'Elgato', 'StreamDeck', 'ProfilesV3');
+  }
+  return join(homedir(), 'Library', 'Application Support', 'com.elgato.StreamDeck', 'ProfilesV3');
+}
+
+/** The exact DeviceModel code of the CONNECTED deck in `deck`'s family, sniffed from the app's
+ * ProfilesV3 store. A generated profile's DeviceModel must match the connected hardware — an XL
+ * ships as 20GAT9901 or 20GAT9902 and other decks have revisions too — or Stream Deck won't
+ * import it onto the device. When several profiles match the family (e.g. a replaced device's
+ * stale profiles), the most recently MODIFIED profile wins — that's the deck actually in use.
+ * One unreadable profile never aborts the scan. Falls back to the family default when nothing
+ * matches. `profilesDir` is injectable so tests never touch the real store. */
+export function detectDeviceModel(deck: DeckModel, profilesDir = profilesStoreDir()): string {
+  const prefix = deck.model.slice(0, 7); // '20GAT99' (XL), '20GBA99' (MK.2), '20GAI99' (Mini)
+  let entries: string[];
+  try {
+    entries = readdirSync(profilesDir);
+  } catch {
+    return deck.model; // Stream Deck not installed / no profile store — use the family default
+  }
+  let best: { model: string; mtimeMs: number } | undefined;
+  for (const entry of entries) {
+    if (!entry.endsWith('.sdProfile')) continue;
+    try {
+      const dir = join(profilesDir, entry);
+      const match = /"Model":"(20[0-9A-Z]+)"/.exec(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+      if (!match?.[1]?.startsWith(prefix)) continue;
+      const mtimeMs = statSync(dir).mtimeMs;
+      if (!best || mtimeMs > best.mtimeMs) best = { model: match[1], mtimeMs };
+    } catch {
+      continue; // a profile without a readable manifest tells us nothing — keep scanning
+    }
+  }
+  return best?.model ?? deck.model;
+}
+
 /** The Stream Deck the app currently has profiles for, sniffed from its ProfilesV3 store by
  * DeviceModel prefix (each deck family has a stable 7-char code — see DECK_MODELS). Returns the
  * matched DeckModel, or undefined when nothing matches or MORE than one family is present
  * (ambiguous → let the user pick). Best-effort and side-effect-free: any read error → undefined.
  * `profilesDir` is injectable so tests never touch the real store. */
-export function detectConnectedDeck(
-  profilesDir = join(homedir(), 'Library', 'Application Support', 'com.elgato.StreamDeck', 'ProfilesV3'),
-): DeckModel | undefined {
+export function detectConnectedDeck(profilesDir = profilesStoreDir()): DeckModel | undefined {
   const byPrefix = new Map(DECK_MODELS.map((d) => [d.model.slice(0, 7), d]));
   const found = new Set<DeckModel>();
   try {
@@ -183,7 +222,11 @@ function preferredProjectSlots(deck: DeckModel): string[] {
  * remaining free slot row-major (which, with controls on the bottom, is a contiguous
  * top-anchored block). Pure.
  */
-export function buildProfile(deck: DeckModel, projects: ProjectConfig[]): BuiltProfile {
+export function buildProfile(
+  deck: DeckModel,
+  projects: ProjectConfig[],
+  deviceModel: string = deck.model,
+): BuiltProfile {
   const slots = fixedLayout(deck);
 
   let placed = 0;
@@ -211,7 +254,9 @@ export function buildProfile(deck: DeckModel, projects: ProjectConfig[]): BuiltP
   fillEmptySlots(slots, deck);
   const manifest: Record<string, unknown> = {
     Actions: Object.fromEntries(slots),
-    DeviceModel: deck.model,
+    // The exact connected hardware's code when the caller sniffed one (see detectDeviceModel) —
+    // a family default here can refuse to import onto a revision device (e.g. an XL 20GAT9902).
+    DeviceModel: deviceModel,
     Name: 'Jetstream',
     Version: '1.0',
   };
@@ -454,8 +499,11 @@ export function writeProfileFile(
   outPath: string,
   deck: DeckModel,
   projects: ProjectConfig[],
+  // Sniff the connected hardware's exact revision by default so the generated profile can
+  // actually import onto it; injectable so tests stay machine-independent.
+  deviceModel: string = detectDeviceModel(deck),
 ): BuiltProfile {
-  const built = buildProfile(deck, projects);
+  const built = buildProfile(deck, projects, deviceModel);
   writeFileSync(outPath, renderProfileArchive(built));
   return built;
 }

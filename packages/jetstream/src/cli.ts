@@ -8,7 +8,13 @@ import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { installHooks, type HookCommands } from './hooks-install';
 import { runDoctor, formatReport } from './doctor';
 import { offerProfile, runInit } from './init';
-import { buildLayoutProfile, detectConnectedDeck, renderProfileArchive, type DeckModel } from './profile';
+import {
+  buildLayoutProfile,
+  detectConnectedDeck,
+  detectDeviceModel,
+  renderProfileArchive,
+  type DeckModel,
+} from './profile';
 import { mergeBoard, pruneCustomProfiles, readBoardLayout, renderBoardMap } from './board-layout';
 import { coordLabel } from './actions/coord';
 import { selectOne } from './select';
@@ -40,18 +46,25 @@ Commands:
   hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
   doctor                          Read-only health check — why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps
-  board                           Print your current Stream Deck board as a coordinate map (a1…hN)`;
+  board                           Print your current Stream Deck board as a coordinate map (a1…hN)
+  update                          Update the npm package + reinstall the plugin (npm CLI)
+  version                         Show the installed plugin / npm package versions`;
 
 /** Build the node-quoted hook commands pointing at the sibling bundled hook scripts, so
  * they install with correct absolute paths wherever the .sdPlugin lives. */
+/** POSIX-single-quote a path for embedding in the hook command string. Single quotes neutralize
+ * every shell metacharacter ($, backticks, ", \), so an install path containing them can't break
+ * out of the command; an embedded single quote uses the standard '\'' dance. */
+const shellQuote = (path: string): string => `'${path.replace(/'/g, `'\\''`)}'`;
+
 export function hookCommands(binDir: string, toolDetail: boolean): HookCommands {
   // Stable node symlink survives a Homebrew upgrade; fall back to the installing node.
   const node = existsSync('/opt/homebrew/bin/node') ? '/opt/homebrew/bin/node' : process.execPath;
   // Skip cleanly if the script is missing (e.g. mid-rebuild), otherwise exec node so
   // its real exit code and errors still surface.
   const cmd = (file: string): string => {
-    const script = join(binDir, file);
-    return `[ -f "${script}" ] || exit 0; exec "${node}" "${script}"`;
+    const script = shellQuote(join(binDir, file));
+    return `[ -f ${script} ] || exit 0; exec ${shellQuote(node)} ${script}`;
   };
   return {
     status: cmd('status-hook.js'),
@@ -59,25 +72,6 @@ export function hookCommands(binDir: string, toolDetail: boolean): HookCommands 
     usage: cmd('usage-hook.js'),
     toolDetail,
   };
-}
-
-/** A generated profile's DeviceModel must match the CONNECTED deck (an XL ships as 20GAT9901 or
- * 20GAT9902; other decks have revisions too), or Stream Deck won't import it onto the device. The
- * CLI has no SDK connection, so sniff the real model from the app's profile store — matched to this
- * deck by model-code prefix — and fall back to the DeckModel default when nothing fits. */
-function detectDeviceModel(deck: DeckModel): string {
-  const prefix = deck.model.slice(0, 7); // '20GAT99' (XL), '20GBA99' (MK.2), '20GAI99' (Mini)
-  const dir = join(homedir(), 'Library', 'Application Support', 'com.elgato.StreamDeck', 'ProfilesV3');
-  try {
-    for (const entry of readdirSync(dir)) {
-      if (!entry.endsWith('.sdProfile')) continue;
-      const match = /"Model":"(20[0-9A-Z]+)"/.exec(readFileSync(join(dir, entry, 'manifest.json'), 'utf8'));
-      if (match?.[1]?.startsWith(prefix)) return match[1];
-    }
-  } catch {
-    /* Stream Deck not installed / no profile store — use the DeckModel default */
-  }
-  return deck.model;
 }
 
 async function runHooks(args: string[], binDir: string): Promise<number> {
@@ -170,6 +164,13 @@ export async function run(argv: string[], binDir: string): Promise<number> {
       // The PLUGIN's version (its sdPlugin manifest). The npm wrapper answers `--version`
       // itself with the package version and adds this line when the plugin is installed.
       console.log(`Jetstream plugin ${pluginVersion(binDir)}`);
+      return 0;
+    }
+    case 'update': {
+      // The plugin CLI lives inside the plugin, so it can't replace its own package — the
+      // npm-installed `jetstream` bin owns this verb (it intercepts `update` before forwarding
+      // here). Reaching this case means an old wrapper or a direct bin invocation: say how.
+      console.log('Update via the npm CLI:\n  npm i -g @pimmesz/jetstream\n  jetstream install');
       return 0;
     }
     case 'init': {

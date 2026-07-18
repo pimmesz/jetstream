@@ -11,6 +11,7 @@ import {
   shouldEscalate,
   summarize,
   worstStatus,
+  INFLIGHT_TTL_MS,
   type HookEvent,
   type ProjectConfig,
   type ProjectStatus,
@@ -140,7 +141,7 @@ describe('subagent tracking (a running workflow keeps a key working)', () => {
     s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 })); // working
     s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 2, agentId: 'w1' }));
     s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 3 })); // main turn yields → base done
-    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('working');
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('working');
   });
 
   it('clears back to the base status only once EVERY subagent stops', () => {
@@ -150,14 +151,68 @@ describe('subagent tracking (a running workflow keeps a key working)', () => {
     s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 3, agentId: 'w2' }));
     s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 4 }));
     s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'h1', at: 5, agentId: 'w1' }));
-    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('working'); // w2 still running
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('working'); // w2 still running
     s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'h1', at: 6, agentId: 'w2' }));
-    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('done'); // all done → base shows
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('done'); // all done → base shows
   });
 
-  it('a subagent event for an unseen session seeds a working session at its cwd', () => {
-    const s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'x', at: 1, agentId: 'w1' }));
-    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('working');
+  it('a new user turn keeps tracking a workflow that is still running', () => {
+    let s = initialState();
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 2, agentId: 'w1' }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 3 }));
+    // The user asks something new mid-workflow; that turn ends too — the workflow must still count.
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 4 }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 5 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('working');
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'h1', at: 6, agentId: 'w1' }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('done');
+  });
+
+  it('a lost SubagentStop self-heals: the entry ages out after INFLIGHT_TTL_MS', () => {
+    let s = initialState();
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1_000 }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 2_000, agentId: 'w1' }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 3_000 }));
+    // The SubagentStop for w1 is never delivered (fire-and-forget POST dropped).
+    expect(statusByProject(s, PROJECTS, 4_000).falcon?.status).toBe('working'); // still fresh
+    expect(statusByProject(s, PROJECTS, 2_000 + INFLIGHT_TTL_MS - 1).falcon?.status).toBe('working');
+    expect(statusByProject(s, PROJECTS, 2_000 + INFLIGHT_TTL_MS).falcon?.status).toBe('done'); // aged out
+  });
+
+  it('a duplicate SubagentStart refreshes the entry instead of double-counting', () => {
+    let s = initialState();
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1_000 }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 2_000, agentId: 'w1' }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 5_000, agentId: 'w1' })); // re-report
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 6_000 }));
+    // One Stop for the id clears it — no ghost twin left behind.
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'h1', at: 7_000, agentId: 'w1' }));
+    expect(statusByProject(s, PROJECTS, 8_000).falcon?.status).toBe('done');
+  });
+
+  it('an unseen session seeded by SubagentStart reads working ONLY while the agent is live', () => {
+    let s = reduce(
+      initialState(),
+      ev({ event: 'SubagentStart', sessionId: 'x', at: 1_000, agentId: 'w1' }),
+    );
+    // The seed itself is 'idle' — the LIVE inflight entry supplies 'working'…
+    expect(statusByProject(s, PROJECTS, 2_000).falcon?.status).toBe('working');
+    // …so a delivered Stop settles it back instead of pinning orange,
+    const stopped = reduce(s, ev({ event: 'SubagentStop', sessionId: 'x', at: 3_000, agentId: 'w1' }));
+    expect(statusByProject(stopped, PROJECTS, 4_000).falcon?.status).toBe('idle');
+    // …and a LOST Stop ages out at the TTL rather than pinning forever (the seeded-base bug).
+    expect(statusByProject(s, PROJECTS, 1_000 + INFLIGHT_TTL_MS).falcon?.status).toBe('idle');
+  });
+
+  it('a SubagentStop delivered BEFORE its Start cancels the pair (no 30-minute false working)', () => {
+    let s = initialState();
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1_000 }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 2_000 })); // base: done
+    // The fast agent's Stop wins the POST race; its Start lands afterwards.
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'h1', at: 3_000, agentId: 'w1' }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 3_050, agentId: 'w1' }));
+    expect(statusByProject(s, PROJECTS, 4_000).falcon?.status).toBe('done'); // pair cancelled
   });
 
   it('SessionEnd forgets in-flight subagents (back to none)', () => {
@@ -184,17 +239,7 @@ describe('subagent tracking (a running workflow keeps a key working)', () => {
     s = reduce(s, ev({ event: 'SessionEnd', sessionId: 'h1', at: 2 })); // user ends the session
     // A late SubagentStop lands after SessionEnd (independent, unordered hook POSTs).
     s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'h1', at: 3, agentId: 'w1' }));
-    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('none'); // stays gone, not phantom working
-  });
-
-  it('a fresh user turn clears stale in-flight subagents (self-heals a lost SubagentStop)', () => {
-    let s = initialState();
-    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 }));
-    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: 2, agentId: 'w1' }));
-    // The SubagentStop for w1 is dropped (POST timed out) — inflight would otherwise leak forever.
-    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 3 })); // next turn clears it
-    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 4 }));
-    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('done'); // not pinned to working
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('none'); // stays gone, not phantom working
   });
 });
 

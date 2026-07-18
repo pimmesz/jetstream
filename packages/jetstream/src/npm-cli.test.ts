@@ -1,7 +1,7 @@
 import type { spawn as spawnType } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -244,6 +244,89 @@ describe('runJetstream', () => {
     child.fire('error', new Error('ENOENT'));
     expect(error.mock.calls.at(-1)![0]).toContain('ENOENT');
     expect(setExitCode).toHaveBeenCalledWith(1);
+  });
+
+  it('update: runs npm i -g, then hands off to the install flow on success', () => {
+    const child = fakeChild();
+    const spawn = vi.fn(() => child);
+    const install = vi.fn();
+    runJetstream({
+      args: ['update'],
+      spawn: spawn as unknown as typeof spawnType,
+      install,
+      say: vi.fn(),
+      error: vi.fn(),
+      setExitCode: vi.fn(),
+      platform: 'darwin',
+      exists: () => false, // no npm-cli.js next to node → PATH fallback
+    });
+    expect(spawn).toHaveBeenCalledWith('npm', ['i', '-g', '@pimmesz/jetstream'], { stdio: 'inherit' });
+    expect(install).not.toHaveBeenCalled(); // not before npm finishes
+    child.fire('exit', 0);
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it('update: a failed npm install stops the flow — no plugin handoff, non-zero exit', () => {
+    const child = fakeChild();
+    const install = vi.fn();
+    const error = vi.fn();
+    const setExitCode = vi.fn();
+    runJetstream({
+      args: ['update'],
+      spawn: (() => child) as unknown as typeof spawnType,
+      install,
+      say: vi.fn(),
+      error,
+      setExitCode,
+      platform: 'darwin',
+      exists: () => false,
+    });
+    child.fire('exit', 1);
+    expect(install).not.toHaveBeenCalled();
+    expect(error.mock.calls.at(-1)![0]).toContain('npm install failed');
+    expect(setExitCode).toHaveBeenCalledWith(1);
+  });
+
+  it('update: uses the npm.cmd shim through a shell on Windows', () => {
+    const child = fakeChild();
+    const spawn = vi.fn(() => child);
+    runJetstream({
+      args: ['update'],
+      spawn: spawn as unknown as typeof spawnType,
+      install: vi.fn(),
+      say: vi.fn(),
+      error: vi.fn(),
+      setExitCode: vi.fn(),
+      platform: 'win32',
+      exists: () => false, // no npm-cli.js next to node → guarded .cmd fallback
+    });
+    // cwd pinned to HOME so cmd.exe's CWD-first resolution can't run a planted npm.cmd.
+    expect(spawn).toHaveBeenCalledWith('npm.cmd', ['i', '-g', '@pimmesz/jetstream'], {
+      stdio: 'inherit',
+      shell: true,
+      cwd: homedir(),
+    });
+  });
+
+  it('update: prefers npm-cli.js next to node, spawned with NO shell (no binary planting)', () => {
+    const child = fakeChild();
+    const spawn = vi.fn(() => child);
+    runJetstream({
+      args: ['update'],
+      spawn: spawn as unknown as typeof spawnType,
+      install: vi.fn(),
+      say: vi.fn(),
+      error: vi.fn(),
+      setExitCode: vi.fn(),
+      platform: 'darwin',
+      exists: () => true,
+    });
+    const expected = join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    expect(spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [expected, 'i', '-g', '@pimmesz/jetstream'],
+      { stdio: 'inherit' },
+    );
   });
 });
 

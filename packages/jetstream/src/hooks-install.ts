@@ -29,12 +29,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * terminal node ran `jetstream setup`), and matching on the exact string made every
  * runtime switch add a DUPLICATE hook — double processes per event, and a doubled
  * blocking PermissionRequest hook. Returns the basename of the last quoted path
- * (`"<node>" "<dir>/status-hook.js"` → `status-hook.js`; the filenames are
- * jetstream-specific), or undefined for a shape we don't recognize — those fall back
- * to exact-string comparison. */
+ * (`exec '<node>' '<dir>/status-hook.js'` → `status-hook.js`; the filenames are
+ * jetstream-specific). Accepts single OR double quotes — older installs wrote
+ * double-quoted commands, current ones single-quote — so a quoting-style change
+ * refreshes entries in place instead of duplicating them. Undefined for a shape we
+ * don't recognize — those fall back to exact-string comparison. */
 function scriptOf(command: unknown): string | undefined {
   if (typeof command !== 'string') return undefined;
-  const match = /"([^"]+)"\s*$/.exec(command);
+  const match = /["']([^"']+)["']\s*$/.exec(command);
   return match ? basename(match[1]!) : undefined;
 }
 
@@ -57,29 +59,55 @@ export interface MergeResult {
   changed: boolean;
 }
 
-/** Add the command to the event's entries, or UPDATE an existing entry that runs the
- * same script under a stale node/path (replace, never duplicate — see scriptOf). */
+/** Add the command to the event's entries, or UPDATE the FIRST existing entry that runs the
+ * same script under a stale node/path/quoting (replace, never duplicate — see scriptOf) — and
+ * COLLAPSE any further same-script duplicates. Duplicates appear when an OLDER build re-wires
+ * after a newer one (a rollback: its scriptOf couldn't parse the newer quoting, so it pushed a
+ * second entry); without the collapse that damage would be permanent, doubling every hook
+ * process and the blocking PermissionRequest prompt. */
 function upsertHook(hooks: Record<string, unknown>, event: string, command: string): boolean {
   const entries = Array.isArray(hooks[event]) ? [...(hooks[event] as unknown[])] : [];
+  let changed = false;
+  let kept = false;
+  const emptied = new Set<number>();
   for (let i = 0; i < entries.length; i++) {
     const entry = asRecord(entries[i]);
     const inner = entry?.hooks;
     if (!Array.isArray(inner)) continue;
-    for (let j = 0; j < inner.length; j++) {
-      const h = asRecord(inner[j]);
-      if (h?.type !== 'command' || !sameScript(h.command, command)) continue;
-      if (h.command === command) return false; // already installed, exactly
-      // Same script, different runtime/path: refresh in place (cloned, not mutated).
-      const nextInner = [...inner];
-      nextInner[j] = { ...h, command };
+    const nextInner: unknown[] = [];
+    let mutated = false;
+    for (const raw of inner) {
+      const h = asRecord(raw);
+      if (h?.type !== 'command' || !sameScript(h.command, command)) {
+        nextInner.push(raw); // foreign hook — never touched
+        continue;
+      }
+      if (kept) {
+        mutated = true; // a same-script duplicate — collapse it
+        changed = true;
+        continue;
+      }
+      kept = true;
+      if (h.command === command) {
+        nextInner.push(raw); // already installed, exactly
+      } else {
+        nextInner.push({ ...h, command }); // same script, stale runtime/quoting — refresh in place
+        mutated = true;
+        changed = true;
+      }
+    }
+    if (mutated) {
       entries[i] = { ...entry, hooks: nextInner };
-      hooks[event] = entries;
-      return true;
+      if (nextInner.length === 0) emptied.add(i); // we removed its last hook — drop the wrapper
     }
   }
-  entries.push({ hooks: [{ type: 'command', command }] });
-  hooks[event] = entries;
-  return true;
+  let result = emptied.size ? entries.filter((_, i) => !emptied.has(i)) : entries;
+  if (!kept) {
+    result = [...result, { hooks: [{ type: 'command', command }] }];
+    changed = true;
+  }
+  if (changed) hooks[event] = result;
+  return changed;
 }
 
 /** The higher-overhead tool-detail events (a hook process per tool call), wired only

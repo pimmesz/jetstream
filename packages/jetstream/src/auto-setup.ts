@@ -4,12 +4,12 @@ import { installHooks } from './hooks-install';
 import { hookCommands } from './cli';
 import { projectsConfigPath } from './projects-config';
 
-/** Bump whenever the auto-wired hook SET changes (new events / hook types). The marker records the
+/** Bump whenever the auto-wired hook SET or COMMAND FORMAT changes. The marker records the
  * version it last wired; a mismatch re-runs installHooks (idempotent) so existing installs pick up
- * newly-added hooks on the update that introduces them — without re-wiring on every launch, and
- * without fighting a user who removed hooks WITHIN the same version. v1 was the pre-versioned
- * timestamp marker; v2 added the SubagentStart/SubagentStop hooks. */
-const WIRE_VERSION = 2;
+ * the change on the update that introduces it — without re-wiring on every launch, and without
+ * fighting a user who removed hooks WITHIN the same version. v1 was the pre-versioned timestamp
+ * marker; v2 added the SubagentStart/SubagentStop hooks; v3 hardened the command quoting. */
+const WIRE_VERSION = 3;
 
 /** The hook-set version the marker last recorded. A missing/unreadable marker, or the old
  * timestamp-format marker (non-numeric), reads as 0 → older than any real version → forces a

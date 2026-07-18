@@ -65,6 +65,10 @@ export class AttentionKey extends SingletonAction {
         this.flashOn = !this.flashOn;
         void this.renderAll();
       }, 1000);
+      // Never let the doorbell flash pin a disconnected plugin instance alive: when Stream Deck
+      // restarts the plugin, the old process must drain and exit so it frees the hook port for
+      // its successor (the SDK websocket keeps a live instance running regardless).
+      this.flashTimer.unref?.();
     } else if (!escalate && this.flashTimer !== undefined) {
       clearInterval(this.flashTimer);
       this.flashTimer = undefined;

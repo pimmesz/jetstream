@@ -282,7 +282,7 @@ export class Board {
    * fires `Stop` when it yields the turn yet keeps subagent processes busy) doesn't read as
    * falsely done / waiting-on-you. grey = no session, slate = idle, orange = working. */
   byProject(now = Date.now()): Record<string, ProjectState> {
-    const by = statusByProject(this.state, this.projects());
+    const by = statusByProject(this.state, this.projects(), now);
     if (this.discovered.length > 0) {
       const projects = this.projects();
       for (const session of this.discovered) {

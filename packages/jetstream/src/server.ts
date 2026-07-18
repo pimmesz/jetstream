@@ -143,6 +143,12 @@ export function startHookServer(port: number, handlers: HookServerHandlers): Pro
       res.end();
     });
     server.on('error', reject);
-    server.listen(port, '127.0.0.1', () => resolve(server));
+    server.listen(port, '127.0.0.1', () => {
+      // Never let this server keep a dead plugin instance alive: when Stream Deck restarts the
+      // plugin, the old process must drain and EXIT so the port frees for its successor —
+      // otherwise a zombie squats 41321 and every hook/live-edit talks to stale code.
+      server.unref();
+      resolve(server);
+    });
   });
 }

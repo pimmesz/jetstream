@@ -11,6 +11,7 @@ export interface SlotCommand {
 
 const KINDS: readonly SlotKind[] = [
   'empty', 'app', 'url', 'run', 'build', 'stopall', 'model', 'fleet', 'project', 'volup', 'voldown', 'volmute',
+  'logo',
 ];
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined);
@@ -105,8 +106,9 @@ export function parseSlotCommand(raw: unknown): SlotCommand | null {
     case 'volup':
     case 'voldown':
     case 'volmute':
+    case 'logo':
       // No per-key fields — a live/static face. `stopall`'s destructive press is gated (allowStopKeys);
-      // the rest (build/model/fleet/vol*) are inert/benign. Cosmetic overrides in `extra` are safe.
+      // the rest (build/model/fleet/vol*/logo) are inert/benign. Cosmetic overrides in `extra` are safe.
       settings = { kind, ...extra };
       break;
     default: // 'empty' — clear the key back to a self-labeling slot

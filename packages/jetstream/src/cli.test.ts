@@ -30,6 +30,12 @@ describe('cli dispatch', () => {
     expect(log.mock.calls.join('\n')).toContain('Jetstream plugin unknown');
   });
 
+  it('update → points at the npm CLI (the plugin cannot replace its own package)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(await run(['update'], BIN)).toBe(0);
+    expect(log.mock.calls.join('\n')).toContain('npm i -g @pimmesz/jetstream');
+  });
+
   it('unknown hooks subcommand → non-zero exit (does not install)', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(await run(['hooks', 'wat'], BIN)).toBe(1);
@@ -45,8 +51,9 @@ describe('hookCommands', () => {
   it('builds guarded node-quoted absolute hook commands', () => {
     const cmds = hookCommands(BIN, false);
     // Missing-file guard (mid-rebuild bin must not crash the hook), then exec some node.
+    // Paths are single-quoted so shell metacharacters in an install path stay inert.
     expect(cmds.status).toMatch(
-      /^\[ -f "\/plugin\/bin\/status-hook\.js" \] \|\| exit 0; exec "[^"]+" "\/plugin\/bin\/status-hook\.js"$/,
+      /^\[ -f '\/plugin\/bin\/status-hook\.js' \] \|\| exit 0; exec '[^']+' '\/plugin\/bin\/status-hook\.js'$/,
     );
     expect(cmds.permission).toContain('permission-hook.js');
     expect(cmds.usage).toContain('usage-hook.js');

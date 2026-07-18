@@ -172,11 +172,68 @@ export function installPlugin(deps: RunJetstreamDeps = {}): void {
   );
   // argv array, no shell — the artifact path is this package's own, never user input.
   const child = spawnFn(cmd, args, { stdio: 'inherit' });
+  child.on('exit', (code) => {
+    // The opener exits non-zero when no app is registered for .streamDeckPlugin — surface it
+    // instead of reporting success while nothing was installed.
+    if (code !== 0 && code !== null) {
+      error(
+        errRed(`The system opener exited with ${code}.`) + ' Is the Stream Deck app installed?',
+      );
+      setExitCode(code);
+    }
+  });
   child.on('error', (err: Error) => {
     error(
       errRed(`Could not open the plugin installer: ${err.message}.`) +
         ' Is the Stream Deck app installed?',
     );
+    setExitCode(1);
+  });
+}
+
+/** `jetstream update` — `npm i -g @pimmesz/jetstream`, then the `install` flow, so ONE command
+ * takes both the CLI and the deck plugin to the latest release (the README's "re-run the same
+ * two commands", automated). This package owns the verb: the plugin CLI lives inside the plugin
+ * and can't replace the package it ships in. */
+export function updatePackage(deps: RunJetstreamDeps = {}): void {
+  const spawnFn = deps.spawn ?? spawn;
+  const say = deps.say ?? ((m: string) => console.log(m));
+  const error = deps.error ?? ((m: string) => console.error(m));
+  const setExitCode = deps.setExitCode ?? ((c: number) => (process.exitCode = c));
+  const platform = deps.platform ?? process.platform;
+
+  say('Updating @pimmesz/jetstream via npm…');
+  const npmArgs = ['i', '-g', '@pimmesz/jetstream'];
+  // Prefer npm's own JS entry next to THIS node binary, spawned with NO shell: on Windows a
+  // shell resolves a bare `npm.cmd` from the CURRENT DIRECTORY before PATH, so a planted
+  // npm.cmd in e.g. a cloned repo would run instead of npm (binary planting). node ships npm
+  // alongside node.exe on Windows and under ../lib on unix installs.
+  const exists = deps.exists ?? existsSync;
+  const win = platform === 'win32';
+  const nodeDir = dirname(process.execPath);
+  const npmCli = win
+    ? join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    : join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const child = exists(npmCli)
+    ? spawnFn(process.execPath, [npmCli, ...npmArgs], { stdio: 'inherit' })
+    : win
+      ? // Fallback .cmd shim needs a shell; pin cwd to HOME so the current directory can
+        // never supply the binary. The arguments are fixed literals.
+        spawnFn('npm.cmd', npmArgs, { stdio: 'inherit', shell: true, cwd: homedir() })
+      : spawnFn('npm', npmArgs, { stdio: 'inherit' }); // execvp PATH lookup — no CWD resolution
+  child.on('exit', (code) => {
+    if (code !== 0) {
+      error(errRed(`npm install failed (exit ${code ?? 1}) — the plugin was not reinstalled.`));
+      setExitCode(code ?? 1);
+      return;
+    }
+    // packageVersion() reads package.json from disk, so this reports the FRESH version even
+    // though this process still runs the old code; the bundled artifact on disk is new too.
+    say(`Updated to ${packageVersion()} — handing the plugin to Stream Deck…`);
+    (deps.install ?? installPlugin)(deps);
+  });
+  child.on('error', (err: Error) => {
+    error(errRed(`Could not run npm: ${err.message}`));
     setExitCode(1);
   });
 }
@@ -198,6 +255,11 @@ export function runJetstream(deps: RunJetstreamDeps = {}): void {
   // plugin, so it can't be what installs the plugin. It opens the packed .streamDeckPlugin.
   if (args[0] === 'install') {
     (deps.install ?? installPlugin)(deps);
+    return;
+  }
+  // `update` = npm i -g + the install flow, in one verb (also package-owned, same reason).
+  if (args[0] === 'update') {
+    updatePackage(deps);
     return;
   }
 

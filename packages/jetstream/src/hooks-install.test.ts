@@ -12,6 +12,26 @@ const PERMISSION = `"/usr/local/bin/node" "${PLUGIN}/permission-hook.js"`;
 const USAGE = `"/usr/local/bin/node" "${PLUGIN}/usage-hook.js"`;
 
 describe('mergeHooks', () => {
+  it('collapses same-script duplicates left by an old-format re-wire (rollback self-heal)', () => {
+    // A v3 single-quoted entry plus a duplicate the OLD installer pushed after a rollback
+    // (its scriptOf couldn't parse single quotes, so it appended a double-quoted twin).
+    const current = `[ -f '${PLUGIN}/status-hook.js' ] || exit 0; exec '/opt/homebrew/bin/node' '${PLUGIN}/status-hook.js'`;
+    const settings = {
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'command', command: current }] },
+          { hooks: [{ type: 'command', command: STATUS }] }, // stale double-quoted duplicate
+        ],
+      },
+    };
+    const { next, changed } = mergeHooks(settings, { status: current });
+    expect(changed).toBe(true);
+    const stop = (next.hooks as Record<string, unknown>).Stop as Array<{ hooks: unknown[] }>;
+    const all = stop.flatMap((e) => e.hooks) as Array<{ command: string }>;
+    expect(all.filter((h) => h.command.includes('status-hook.js'))).toHaveLength(1); // one survivor
+    expect(all[0]!.command).toBe(current); // and it is the current-format one
+  });
+
   it('adds every lifecycle event, the PermissionRequest hook, and the statusline', () => {
     const { next, changed } = mergeHooks({}, { status: STATUS, permission: PERMISSION, usage: USAGE });
     expect(changed).toBe(true);

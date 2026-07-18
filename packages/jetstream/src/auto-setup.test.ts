@@ -57,7 +57,7 @@ describe('autoWireHooks (first-launch onboarding)', () => {
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
     expect(existsSync(markerPath)).toBe(true);
-    expect(readFileSync(markerPath, 'utf8').trim()).toBe('2'); // the wire-schema version it recorded
+    expect(readFileSync(markerPath, 'utf8').trim()).toBe('3'); // the wire-schema version it recorded
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
     // Same version → a user who later removes the hooks is not fought on every launch.
@@ -68,7 +68,7 @@ describe('autoWireHooks (first-launch onboarding)', () => {
     const logger = makeLogger();
     const markerPath = makeMarkerPath();
     mkdirSync(dirname(markerPath), { recursive: true });
-    writeFileSync(markerPath, '2\n'); // already wired for the current hook set
+    writeFileSync(markerPath, '3\n'); // already wired for the current hook set
     const install = vi.fn(async (): Promise<InstallResult> => ({ changed: false, settingsPath: '' }));
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
@@ -86,7 +86,7 @@ describe('autoWireHooks (first-launch onboarding)', () => {
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
     expect(install).toHaveBeenCalledTimes(1); // the fix: an old marker no longer blocks new hooks
-    expect(readFileSync(markerPath, 'utf8').trim()).toBe('2'); // stamped to the current wire version
+    expect(readFileSync(markerPath, 'utf8').trim()).toBe('3'); // stamped to the current wire version
 
     // …and now that it matches, a subsequent launch skips.
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });

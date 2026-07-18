@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -14,6 +14,7 @@ import {
   crc32,
   deckForDeviceType,
   detectConnectedDeck,
+  detectDeviceModel,
   defaultProfileName,
   opsProfileName,
   profileForDeviceType,
@@ -66,6 +67,40 @@ describe('detectConnectedDeck', () => {
   it('matches by 7-char prefix, so a device revision still resolves', () => {
     // An XL revision like 20GAT9902 shares the 20GAT99 prefix with the pinned 20GAT9901.
     expect(detectConnectedDeck(makeStore(['20GAT9902']))?.key).toBe('xl');
+  });
+});
+
+describe('detectDeviceModel', () => {
+  const makeStore = (models: string[]): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-devmodel-'));
+    tmpDirs.push(dir);
+    models.forEach((model, i) => {
+      const p = join(dir, `P${i}.sdProfile`);
+      mkdirSync(p, { recursive: true });
+      writeFileSync(join(p, 'manifest.json'), JSON.stringify({ Model: model, Name: 'x' }));
+    });
+    return dir;
+  };
+
+  it('returns the connected hardware REVISION for the deck family, not the pinned default', () => {
+    // The whole point: an init profile stamped 20GAT9901 can refuse to import on a 9902 XL.
+    expect(detectDeviceModel(XL, makeStore(['20GAT9902']))).toBe('20GAT9902');
+  });
+  it('ignores other families and falls back to the family default when nothing matches', () => {
+    expect(detectDeviceModel(XL, makeStore([MINI.model]))).toBe(XL.model);
+    expect(detectDeviceModel(XL, join(tmpdir(), 'jetstream-no-store-xyz'))).toBe(XL.model);
+  });
+  it('prefers the most recently MODIFIED family match (stale replaced-device profiles lose)', () => {
+    const dir = makeStore(['20GAT9901', '20GAT9902']);
+    // P0 (9901) is the stale dead device; make P1 (9902) the recently-used one.
+    const old = new Date(Date.now() - 7 * 24 * 3600_000);
+    utimesSync(join(dir, 'P0.sdProfile'), old, old);
+    expect(detectDeviceModel(XL, dir)).toBe('20GAT9902');
+  });
+  it('one unreadable profile never aborts the scan', () => {
+    const dir = makeStore(['20GAT9902']);
+    mkdirSync(join(dir, 'A0.sdProfile'), { recursive: true }); // no manifest.json at all
+    expect(detectDeviceModel(XL, dir)).toBe('20GAT9902');
   });
 });
 

@@ -100,17 +100,36 @@ export function matchProject(cwd: string, projects: ProjectConfig[]): string | u
   return best?.id;
 }
 
+/** One running subagent under a session: its id and when it started. The timestamp is the
+ * self-heal: hook delivery is fire-and-forget, so a lost SubagentStop would otherwise pin the
+ * session 'working' forever — instead, entries older than INFLIGHT_TTL_MS stop counting. */
+export interface InflightAgent {
+  id: string;
+  at: number;
+}
+
+/** How long a subagent entry keeps a session 'working' without its SubagentStop arriving.
+ * Long enough for a real workflow's agents (they run tens of minutes); short enough that a
+ * dropped Stop hook can't pin a key orange for a whole session. Accepted trade: an agent that
+ * stays FULLY quiet (0% CPU) past the TTL reads done/idle until it computes again — the CPU
+ * sustained-active fallback only recovers agents that are actually burning cycles. */
+export const INFLIGHT_TTL_MS = 30 * 60_000;
+
 interface SessionState {
   cwd: string;
   status: ProjectStatus;
   since: number;
   /** The tool active during a `PreToolUse`→`PostToolUse` window (opt-in detail). */
   tool?: string;
-  /** Ids of subagents still running under this session (SubagentStart without a matching Stop).
-   * A non-empty set means background work is in flight, so the session reads 'working' even after
-   * its main turn yielded (Stop → 'done'). In-memory only — dropped on checkpoint restore, since a
-   * subagent that outlives a plugin restart is unknowable. */
-  inflight?: string[];
+  /** Subagents still running under this session (SubagentStart without a matching Stop).
+   * Live entries mean background work is in flight, so the session reads 'working' even after
+   * its main turn yielded (Stop → 'done'). In-memory only — dropped on checkpoint restore, since
+   * a subagent that outlives a plugin restart is unknowable. */
+  inflight?: InflightAgent[];
+  /** Tombstones for SubagentStops that arrived BEFORE their Start (hook POSTs are independent
+   * processes with no ordering guarantee): the late Start cancels against its tombstone instead
+   * of planting an entry whose Stop already came and went. Same TTL hygiene as inflight. */
+  stopped?: InflightAgent[];
 }
 
 export interface StatusState {
@@ -153,20 +172,39 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
     // A SubagentStop for a session we don't know (its SessionEnd already fired, or it was lost
     // across a plugin restart) must NOT resurrect it — only a Start may seed a first-seen session.
     if (!prev && event.event === 'SubagentStop') return state;
-    const inflight = new Set(prev?.inflight);
+    // Prune both lists by TTL as they pass through — bounded state, pure (event time, not wall clock).
+    const fresh = (a: InflightAgent): boolean => event.at - a.at < INFLIGHT_TTL_MS;
+    let inflight = (prev?.inflight ?? []).filter(fresh);
+    let stopped = (prev?.stopped ?? []).filter(fresh);
     if (event.agentId) {
-      if (event.event === 'SubagentStart') inflight.add(event.agentId);
-      else inflight.delete(event.agentId);
+      const id = event.agentId;
+      if (event.event === 'SubagentStart') {
+        if (stopped.some((a) => a.id === id)) {
+          // This agent's Stop was delivered FIRST (unordered POSTs) — cancel the pair instead
+          // of planting an entry whose Stop already came and went.
+          stopped = stopped.filter((a) => a.id !== id);
+        } else {
+          // A duplicate Start refreshes its timestamp instead of double-counting.
+          inflight = [...inflight.filter((a) => a.id !== id), { id, at: event.at }];
+        }
+      } else {
+        const had = inflight.some((a) => a.id === id);
+        inflight = inflight.filter((a) => a.id !== id);
+        // An unmatched Stop tombstones its id so a late-arriving Start cancels against it
+        // (bounded — a session never legitimately accumulates many of these).
+        if (!had) stopped = [...stopped.filter((a) => a.id !== id), { id, at: event.at }].slice(-16);
+      }
     }
-    // Base status/cwd/since are the PARENT's — a subagent event never moves them; it only tracks
-    // whether background work is still in flight. A first-seen session (no prior lifecycle event
-    // reached this instance) starts 'working', since a running subagent means active work.
+    // Base status/cwd/since are the PARENT's — a subagent event never moves them. A first-seen
+    // session seeds 'idle': the LIVE inflight entry is what reads as 'working' (effectiveStatus),
+    // so when the agent stops or ages out the key settles instead of pinning orange forever.
     next[event.sessionId] = {
       cwd: prev?.cwd ?? event.cwd,
-      status: prev?.status ?? 'working',
+      status: prev?.status ?? 'idle',
       since: prev?.since ?? event.at,
       ...(prev?.tool ? { tool: prev.tool } : {}),
-      ...(inflight.size ? { inflight: [...inflight] } : {}),
+      ...(inflight.length ? { inflight } : {}),
+      ...(stopped.length ? { stopped } : {}),
     };
     return { sessions: next };
   }
@@ -180,11 +218,12 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   // Show the tool only during its own PreToolUse→PostToolUse window; every other
   // working event (UserPromptSubmit / PostToolUse / Stop) leaves `tool` cleared.
   if (event.event === 'PreToolUse' && event.toolName) session.tool = event.toolName;
-  // Carry in-flight subagents across a base-status change so a Stop that yields to a running workflow
-  // stays 'working' — EXCEPT on UserPromptSubmit: a fresh user turn means the prior turn's agents are
-  // no longer why the key is lit (the prompt itself stamps 'working'), and dropping them here
-  // self-heals a lost SubagentStop instead of pinning the key 'working' for the rest of the session.
-  if (event.event !== 'UserPromptSubmit' && prev?.inflight?.length) session.inflight = prev.inflight;
+  // Carry in-flight subagents (and Stop tombstones) across EVERY base-status change: a Stop that
+  // yields to a running workflow stays 'working', and a NEW user turn doesn't forget a workflow
+  // still running from the previous one. A lost SubagentStop can't pin the key forever — entries
+  // age out after INFLIGHT_TTL_MS (see effectiveStatus), the self-heal a hard clear used to provide.
+  if (prev?.inflight?.length) session.inflight = prev.inflight;
+  if (prev?.stopped?.length) session.stopped = prev.stopped;
   next[event.sessionId] = session;
   return { sessions: next };
 }
@@ -205,27 +244,32 @@ export interface ProjectState {
   tool?: string;
 }
 
-/** How the board should read a session's status: a session with in-flight subagents (a running
- * workflow/Task) counts as at least 'working', even after its main turn yielded (Stop → 'done') —
- * otherwise a waiting workflow, whose process burns no CPU, would read as idle/done. Pure. */
-function effectiveStatus(session: SessionState): ProjectStatus {
-  if (session.inflight?.length && RANK[session.status] < RANK.working) return 'working';
+/** How the board should read a session's status: a session with LIVE in-flight subagents (a
+ * running workflow/Task) counts as at least 'working', even after its main turn yielded
+ * (Stop → 'done') — otherwise a waiting workflow, whose process burns no CPU, would read as
+ * idle/done. Entries older than INFLIGHT_TTL_MS are ignored, so a lost SubagentStop self-heals
+ * instead of pinning the key. Pure — `now` is supplied by the caller. */
+function effectiveStatus(session: SessionState, now: number): ProjectStatus {
+  const live = session.inflight?.some((a) => now - a.at < INFLIGHT_TTL_MS);
+  if (live && RANK[session.status] < RANK.working) return 'working';
   return session.status;
 }
 
 /** Collapse all live sessions into one status per configured project. A project takes
  * its highest-priority session (needsInput > working > done > idle), earliest `since`
- * within that status — so `working` shows how long it's been busy. Pure. */
+ * within that status — so `working` shows how long it's been busy. Pure given `now`
+ * (used only to age out stale in-flight subagents). */
 export function statusByProject(
   state: StatusState,
   projects: ProjectConfig[],
+  now: number = Date.now(),
 ): Record<string, ProjectState> {
   const acc: Record<string, ProjectState> = {};
   for (const p of projects) acc[p.id] = { status: 'none' };
   for (const session of Object.values(state.sessions)) {
     const id = matchProject(session.cwd, projects);
     if (id === undefined) continue;
-    const status = effectiveStatus(session);
+    const status = effectiveStatus(session, now);
     const current = acc[id] ?? { status: 'none' };
     const higher = RANK[status] > RANK[current.status];
     const sameEarlier =

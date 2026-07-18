@@ -26,6 +26,12 @@ describe('isHttpUrl', () => {
 });
 
 describe('parseSlotCommand', () => {
+  it('accepts the logo kind (live brand key placement)', () => {
+    expect(parseSlotCommand({ coord: 'a8', kind: 'logo' })).toMatchObject({
+      settings: { kind: 'logo' },
+    });
+  });
+
   it('builds an app command (with optional label)', () => {
     expect(parseSlotCommand({ coord: 'a8', kind: 'app', app: '/Applications/Telegram.app', label: 'TG' })).toEqual({
       coord: 'a8',
