@@ -14,11 +14,12 @@ describe('Permissions', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('resolves the held request with the Approve decision JSON on settleHead', async () => {
+  it('resolves the held request with the Approve decision JSON on settle', async () => {
     const p = new Permissions();
     const pending = p.request(req());
+    const id = p.head()?.id;
     expect(p.head()?.summary).toBe('Bash: npm test');
-    expect(p.settleHead('allow')).toBe(true);
+    expect(p.settle(id, 'allow')).toBe(true);
     expect(JSON.parse((await pending) as string)).toEqual({
       hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
     });
@@ -46,16 +47,23 @@ describe('Permissions', () => {
     expect(p.count()).toBe(32);
   });
 
-  it('settleHead is FIFO and returns false when the queue is empty', async () => {
+  it('settle acts on the id it was given (FIFO), and refuses a stale id after a head-swap', async () => {
     const p = new Permissions();
     const first = p.request(req({ tool_input: { command: 'a' } }));
     p.request(req({ tool_input: { command: 'b' } }));
     expect(p.count()).toBe(2);
-    p.settleHead('deny');
+    const firstId = p.head()?.id;
+    expect(p.settle(firstId, 'deny')).toBe(true);
     expect(JSON.parse((await first) as string).hookSpecificOutput.decision.behavior).toBe('deny');
-    expect(p.head()?.summary).toBe('Bash: b');
-    p.settleHead('allow');
-    expect(p.settleHead('allow')).toBe(false);
+    expect(p.head()?.summary).toBe('Bash: b'); // b promoted to head
+    // The key still shows 'a' (already settled). Pressing it must NOT settle b — the user never
+    // reviewed b — so a stale id returns false and leaves b untouched.
+    expect(p.settle(firstId, 'allow')).toBe(false);
+    expect(p.count()).toBe(1);
+    const secondId = p.head()?.id;
+    expect(p.settle(secondId, 'allow')).toBe(true);
+    expect(p.settle(secondId, 'allow')).toBe(false); // empty queue → false
+    expect(p.settle(undefined, 'allow')).toBe(false); // an undefined id never settles
   });
 
   it('projectsWithPending maps held requests to project ids (deck-answerable set)', () => {

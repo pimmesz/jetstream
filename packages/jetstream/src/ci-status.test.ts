@@ -162,6 +162,21 @@ describe('pollFleetCi', () => {
       Promise.resolve(cwd === '/bad' ? 'failing' : 'passing');
     expect(await pollFleetCi(['/ok', '/bad'], 'afterburner/', read)).toBe('failing');
   });
+
+  it('bounds gh fan-out — never more than 5 repos polled at once', async () => {
+    const paths = Array.from({ length: 12 }, (_, i) => `/repo${i}`);
+    let inFlight = 0;
+    let peak = 0;
+    const read = async (): Promise<CiState> => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5)); // hold the slot so overlap is observable
+      inFlight -= 1;
+      return 'passing';
+    };
+    expect(await pollFleetCi(paths, 'afterburner/', read)).toBe('passing');
+    expect(peak).toBe(5); // 12 repos > pool of 5 → it fills the pool but never exceeds it
+  });
 });
 
 describe('isNewFailure', () => {

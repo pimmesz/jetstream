@@ -173,7 +173,32 @@ export function uniquePaths(projects: ProjectConfig[]): string[] {
   return [...paths];
 }
 
-/** Worst CI state across a fleet of repo paths. `read` is injectable for tests; each repo's
+/** Max concurrent `gh` invocations. A fleet can hold many repos; firing one `gh` per repo at
+ * once (a naive `Promise.all`) trips GitHub's rate limit and spikes CPU. A small pool keeps each
+ * poll bounded — worst case ⌈repos ÷ this⌉ batches of ~5s each, still well under the 60s cadence. */
+const CI_POLL_CONCURRENCY = 5;
+
+/** Run `worker` over `items` with at most `limit` in flight at once. Order-preserving. `worker`
+ * here (readRepoCi) already fail-closes to 'unknown', so this never rejects. Pure over its args. */
+async function mapPool<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const runner = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await worker(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runner));
+  return results;
+}
+
+/** Worst CI state across a fleet of repo paths, polling at most `CI_POLL_CONCURRENCY` repos at
+ * once (never a `gh` per repo all at once). `read` is injectable for tests; each repo's
  * `readRepoCi` already degrades to `unknown` on failure, so this never rejects. */
 export async function pollFleetCi(
   paths: string[],
@@ -181,7 +206,7 @@ export async function pollFleetCi(
   read: (cwd: string, prefix: string) => Promise<CiState> = readRepoCi,
 ): Promise<CiState> {
   if (paths.length === 0) return 'none';
-  return worstCi(await Promise.all(paths.map((p) => read(p, branchPrefix))));
+  return worstCi(await mapPool(paths, CI_POLL_CONCURRENCY, (p) => read(p, branchPrefix)));
 }
 
 /** Whether CI just transitioned INTO failing — for a one-time flash, not a per-poll pulse

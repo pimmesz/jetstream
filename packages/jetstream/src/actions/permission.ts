@@ -12,14 +12,20 @@ export type PermissionSettings = {
 
 @action({ UUID: 'gg.pim.jetstream.permission' })
 export class PermissionKey extends SingletonAction<PermissionSettings> {
+  /** The perm.id last PAINTED on the key face. A press answers THIS request, not whatever
+   * is head at press time — so a double-tap or a timeout head-swap can't approve a request
+   * the user never saw. */
+  private shownId: string | undefined;
+
   override onWillAppear(): void {
     void this.renderAll();
   }
 
   override async onKeyDown(ev: KeyDownEvent<PermissionSettings>): Promise<void> {
     const decision = ev.payload.settings.decision ?? 'allow';
-    if (!permissions.settleHead(decision)) await ev.action.showAlert();
-    // renderAll fires via the permissions subscription after settle.
+    // Settle the request the face SHOWED. If it's no longer the head (answered/timed out),
+    // settle() no-ops → alert, and the subscription repaint shows the current request.
+    if (!permissions.settle(this.shownId, decision)) await ev.action.showAlert();
   }
 
   async renderAll(): Promise<void> {
@@ -46,5 +52,9 @@ export class PermissionKey extends SingletonAction<PermissionSettings> {
       await visible.setTitle('');
       await visible.setImage(face);
     }
+    // Set AFTER the paint lands, not before: a press answers the id actually ON the face. If we
+    // set it up front, a press during the awaited paint could settle a request not yet shown;
+    // keeping the previous id makes such a press fail settle() → alert, never a blind approve.
+    this.shownId = pending?.id;
   }
 }

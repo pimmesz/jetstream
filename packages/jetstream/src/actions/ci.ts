@@ -17,20 +17,27 @@ export const CI_REFRESH_MS = 60_000;
 @action({ UUID: 'gg.pim.jetstream.ci' })
 export class CiKey extends SingletonAction {
   private state: CiState = 'none';
-  private seq = 0;
+  private inflight: Promise<void> | undefined;
 
   override onWillAppear(): void {
     void this.refresh();
   }
 
-  /** Poll the fleet's open afterburner PRs and roll up the worst CI state. No-ops (no `gh`)
-   * when no CI key is placed; a monotonic seq drops a stale poll that resolves after a newer
-   * one, so an older slow poll can't clobber fresh state or double-flash. */
+  /** Poll the fleet's open afterburner PRs and roll up the worst CI state. No-ops (no `gh`) when
+   * no CI key is placed. Single-flight: while a poll is in progress, an overlapping refresh (the
+   * next 60s tick, or an onWillAppear) shares the one already running instead of stacking a second
+   * full `gh` fan-out — so polls can never pile up and hammer the API. */
   async refresh(): Promise<void> {
     if (!this.hasKey()) return;
-    const seq = ++this.seq;
+    if (this.inflight) return this.inflight;
+    this.inflight = this.poll().finally(() => {
+      this.inflight = undefined;
+    });
+    return this.inflight;
+  }
+
+  private async poll(): Promise<void> {
     const next = await pollFleetCi(uniquePaths(board.projects()), config.get().ciBranchPrefix);
-    if (seq !== this.seq) return; // a newer refresh started while awaiting — drop this stale result
     const flash = isNewFailure(this.state, next);
     this.state = next;
     await this.renderAll();

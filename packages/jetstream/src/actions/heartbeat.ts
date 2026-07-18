@@ -12,6 +12,11 @@ interface Status {
   benched?: number;
 }
 
+/** A run-once cycle can legitimately run a few minutes (it opens PRs), so bound it well above
+ * that — enough that a wedged cycle can't pin the key on "firing…" forever or leak a
+ * quota-burning orphan. execFile's timeout SIGTERMs the child when it elapses. */
+const RUN_ONCE_TIMEOUT_MS = 15 * 60_000;
+
 /**
  * The afterburner heartbeat + ignite key: shows whether the engine is alive (schedule armed
  * to spend + last cycle), plus how many tasks the failure-backoff is holding. A SHORT press
@@ -24,6 +29,9 @@ export class HeartbeatKey extends SingletonAction {
   private status: Status | null = null;
   private missing = false;
   private pressAt = new Map<string, number>();
+  /** A run-once cycle is a GLOBAL afterburner operation (spends quota, opens PRs). One guard for
+   * the whole engine — so a double long-press, or a second heartbeat key, can't fire two overlaps. */
+  private firing = false;
 
   override onWillAppear(): void {
     void this.refresh();
@@ -63,18 +71,30 @@ export class HeartbeatKey extends SingletonAction {
       await this.refresh(); // short press → just re-poll
       return;
     }
-    // Long press → fire a real cycle. Paint "firing…", let it run detached-ish, then re-poll.
-    await ev.action.setImage(keyFace({ color: '#0091ff', label: 'firing…', sub: 'run-once' }));
+    // Long press → fire a real cycle. Guard first: run-once is global and spends quota, so a
+    // double long-press (or a second heartbeat key) must not launch two overlapping cycles.
+    if (this.firing) {
+      await ev.action.showAlert();
+      return;
+    }
+    this.firing = true;
+    // Paint "firing…", run it (bounded so a wedged cycle can't hang the key), then re-poll. The
+    // paint is INSIDE the try so a rejected setImage (a disconnected Stream Deck) still clears
+    // `firing` via the finally — otherwise the key would lock out every future long-press.
     try {
-      await runAfterburner(['run-once'], 0); // no timeout: a cycle can take minutes
+      await ev.action.setImage(keyFace({ color: '#0091ff', label: 'firing…', sub: 'run-once' }));
+      await runAfterburner(['run-once'], RUN_ONCE_TIMEOUT_MS);
       await ev.action.showOk();
     } catch {
       await ev.action.showAlert();
+    } finally {
+      this.firing = false;
     }
     await this.refresh();
   }
 
   async renderAll(): Promise<void> {
+    if (this.firing) return; // a cycle is firing — don't repaint over the "firing…" face
     const face = this.face();
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;

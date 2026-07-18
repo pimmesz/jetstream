@@ -251,4 +251,51 @@ describe('runClaude', () => {
       exitCode: null,
     });
   });
+
+  it('kills a wedged run at the timeout and resolves isError (never a bricked key or orphan)', async () => {
+    const stdout = new EventEmitter();
+    const proc = new EventEmitter();
+    const kills: string[] = [];
+    // A child that never closes on its own — SIGTERM then makes it exit shortly after (async, as
+    // a real signal delivery does), so the watchdog's SIGKILL grace timer is cancelled.
+    const child = {
+      stdout,
+      stdin: { end() {} },
+      on: proc.on.bind(proc),
+      kill: (sig?: string) => {
+        kills.push(sig ?? 'SIGTERM');
+        setTimeout(() => proc.emit('close', null), 0);
+      },
+    } as unknown as SpawnLike;
+    const result = await runClaude({ prompt: 'x' }, () => {}, {
+      spawnFn: () => child,
+      env: {},
+      timeoutMs: 5,
+    });
+    expect(result).toEqual({ isError: true, exitCode: null });
+    await new Promise((r) => setTimeout(r, 5)); // let the post-SIGTERM close land
+    expect(kills).toEqual(['SIGTERM']); // SIGTERM sufficed — SIGKILL never needed
+  });
+
+  it('does not kill a run that finishes before the timeout', async () => {
+    const stdout = new EventEmitter();
+    const proc = new EventEmitter();
+    const kills: string[] = [];
+    const child = {
+      stdout,
+      stdin: { end() {} },
+      on: proc.on.bind(proc),
+      kill: (sig?: string) => kills.push(sig ?? 'SIGTERM'),
+    } as unknown as SpawnLike;
+    const pending = runClaude({ prompt: 'x' }, () => {}, {
+      spawnFn: () => child,
+      env: {},
+      timeoutMs: 10_000,
+    });
+    stdout.emit('data', `${JSON.stringify({ type: 'result', result: 'r', is_error: false })}\n`);
+    proc.emit('close', 0);
+    expect((await pending).isError).toBe(false);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(kills).toEqual([]); // the watchdog was cleared on close — nothing killed
+  });
 });

@@ -241,6 +241,36 @@ describe('subagent tracking (a running workflow keeps a key working)', () => {
     s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'h1', at: 3, agentId: 'w1' }));
     expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('none'); // stays gone, not phantom working
   });
+
+  it('a straggler base event after SessionEnd never resurrects a ghost (no phantom working)', () => {
+    let s = reduce(initialState(), ev({ event: 'PostToolUse', sessionId: 'h1', at: 1 })); // working
+    s = reduce(s, ev({ event: 'SessionEnd', sessionId: 'h1', at: 2 })); // user ends the session
+    // A PostToolUse reordered after the SessionEnd (independent hook POSTs) would otherwise
+    // re-create a 'working' key that no future SessionEnd can ever clear.
+    s = reduce(s, ev({ event: 'PostToolUse', sessionId: 'h1', at: 3 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('none'); // stays gone
+
+    // …and a Stop straggler (the other end-of-turn event that races SessionEnd) is just as dead.
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 4 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('none');
+  });
+
+  it('the tombstone is per-session — a brand-new session still registers on its first event', () => {
+    let s = reduce(initialState(), ev({ event: 'PostToolUse', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'SessionEnd', sessionId: 'h1', at: 2 })); // h1 tombstoned
+    // A DIFFERENT session in the same repo must be unaffected (ids never repeat, so only h1 is dead).
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h2', at: 3 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('done');
+  });
+
+  it('the tombstone ages out after the TTL — a straggler beyond it can still create', () => {
+    let s = reduce(initialState(), ev({ event: 'PostToolUse', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'SessionEnd', sessionId: 'h1', at: 2 }));
+    // Far beyond INFLIGHT_TTL_MS the tombstone no longer blocks (bounded memory, not a permanent ban).
+    const late = 2 + INFLIGHT_TTL_MS + 1;
+    s = reduce(s, ev({ event: 'PostToolUse', sessionId: 'h1', at: late }));
+    expect(statusByProject(s, PROJECTS, late).falcon?.status).toBe('working');
+  });
 });
 
 describe('needsAttention', () => {

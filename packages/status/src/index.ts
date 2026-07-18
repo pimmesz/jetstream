@@ -134,6 +134,10 @@ interface SessionState {
 
 export interface StatusState {
   sessions: Record<string, SessionState>;
+  /** Ids of sessions a `SessionEnd` removed, each with when — a tombstone so a straggler hook
+   * (a reordered POST that lands AFTER the SessionEnd) can't re-create a session that no future
+   * SessionEnd will ever clear. TTL-pruned + capped; in-memory best-effort (dropped on restore). */
+  ended?: InflightAgent[];
 }
 
 export function initialState(): StatusState {
@@ -167,6 +171,15 @@ function statusForEvent(event: LifecycleEvent): ProjectStatus | 'remove' {
 export function reduce(state: StatusState, event: HookEvent): StatusState {
   const next: Record<string, SessionState> = { ...state.sessions };
   const prev = next[event.sessionId];
+
+  // Tombstone guard: once a SessionEnd removes a session, its id is dead — Claude session ids are
+  // unique and never reused — so a later event for it is a straggler from reordered, independent
+  // hook POSTs. Reducing it would re-create a ghost key that no future SessionEnd will ever clear.
+  // Presence (not `at` order) is what's decisive here; `at` only ages the tombstone out so the
+  // list stays bounded. A duplicate SessionEnd is a harmless no-op, so it needn't be exempted.
+  if (state.ended?.some((t) => t.id === event.sessionId && event.at - t.at < INFLIGHT_TTL_MS)) {
+    return state;
+  }
 
   if (event.event === 'SubagentStart' || event.event === 'SubagentStop') {
     // A SubagentStop for a session we don't know (its SessionEnd already fired, or it was lost
@@ -206,13 +219,18 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
       ...(inflight.length ? { inflight } : {}),
       ...(stopped.length ? { stopped } : {}),
     };
-    return { sessions: next };
+    return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
   }
 
   const status = statusForEvent(event.event);
   if (status === 'remove') {
     delete next[event.sessionId]; // SessionEnd forgets the session AND its in-flight set
-    return { sessions: next };
+    // Tombstone the id (TTL-pruned + capped at 64) so a reordered straggler can't resurrect it.
+    const ended = [
+      ...(state.ended ?? []).filter((t) => t.id !== event.sessionId && event.at - t.at < INFLIGHT_TTL_MS),
+      { id: event.sessionId, at: event.at },
+    ].slice(-64);
+    return { sessions: next, ended };
   }
   const session: SessionState = { cwd: event.cwd, status, since: event.at };
   // Show the tool only during its own PreToolUse→PostToolUse window; every other
@@ -225,7 +243,7 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   if (prev?.inflight?.length) session.inflight = prev.inflight;
   if (prev?.stopped?.length) session.stopped = prev.stopped;
   next[event.sessionId] = session;
-  return { sessions: next };
+  return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
 }
 
 const RANK: Record<ProjectStatus, number> = {

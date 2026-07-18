@@ -111,6 +111,8 @@ export interface SpawnLike {
   stdin: { end(data?: string): void };
   on(event: 'close', listener: (code: number | null) => void): void;
   on(event: 'error', listener: (err: Error) => void): void;
+  /** Terminate a wedged run (the watchdog). Node's `ChildProcess.kill` matches this shape. */
+  kill(signal?: NodeJS.Signals): void;
 }
 
 export interface RunDeps {
@@ -120,7 +122,15 @@ export interface RunDeps {
     options: { cwd?: string; env?: NodeJS.ProcessEnv },
   ) => SpawnLike;
   env?: NodeJS.ProcessEnv;
+  /** Watchdog ceiling (ms) — a run past this is killed and resolves an error. Injectable for tests. */
+  timeoutMs?: number;
 }
+
+/** A headless run must never hang the key forever. Generous (a real launch can run many minutes)
+ * but bounded, so a wedged `claude` can't pin the key or leak a quota-burning orphan indefinitely. */
+const DEFAULT_TIMEOUT_MS = 20 * 60_000;
+/** Grace between SIGTERM and the harder SIGKILL, for a child that ignores the polite signal. */
+const KILL_GRACE_MS = 5_000;
 
 function defaultSpawn(
   command: string,
@@ -136,7 +146,8 @@ function defaultSpawn(
 
 /** Run `claude -p` once, streaming typed events to `onEvent`, resolving with the final
  * result (session id, text, error, exit code). Strips the API key; writes the prompt
- * to stdin. `spawnFn` is injectable for tests. Never rejects — a spawn/`error` event
+ * to stdin. `spawnFn` is injectable for tests. Never rejects — a spawn/`error` event, OR a
+ * run that exceeds `deps.timeoutMs` (default 20 min, at which point the child is killed),
  * resolves as `{ isError: true }`. */
 export function runClaude(
   opts: LaunchOptions,
@@ -145,6 +156,21 @@ export function runClaude(
 ): Promise<RunResult> {
   const spawnFn = deps.spawnFn ?? defaultSpawn;
   return new Promise<RunResult>((resolve) => {
+    let settled = false;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let killGrace: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: RunResult): void => {
+      if (settled) return; // the watchdog and a real close/error can race — first one wins
+      settled = true;
+      resolve(result);
+    };
+    const clearTimers = (): void => {
+      if (watchdog) clearTimeout(watchdog);
+      if (killGrace) clearTimeout(killGrace);
+      watchdog = undefined;
+      killGrace = undefined;
+    };
+
     let child: SpawnLike;
     try {
       child = spawnFn('claude', buildArgs(opts), {
@@ -152,7 +178,7 @@ export function runClaude(
         env: sanitizeEnv(deps.env ?? process.env),
       });
     } catch {
-      resolve({ isError: true, exitCode: null });
+      finish({ isError: true, exitCode: null });
       return;
     }
 
@@ -182,15 +208,41 @@ export function runClaude(
         nl = buffer.indexOf('\n');
       }
     });
-    child.on('error', () => resolve({ isError: true, exitCode: null }));
+    child.on('error', () => {
+      clearTimers();
+      finish({ isError: true, exitCode: null });
+    });
     child.on('close', (code) => {
+      clearTimers(); // the run ended on its own — cancel the watchdog (and any pending SIGKILL)
       consume(buffer); // flush a trailing partial line
-      resolve({
+      finish({
         ...final,
         exitCode: code,
         isError: final.isError || (typeof code === 'number' && code !== 0),
       });
     });
+
+    // Watchdog: resolve as an error the moment the run overruns (unblock the key now), then
+    // terminate the orphan — SIGTERM, escalating to SIGKILL if it ignores the polite signal.
+    watchdog = setTimeout(() => {
+      watchdog = undefined;
+      finish({ isError: true, exitCode: null });
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* already exited */
+      }
+      killGrace = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already exited */
+        }
+      }, KILL_GRACE_MS);
+      killGrace.unref?.();
+    }, deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    watchdog.unref?.();
+
     child.stdin.end(opts.prompt);
   });
 }

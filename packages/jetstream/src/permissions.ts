@@ -62,10 +62,14 @@ export class Permissions {
     return ids;
   }
 
-  /** Answer the head request from a deck key. Returns false when none is pending. */
-  settleHead(behavior: PermissionBehavior): boolean {
+  /** Answer the request the deck key ACTUALLY SHOWED, identified by the id it painted —
+   * NOT whatever is head at press time. Returns false when that request is no longer the
+   * head (it was answered or timed out between paint and press, e.g. a double-tap or a 90s
+   * timeout promoting a new head): the caller then alerts + repaints so the user re-decides
+   * on the current request instead of blindly approving one they never reviewed. */
+  settle(expectedId: string | undefined, behavior: PermissionBehavior): boolean {
     const entry = this.queue[0];
-    if (!entry) return false;
+    if (!entry || entry.perm.id !== expectedId) return false;
     this.settleId(entry.perm.id, permissionDecisionJson(behavior));
     return true;
   }
