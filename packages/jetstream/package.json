@@ -1,6 +1,6 @@
 {
   "name": "@pimmesz/jetstream",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Full Claude control on your Elgato Stream Deck — one key per project, live Claude Code status, deck approvals, usage gauges.",
   "license": "Apache-2.0",
   "publishConfig": {
