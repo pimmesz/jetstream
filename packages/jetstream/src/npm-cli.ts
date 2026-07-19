@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { request } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -139,6 +140,80 @@ export interface RunJetstreamDeps {
   platform?: NodeJS.Platform;
   /** Info sink (defaults to console.log), injected for tests. */
   say?: (message: string) => void;
+  /** Plugin liveness probe for the post-install confirmation (defaults to a GET /health), injected for tests. */
+  alive?: () => Promise<boolean>;
+  /** Delay between liveness polls (defaults to setTimeout), injected so tests don't wait real time. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** The loopback port the plugin's hook listener binds. Duplicated from server.ts's DEFAULT_PORT
+ * on purpose: this zero-dependency front door must not import the plugin (which would pull the
+ * whole server/plugin graph into the installer bundle). Kept in sync by the shared env override. */
+const HEALTH_PORT = 41321;
+const HEALTH_ATTEMPTS = 20; // ~20 × 2s ≈ 40s — long enough to cover the manual "approve" step
+const HEALTH_INTERVAL_MS = 2_000;
+
+/** GET 127.0.0.1/health and whether it reports the EXPECTED version. Inlined (not imported from
+ * slot-client) to keep this front door free of any plugin import; node:http is a builtin. Requiring
+ * a version MATCH — not just a 200 — is what stops `update` reporting success while an OLD plugin is
+ * still answering: the old build returns its old version, so the poll waits until the new one loads. */
+export function pluginReportsVersion(expected: string, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    const port = Number(process.env.JETSTREAM_PORT) || HEALTH_PORT;
+    const req = request(
+      { host: '127.0.0.1', port, path: '/health', method: 'GET', timeout: timeoutMs },
+      (res) => {
+        // Attach the abort handlers FIRST — before the statusCode check can early-return — so a
+        // response that resets mid-stream (a plugin dying, exactly the update-restart case) settles
+        // false instead of throwing on an unhandled 'error'/'close'. resolve() is idempotent, so a
+        // 'close' after a normal 'end' can't override the version-match result.
+        res.on('error', () => resolve(false));
+        res.on('close', () => resolve(false));
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve(false);
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+          if (body.length > 256) {
+            resolve(false); // a version string is short — cap the body defensively
+            req.destroy();
+          }
+        });
+        res.on('end', () => resolve(body.trim() === expected));
+      },
+    );
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end();
+  });
+}
+
+/** After the opener hands the plugin to Stream Deck, poll /health so the user gets a clear
+ * "it's live" (or an actionable hint) instead of silence at "Opening…". `alive`/`sleep` are
+ * injected so tests run without real http or real time. */
+async function confirmPluginLive(
+  say: (m: string) => void,
+  alive: () => Promise<boolean>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
+  for (let attempt = 0; attempt < HEALTH_ATTEMPTS; attempt++) {
+    if (await alive()) {
+      say('✓ Jetstream is live on your deck — run `jetstream chat` or `jetstream init` to set up your fleet.');
+      return;
+    }
+    await sleep(HEALTH_INTERVAL_MS);
+  }
+  say(
+    "Still not detecting Jetstream on your deck. Approve the Stream Deck install prompt if you haven't,\n" +
+      'then run `jetstream doctor` to check the connection.',
+  );
 }
 
 /**
@@ -180,7 +255,15 @@ export function installPlugin(deps: RunJetstreamDeps = {}): void {
         errRed(`The system opener exited with ${code}.`) + ' Is the Stream Deck app installed?',
       );
       setExitCode(code);
+      return;
     }
+    // Opener handed off OK. Now confirm the plugin actually comes up on the deck so the user isn't
+    // left guessing after "Opening…". We wait for /health to report the version we just installed
+    // (packageVersion reads it from disk — fresh after an `update`), so an old plugin still holding
+    // the port can't report success before the new build loads. Fire-and-forget: the pending polls
+    // keep the process alive until it resolves, then it exits on its own.
+    const expected = packageVersion();
+    void confirmPluginLive(say, deps.alive ?? (() => pluginReportsVersion(expected)), deps.sleep);
   });
   child.on('error', (err: Error) => {
     error(

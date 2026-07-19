@@ -173,6 +173,8 @@ const hookHandlers: HookServerHandlers = {
     if (!event) return;
     const pid = pidOf(raw);
     if (pid !== undefined) board.notePid(event.sessionId, pid, event.cwd);
+    // When a session ends, drop any Always-Allow rules it armed (session-scoped, memory-only).
+    if (event.event === 'SessionEnd') permissions.forgetSession(event.sessionId);
     board.dispatch(event);
   },
   onPermission: (raw) => permissions.request(raw),
@@ -223,6 +225,10 @@ renderAll();
 async function pollDiscoveredSessions(): Promise<void> {
   try {
     board.setDiscovered(await discoverClaudeSessions());
+    // Then drop any session a per-pid probe CONCLUSIVELY reports dead, so a killed session stops
+    // pinning its last status (byProject only ever fills/upgrades) — while a `ps` that can't run
+    // returns 'unknown' and never erases a live one.
+    board.reapDeadSessions();
   } catch {
     /* best-effort — hooks remain the source of truth */
   }

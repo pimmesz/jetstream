@@ -4,14 +4,18 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
   checkAnthropicEnv,
+  checkBoardKeys,
   checkHooksPresent,
   checkProjectsConfig,
   checkGhForCi,
+  checkUsageStatusline,
   commandOnPath,
   hasJetstreamHooks,
   runDoctor,
   type DoctorIO,
 } from './doctor';
+import type { BoardLayout } from './board-layout';
+import { DECK_MODELS } from './profile';
 
 describe('runDoctor listener check', () => {
   const io = (listenerAlive: boolean): DoctorIO => ({
@@ -21,6 +25,7 @@ describe('runDoctor listener check', () => {
     settingsRaw: () => undefined,
     projectsRaw: () => undefined,
     listenerAlive: async () => listenerAlive,
+    boardLayout: () => null,
   });
   it('warns when the hook listener is not responding (the silent dark-board case)', async () => {
     const listener = (await runDoctor(io(false))).find((r) => /listener/i.test(r.message));
@@ -76,6 +81,58 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
     expect(corrupt.fixId).toBeUndefined(); // corrupt → NOT auto-fixable (install would re-fail the parse)
     expect(corrupt.message).toContain('not valid JSON');
     expect(corrupt.message).not.toEqual(absent.message); // don't send the user to a fix that also fails
+  });
+});
+
+describe('checkUsageStatusline', () => {
+  const withStatusHook = (extra: Record<string, unknown>): string =>
+    JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: '"/n" "/x/bin/status-hook.js"' }] }] },
+      ...extra,
+    });
+
+  it('ok when the usage statusline hook is wired', () => {
+    const raw = withStatusHook({ statusLine: { command: '"/n" "/x/bin/usage-hook.js"' } });
+    expect(checkUsageStatusline(raw).status).toBe('ok');
+  });
+
+  it('warns (with a hooks fix) when Jetstream hooks are present but the usage statusline is missing', () => {
+    const r = checkUsageStatusline(withStatusHook({}));
+    expect(r.status).toBe('warn');
+    expect(r.fixId).toBe('hooks');
+    expect(r.message).toContain('usage-hook.js');
+  });
+
+  it('stays quiet when settings are absent, empty, or corrupt (the hooks check leads there)', () => {
+    expect(checkUsageStatusline(undefined).status).toBe('ok');
+    expect(checkUsageStatusline('{}').status).toBe('ok'); // no Jetstream hooks at all
+    expect(checkUsageStatusline('{bad json').status).toBe('ok'); // corrupt → don't double-warn
+  });
+});
+
+describe('checkBoardKeys', () => {
+  const board = (uuids: string[]): BoardLayout => ({
+    profileName: 'My Board',
+    deck: DECK_MODELS[0]!,
+    keys: new Map(uuids.map((uuid, i) => [`${i},0`, { uuid, settings: null, label: '' }])),
+  });
+
+  it('warns (fleet fix) when no board is detected', () => {
+    const r = checkBoardKeys(null);
+    expect(r.status).toBe('warn');
+    expect(r.fixId).toBe('fleet');
+  });
+
+  it('warns (fleet fix) when the board has zero Jetstream keys', () => {
+    const r = checkBoardKeys(board(['com.elgato.streamdeck.system.open']));
+    expect(r.status).toBe('warn');
+    expect(r.fixId).toBe('fleet');
+  });
+
+  it('ok and counts only the Jetstream keys present', () => {
+    const r = checkBoardKeys(board(['gg.pim.jetstream.fleet', 'gg.pim.jetstream.project', 'com.elgato.x']));
+    expect(r.status).toBe('ok');
+    expect(r.message).toContain('2 Jetstream key');
   });
 });
 

@@ -51,4 +51,16 @@ describe('projectFace', () => {
   it('a resting status falls back to the plain status word', () => {
     expect(projectFace({ ...base, name: 'x', configured: true, status: 'idle' }).sub).toBe('idle');
   });
+
+  it('working past the stall threshold → warning glyph + "stalled?" sub (not a confident tool line)', () => {
+    const f = projectFace({ ...base, name: 'x', configured: true, status: 'working', tool: 'Bash', since: base.now - 25 * 60_000 });
+    expect(f.sub).toMatch(/^stalled\? /);
+    expect(f.glyph).toContain('⚠'); // the warning marker, not the normal working glyph
+  });
+
+  it('working under the stall threshold stays a normal working face', () => {
+    const f = projectFace({ ...base, name: 'x', configured: true, status: 'working', tool: 'Bash', since: base.now - 5 * 60_000 });
+    expect(f.sub).toMatch(/^Bash · /);
+    expect(f.glyph).not.toContain('⚠');
+  });
 });

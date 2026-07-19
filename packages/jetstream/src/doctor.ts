@@ -3,6 +3,7 @@ import { delimiter, join } from 'node:path';
 import { defaultSettingsPath } from './hooks-install';
 import { projectsConfigPath } from './projects-config';
 import { pluginAlive } from './slot-client';
+import { readBoardLayout, type BoardLayout } from './board-layout';
 
 /**
  * `jetstream doctor` — the read-only answer to "why isn't my board lighting up?". Every
@@ -105,6 +106,58 @@ export function checkHooksPresent(raw: string | undefined): CheckResult {
     : { status: 'warn', message: 'Jetstream hooks not found — run `jetstream hooks install`', fixId: 'hooks' };
 }
 
+/** The usage gauge draws from the statusLine hook (`usage-hook.js`) — a SEPARATE wire from the
+ * status/permission hooks. `hasJetstreamHooks` matches ANY Jetstream hook basename, so a board
+ * with status+permission wired but no usage statusLine passes that check while the Usage key stays
+ * blank. Flag exactly that gap. Stays quiet when settings are absent/corrupt or Jetstream isn't set
+ * up at all — `checkHooksPresent` already leads the way there. Pure. */
+export function checkUsageStatusline(raw: string | undefined): CheckResult {
+  let parsed: unknown;
+  try {
+    parsed = raw === undefined ? undefined : JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  const command = asRecord(asRecord(parsed)?.statusLine)?.command;
+  if (typeof command === 'string' && command.includes('usage-hook.js')) {
+    return { status: 'ok', message: 'usage gauge statusline (usage-hook.js) wired' };
+  }
+  if (parsed !== undefined && hasJetstreamHooks(parsed)) {
+    return {
+      status: 'warn',
+      message:
+        'usage gauge statusline (usage-hook.js) not wired — the Usage key stays blank; run `jetstream hooks install`',
+      fixId: 'hooks',
+    };
+  }
+  return { status: 'ok', message: 'usage gauge statusline wires when you install the hooks' };
+}
+
+/** doctor confirms hooks + a bound listener but never that a Jetstream key is actually PLACED —
+ * the first-run "why isn't anything lighting up?" case is often just an empty board. Count the
+ * Jetstream keys on the detected board. Pure. */
+export function checkBoardKeys(board: BoardLayout | null): CheckResult {
+  if (board === null) {
+    return {
+      status: 'warn',
+      message: 'no Jetstream board detected — drag a Fleet + Attention key onto your deck, or run `jetstream init`',
+      fixId: 'fleet',
+    };
+  }
+  let count = 0;
+  for (const key of board.keys.values()) {
+    if (key.uuid.startsWith('gg.pim.jetstream.')) count++;
+  }
+  if (count === 0) {
+    return {
+      status: 'warn',
+      message: `"${board.profileName}" has no Jetstream keys — drag a Fleet/Attention/Project key on, or run \`jetstream chat\``,
+      fixId: 'fleet',
+    };
+  }
+  return { status: 'ok', message: `${count} Jetstream key(s) on "${board.profileName}"` };
+}
+
 /** Whether `projects.json` (if present) is parseable. `undefined` means the file is absent,
  * which is fine — it's optional. Pure. */
 export function checkProjectsConfig(raw: string | undefined): CheckResult {
@@ -177,6 +230,8 @@ export interface DoctorIO {
   projectsRaw: () => string | undefined;
   /** Is the plugin's hook listener answering on the loopback port? Injected for tests. */
   listenerAlive: () => Promise<boolean>;
+  /** The detected Jetstream board (or null when none), for the "no keys placed" check. Injected for tests. */
+  boardLayout: () => BoardLayout | null;
 }
 
 export function defaultDoctorIO(): DoctorIO {
@@ -187,6 +242,7 @@ export function defaultDoctorIO(): DoctorIO {
     settingsRaw: () => readIfPresent(defaultSettingsPath()),
     projectsRaw: () => readIfPresent(projectsConfigPath()),
     listenerAlive: () => pluginAlive(),
+    boardLayout: () => readBoardLayout(),
   };
 }
 
@@ -205,11 +261,14 @@ function checkListener(alive: boolean): CheckResult {
 
 /** Run every read-only check. Never mutates, never throws. */
 export async function runDoctor(io: DoctorIO = defaultDoctorIO()): Promise<CheckResult[]> {
+  const settings = io.settingsRaw(); // read once, shared by the hooks + usage-statusline checks
   return [
     checkClaudeOnPath(io.claudeOnPath()),
     checkAnthropicEnv(io.env),
-    checkHooksPresent(io.settingsRaw()),
+    checkHooksPresent(settings),
+    checkUsageStatusline(settings),
     checkProjectsConfig(io.projectsRaw()),
+    checkBoardKeys(io.boardLayout()),
     checkGhForCi(io.ghOnPath()),
     checkListener(await io.listenerAlive()),
   ];

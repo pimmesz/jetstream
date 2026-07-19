@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildOpenCommand, isClaudeProcess, interruptPids } from './switchto';
+import { buildOpenCommand, isClaudeProcess, interruptPids, probeClaudeProcess } from './switchto';
 
 describe('buildOpenCommand — open the project folder, no terminal, no claude', () => {
   it('macOS: opens the folder in the first present editor app via `open -a`', () => {
@@ -60,5 +60,22 @@ describe('interrupt guards (never signal a non-claude process)', () => {
 
   it('interruptPids signals nothing when no PID is a verified claude process', () => {
     expect(interruptPids([process.pid, 999999])).toBe(0);
+  });
+});
+
+describe('probeClaudeProcess (conclusive dead vs inconclusive unknown, for the reaper)', () => {
+  it("reports 'dead' for a live non-Claude process (this runner) — the pid moved on / was reused", () => {
+    // ps runs (exit 0) and the command isn't claude → the Claude session that had this pid is gone.
+    expect(probeClaudeProcess(process.pid)).toBe('dead');
+  });
+
+  it("reports 'dead' for an absent pid (ps exits 1 = no such process)", () => {
+    expect(probeClaudeProcess(999999)).toBe('dead');
+  });
+
+  it("reports 'unknown' on win32 and for bad pids — never a false 'dead'", () => {
+    expect(probeClaudeProcess(2, 'win32')).toBe('unknown');
+    expect(probeClaudeProcess(-1)).toBe('unknown');
+    expect(probeClaudeProcess(1)).toBe('unknown');
   });
 });

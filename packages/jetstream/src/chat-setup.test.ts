@@ -85,6 +85,27 @@ describe('SETUP_SYSTEM ↔ KEY_TYPES coverage', () => {
 });
 
 /** Scripted IO: queued answers to `ask`, captured `say` lines. */
+describe('runChatSetup preflight', () => {
+  it('fails fast (exit 1) with a hint when `claude` is not on PATH — no round-trip taken', async () => {
+    const said: string[] = [];
+    const io = { ask: async () => '', say: (l: string) => said.push(l) };
+    const ask = vi.fn(async () => null);
+    const code = await runChatSetup({ io, ask, claudeAvailable: () => false });
+    expect(code).toBe(1);
+    expect(ask).not.toHaveBeenCalled(); // never spent a claude turn
+    expect(said.join('\n')).toMatch(/jetstream init/);
+  });
+
+  it('proceeds into the loop when `claude` is available', async () => {
+    const said: string[] = [];
+    const io = { ask: async () => 'cancel', say: (l: string) => said.push(l) };
+    const ask = vi.fn(async () => null);
+    const code = await runChatSetup({ io, ask, claudeAvailable: () => true });
+    expect(code).toBe(0); // reached the loop; user cancelled
+    expect(ask).not.toHaveBeenCalled(); // "cancel" short-circuits before the model
+  });
+});
+
 function makeIo(answers: string[]): { io: { ask: (q: string) => Promise<string>; say: (l: string) => void }; said: string[] } {
   const said: string[] = [];
   let i = 0;

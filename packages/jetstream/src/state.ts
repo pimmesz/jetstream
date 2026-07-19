@@ -14,6 +14,7 @@ import {
   type StatusState,
 } from '@pimmesz/jetstream-status';
 import { discoverClaudeSessions, type DiscoveredSession } from './discover';
+import { probeClaudeProcess, type ProcessProbe } from './switchto';
 
 export interface ProjectEntry {
   name: string;
@@ -172,6 +173,40 @@ export class Board {
     // keep both rather than risk hiding a still-live one.
     this.state = { sessions: { ...restored, ...this.state.sessions } };
     this.sessions = new Map([...pids, ...this.sessions]);
+    this.emit();
+  }
+
+  /**
+   * Steady-state liveness reconciliation: drop any session whose recorded process is gone, so a
+   * killed session (kill -9, a closed terminal, a crash with no SessionEnd) can't pin its last
+   * status on the board. This complements restore()'s one-shot startup pass — `byProject` only ever
+   * fills or upgrades a status, never downgrades, so without this a dead session keeps showing
+   * working / NEEDS-YOU / done until the next restart. Only sessions with a known PID are checked.
+   * Called from the 5s discovery poll. macOS/Linux only (the probe returns 'unknown' on Windows, so
+   * nothing is reaped). `probe` is injectable for tests.
+   */
+  reapDeadSessions(
+    probe: (pid: number) => ProcessProbe = probeClaudeProcess,
+    platform: NodeJS.Platform = process.platform,
+  ): void {
+    // Skip during restore(): its async scan owns liveness reconciliation for that window.
+    if (platform === 'win32' || this.restoring) return;
+    const dead: string[] = [];
+    for (const [sessionId, { pid }] of this.sessions) {
+      // Reap ONLY on a conclusive 'dead'. A probe that couldn't run returns 'unknown' and never
+      // reaps — so neither a transient `ps` error nor a fleet-wide `ps` failure (EMFILE, where every
+      // probe is 'unknown') can erase a live session, most importantly a needsInput the doorbell
+      // exists to show and that discovery structurally cannot rebuild.
+      if (probe(pid) === 'dead') dead.push(sessionId);
+    }
+    if (dead.length === 0) return;
+    const sessions = { ...this.state.sessions };
+    for (const id of dead) {
+      this.sessions.delete(id);
+      delete sessions[id];
+    }
+    this.state = { ...this.state, sessions };
+    this.persist();
     this.emit();
   }
 

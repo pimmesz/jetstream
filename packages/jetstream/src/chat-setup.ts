@@ -78,6 +78,11 @@ export interface ChatDeps {
   board?: BoardLayout | null;
   /** Optional coordinate painter for the board map (e.g. colour by row); identity when absent. */
   paintCoord?: (coord: string, row: number) => string;
+  /** Preflight: is `claude` available on PATH? When it returns false, chat fails fast with an
+   * actionable hint BEFORE the first typed turn, instead of only discovering it after a full
+   * round-trip. Injected (cli passes commandOnPath) so this module stays free of PATH/exec deps;
+   * absent → skip the check (keeps the pure tests unchanged). */
+  claudeAvailable?: () => boolean;
 }
 
 export interface Proposal {
@@ -196,6 +201,15 @@ const MAX_TURNS = 12; // a bound so a non-converging conversation can't loop for
 /** Run the conversational setup. Returns a process exit code. */
 export async function runChatSetup(deps: ChatDeps): Promise<number> {
   const { io } = deps;
+  // Fail fast when `claude` isn't installed: chat is one `claude -p` per turn, so without it every
+  // turn would spin then fail. Catch it before the first prompt instead of after a wasted round-trip.
+  if (deps.claudeAvailable && !deps.claudeAvailable()) {
+    io.say(
+      'chat needs Claude Code (`claude`) on your PATH, and it isn\'t there. Install it and log in, ' +
+        'or run `jetstream init` for the guided wizard instead.',
+    );
+    return 1;
+  }
   const configPath = deps.configPath ?? projectsConfigPath();
   const write = deps.write ?? ((p, s) => writeFleetFile(configPath, p, s));
 

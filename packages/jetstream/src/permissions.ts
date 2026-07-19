@@ -29,10 +29,28 @@ export class Permissions {
   private queue: Entry[] = [];
   private seq = 0;
   private listeners = new Set<() => void>();
+  /** Always-Allow rules the user armed via a long-press on APPROVE, keyed by `${sessionId}\0${toolName}`.
+   * A matching request settles 'allow' with NO keypress. A deliberate, bounded relaxation of
+   * "every grant is a keypress": SESSION-scoped (keyed by the unique sessionId, so a rule can never
+   * leak to another session or survive it), memory-ONLY (evaporates on plugin restart — never
+   * persisted to disk), and TOOL-scoped. Only 'allow' is ever remembered; deny is always one-shot. */
+  private allowRules = new Set<string>();
+  /** Bound memory over a long-running plugin; oldest rule drops first (insertion order). */
+  private static readonly MAX_ALLOW_RULES = 256;
+
+  private ruleKey(sessionId: string, toolName: string): string {
+    return `${sessionId}\u0000${toolName}`;
+  }
 
   request(raw: unknown, timeoutMs = 90_000): Promise<string | undefined> {
     const perm = parsePermissionRequest(raw, `perm-${++this.seq}`);
-    if (!perm || this.queue.length >= MAX_PENDING) return Promise.resolve(undefined);
+    if (!perm) return Promise.resolve(undefined);
+    // Always-Allow: an armed session+tool auto-approves with no keypress. A non-empty sessionId is
+    // required to match, so the '' parse-fallback can never be armed into a wildcard.
+    if (perm.sessionId && this.allowRules.has(this.ruleKey(perm.sessionId, perm.toolName))) {
+      return Promise.resolve(permissionDecisionJson('allow'));
+    }
+    if (this.queue.length >= MAX_PENDING) return Promise.resolve(undefined);
     return new Promise((resolve) => {
       const timer = setTimeout(() => this.settleId(perm.id, undefined), timeoutMs);
       this.queue.push({ perm, resolve, timer });
@@ -72,6 +90,48 @@ export class Permissions {
     if (!entry || entry.perm.id !== expectedId) return false;
     this.settleId(entry.perm.id, permissionDecisionJson(behavior));
     return true;
+  }
+
+  /** Always-Allow: arm an auto-allow rule for the CURRENT head's session+tool AND settle it 'allow'.
+   * Same head-guard as `settle` (returns false on a stale id, so the caller alerts + repaints
+   * instead of arming a rule for a request the user never reviewed). Never remembers a deny. */
+  allowAlways(expectedId: string | undefined): boolean {
+    const entry = this.queue[0];
+    if (!entry || entry.perm.id !== expectedId) return false;
+    const { sessionId, toolName } = entry.perm;
+    // Only arm when we have a real session to scope it to; '' would be an unscoped wildcard.
+    if (sessionId) {
+      // Bound memory: drop the oldest rule (insertion order) before adding a new one.
+      if (this.allowRules.size >= Permissions.MAX_ALLOW_RULES) {
+        const oldest = this.allowRules.values().next().value;
+        if (oldest !== undefined) this.allowRules.delete(oldest);
+      }
+      this.allowRules.add(this.ruleKey(sessionId, toolName));
+    }
+    this.settleId(entry.perm.id, permissionDecisionJson('allow'));
+    return true;
+  }
+
+  /** Forget a session's armed rules when it ends, so the set doesn't accumulate dead entries over a
+   * long plugin run. Session ids are unique, so a stale rule can never match anyway — this is hygiene,
+   * and the bound that makes "session-scoped" literally true. Called from the SessionEnd hook path. */
+  forgetSession(sessionId: string): void {
+    if (!sessionId) return;
+    const prefix = `${sessionId}\u0000`;
+    let removed = false;
+    for (const key of this.allowRules) {
+      if (key.startsWith(prefix)) {
+        this.allowRules.delete(key);
+        removed = true;
+      }
+    }
+    // Repaint the APPROVE key auto-allow affordance when the count actually dropped.
+    if (removed) this.emit();
+  }
+
+  /** How many Always-Allow rules are armed — for the APPROVE key's "auto-allow active" affordance. */
+  allowRuleCount(): number {
+    return this.allowRules.size;
   }
 
   private settleId(id: string, body: string | undefined): void {

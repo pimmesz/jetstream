@@ -10,7 +10,7 @@
 // 2. A createRequire banner: bundling CJS deps into ESM output leaves `require()`
 //    shims that throw "Dynamic require is not supported" at runtime without it.
 import { build } from 'esbuild';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -23,6 +23,10 @@ const bin = join(pkg, 'gg.pim.jetstream.sdPlugin', 'bin');
 const now = new Date();
 const p2 = (n) => String(n).padStart(2, '0');
 const BUILD_ID = `${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
+// The npm package version this bundle was built from, baked in so /health can report it — the npm
+// front door polls /health and only reports "live" once the version it just installed answers, so
+// an `update` over a still-running old plugin can't report success before the new build loads.
+const PKG_VERSION = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version;
 
 await build({
   absWorkingDir: tmpdir(),
@@ -39,7 +43,7 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node20',
-  define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
+  define: { __BUILD_ID__: JSON.stringify(BUILD_ID), __PKG_VERSION__: JSON.stringify(PKG_VERSION) },
   banner: {
     js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
   },

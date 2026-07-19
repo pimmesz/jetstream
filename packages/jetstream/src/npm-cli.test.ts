@@ -1,5 +1,6 @@
 import type { spawn as spawnType } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +12,7 @@ import {
   installedPluginVersion,
   installPlugin,
   packageVersion,
+  pluginReportsVersion,
   resolveJetstreamCli,
   runJetstream,
 } from './npm-cli';
@@ -416,6 +418,125 @@ describe('installPlugin', () => {
     child.fire('error', new Error('spawn open ENOENT'));
     expect(error.mock.calls.at(-1)![0]).toContain('Stream Deck app installed');
     expect(setExitCode).toHaveBeenCalledWith(1);
+  });
+
+  it('after a clean open, polls /health and reports the plugin is live on the deck', async () => {
+    const child = fakeChild();
+    const say = vi.fn();
+    const alive = vi.fn(async () => true);
+    installPlugin({
+      exists: () => true,
+      artifactPath: '/pkg/plugin.streamDeckPlugin',
+      platform: 'darwin',
+      spawn: (() => child) as unknown as typeof spawnType,
+      say,
+      error: vi.fn(),
+      setExitCode: vi.fn(),
+      alive,
+      sleep: async () => {},
+    });
+    child.fire('exit', 0);
+    await vi.waitFor(() => expect(alive).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(say.mock.calls.some((c) => /live on your deck/.test(String(c[0])))).toBe(true),
+    );
+  });
+
+  it('gives an actionable hint (run doctor) when /health never comes up', async () => {
+    const child = fakeChild();
+    const say = vi.fn();
+    const alive = vi.fn(async () => false); // never binds
+    installPlugin({
+      exists: () => true,
+      artifactPath: '/pkg/plugin.streamDeckPlugin',
+      platform: 'darwin',
+      spawn: (() => child) as unknown as typeof spawnType,
+      say,
+      error: vi.fn(),
+      setExitCode: vi.fn(),
+      alive,
+      sleep: async () => {}, // no real waiting
+    });
+    child.fire('exit', 0);
+    await vi.waitFor(() =>
+      expect(say.mock.calls.some((c) => /jetstream doctor/.test(String(c[0])))).toBe(true),
+    );
+    expect(alive).toHaveBeenCalledTimes(20); // exhausted every attempt before giving up
+  });
+});
+
+describe('pluginReportsVersion (the update-over-old-plugin guard)', () => {
+  // Spin a throwaway loopback /health server returning `reported`, point the probe at it via
+  // JETSTREAM_PORT, and run `fn`.
+  const withHealth = async (reported: string, fn: () => Promise<void>): Promise<void> => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(reported);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    vi.stubEnv('JETSTREAM_PORT', String(port));
+    try {
+      await fn();
+    } finally {
+      vi.unstubAllEnvs();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  };
+
+  it('true when /health reports the expected version', async () => {
+    await withHealth('1.4.0', async () => {
+      expect(await pluginReportsVersion('1.4.0')).toBe(true);
+    });
+  });
+
+  it('false when /health reports a DIFFERENT version — the old plugin still answering during update', async () => {
+    await withHealth('1.3.1', async () => {
+      expect(await pluginReportsVersion('1.4.0')).toBe(false);
+    });
+  });
+
+  it('false when nothing is listening', async () => {
+    vi.stubEnv('JETSTREAM_PORT', '1'); // nothing bound here → connection refused
+    expect(await pluginReportsVersion('1.4.0', 200)).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it('resolves false (never hangs) when the plugin dies mid-response — the update-restart case', async () => {
+    // 200 + a partial body, then the socket is destroyed before `end` — the response aborts.
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.write('1.4'); // partial version, then die
+      res.destroy();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    vi.stubEnv('JETSTREAM_PORT', String(port));
+    try {
+      await expect(pluginReportsVersion('1.4.0', 500)).resolves.toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('resolves false without crashing when a NON-200 response resets mid-stream', async () => {
+    // The abort handlers must be attached before the statusCode early-return, or this ECONNRESET
+    // is unhandled and terminates the installer.
+    const server = createServer((_req, res) => {
+      res.writeHead(503);
+      res.write('x');
+      res.destroy();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    vi.stubEnv('JETSTREAM_PORT', String(port));
+    try {
+      await expect(pluginReportsVersion('1.4.0', 500)).resolves.toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });
 

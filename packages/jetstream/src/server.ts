@@ -3,6 +3,12 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 export const DEFAULT_PORT = 41321;
 const MAX_BODY_BYTES = 256 * 1024;
 
+// esbuild bakes the npm package version in (scripts/build.mjs `define`); under vitest/tsc there is
+// no define, so `typeof` guards it and falls back to 'dev'. /health reports it so the npm installer
+// can confirm the version it just installed is the one now answering — not a still-running old one.
+declare const __PKG_VERSION__: string;
+export const PLUGIN_VERSION: string = typeof __PKG_VERSION__ === 'string' ? __PKG_VERSION__ : 'dev';
+
 /**
  * The local hook listener: Claude Code lifecycle hooks POST their payload to
  * `127.0.0.1:<port>/hook`, and each parsed JSON body is handed to `onPayload`.
@@ -62,7 +68,7 @@ export function startHookServer(port: number, handlers: HookServerHandlers): Pro
       }
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'content-type': 'text/plain' });
-        res.end('jetstream');
+        res.end(PLUGIN_VERSION); // the built-in version, so the installer can confirm the NEW build is up
         return;
       }
       if (req.method === 'POST' && req.url === '/hook') {

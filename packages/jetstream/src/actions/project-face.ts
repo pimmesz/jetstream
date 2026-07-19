@@ -14,6 +14,21 @@ const STATUS_LABEL: Record<string, string> = {
   done: 'done',
 };
 
+/** A key that's shown 'working' this long with no hook update is likely a hung or abandoned turn
+ * (a lost Stop hook, a wedged tool call) rather than genuine long work — flag it so the board
+ * doesn't read a dead-in-the-water session as confidently busy. A fixed threshold, not a user
+ * setting: it's deliberately long so real long-running work almost never trips it, and it keeps
+ * this pure face free of a config dependency. The dead-PROCESS case is handled separately by the
+ * board's session reaper; this covers the alive-but-silent one. */
+const STALL_MS = 20 * 60_000;
+/** Warning marker for a stalled key. U+FE0E forces text (monochrome) presentation so it stays a
+ * plain white glyph like the others, not a colour emoji. */
+const STALL_GLYPH = '⚠︎';
+
+function isStalled(i: ProjectFaceInput): boolean {
+  return i.status === 'working' && i.since !== undefined && i.now - i.since >= STALL_MS;
+}
+
 export interface ProjectFaceInput {
   /** Display name (a rename override wins upstream; here it's just the text). */
   name: string;
@@ -37,12 +52,13 @@ export interface ProjectFaceInput {
  */
 export function projectFace(i: ProjectFaceInput): Face {
   if (!i.configured) return { color: '#26262b', label: i.name, subMax: 20, sub: 'set path' };
+  const stalled = isStalled(i);
   return {
     color: colorFor(i.status, i.theme),
     label: i.name,
     subMax: 20, // room for the diff badge (`+120/-40 · done 4m`)
-    glyph: projectGlyph(i.status, i.answerable),
-    ...projectSub(i),
+    glyph: stalled ? STALL_GLYPH : projectGlyph(i.status, i.answerable),
+    ...projectSub(i, stalled),
   };
 }
 
@@ -55,10 +71,11 @@ function projectGlyph(status: ProjectStatus, answerable: boolean): string {
 
 /** The line under the label: `Bash · 12m` (working), `+120/-40 · done 4m` (finished), `approve?` /
  * `answer` (needs you — deck-answerable or not), or the plain status word. */
-function projectSub(i: ProjectFaceInput): { sub: string } | Record<string, never> {
+function projectSub(i: ProjectFaceInput, stalled: boolean): { sub: string } | Record<string, never> {
   if (i.status === 'needsInput') return { sub: i.answerable ? 'approve?' : 'answer' };
   const elapsed = i.since !== undefined ? formatElapsed(i.now - i.since) : '';
   if (i.status === 'working' && elapsed) {
+    if (stalled) return { sub: `stalled? ${elapsed}` };
     return { sub: i.tool ? `${i.tool} · ${elapsed}` : `working ${elapsed}` };
   }
   if (i.status === 'done' && elapsed) {

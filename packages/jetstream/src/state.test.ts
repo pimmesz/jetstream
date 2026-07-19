@@ -222,6 +222,70 @@ describe('Board', () => {
     });
   });
 
+  describe('dead-session reaper (steady-state liveness)', () => {
+    it("drops a session the probe conclusively reports 'dead' and keeps a live one", () => {
+      const board = makeBoard();
+      board.setProject('k-alive', { name: 'alive', path: '/U/alive' });
+      board.setProject('k-dead', { name: 'dead', path: '/U/dead' });
+      board.notePid('s-alive', 100, '/U/alive');
+      board.dispatch({ event: 'UserPromptSubmit', cwd: '/U/alive', sessionId: 's-alive', at: 1 });
+      board.notePid('s-dead', 200, '/U/dead');
+      board.dispatch({ event: 'Notification', cwd: '/U/dead', sessionId: 's-dead', at: 2 }); // NEEDS-YOU
+
+      board.reapDeadSessions((pid) => (pid === 100 ? 'alive' : 'dead'), 'darwin');
+
+      expect(board.byProject()['k-alive']).toEqual({ status: 'working', since: 1 });
+      // The reaped session goes gray instead of pinning a stuck NEEDS-YOU forever.
+      expect(board.byProject()['k-dead']).toEqual({ status: 'none' });
+      expect(board.pidsForProject('k-dead')).toEqual([]); // no stale pid for interrupt to target
+      expect(board.pidsForProject('k-alive')).toEqual([100]);
+    });
+
+    it("does NOT reap on an inconclusive 'unknown' probe — a ps failure must not erase a live needsInput", () => {
+      const board = makeBoard();
+      board.setProject('k', { name: 'x', path: '/U/x' });
+      board.notePid('s', 100, '/U/x');
+      board.dispatch({ event: 'Notification', cwd: '/U/x', sessionId: 's', at: 1 }); // needsInput
+      board.reapDeadSessions(() => 'unknown', 'darwin');
+      expect(board.byProject()['k']).toEqual({ status: 'needsInput', since: 1 });
+    });
+
+    it('does NOT reap ANY session when EVERY probe is inconclusive (fleet-wide ps failure / EMFILE)', () => {
+      const board = makeBoard();
+      board.setProject('k1', { name: 'a', path: '/U/a' });
+      board.setProject('k2', { name: 'b', path: '/U/b' });
+      board.notePid('s1', 100, '/U/a');
+      board.dispatch({ event: 'UserPromptSubmit', cwd: '/U/a', sessionId: 's1', at: 1 });
+      board.notePid('s2', 200, '/U/b');
+      board.dispatch({ event: 'Notification', cwd: '/U/b', sessionId: 's2', at: 2 });
+      board.reapDeadSessions(() => 'unknown', 'darwin'); // ps can't run at all → keep everything
+      expect(board.byProject()['k1']).toEqual({ status: 'working', since: 1 });
+      expect(board.byProject()['k2']).toEqual({ status: 'needsInput', since: 2 });
+    });
+
+    it('is a no-op on Windows (liveness is unverifiable there — never mass-reap)', () => {
+      const board = makeBoard();
+      board.setProject('k', { name: 'x', path: '/U/x' });
+      board.notePid('s', 200, '/U/x');
+      board.dispatch({ event: 'UserPromptSubmit', cwd: '/U/x', sessionId: 's', at: 1 });
+      board.reapDeadSessions(() => 'dead', 'win32'); // would reap if it ran
+      expect(board.byProject()['k']).toEqual({ status: 'working', since: 1 });
+    });
+
+    it('emits only when it actually removes a session', () => {
+      const board = makeBoard();
+      board.setProject('k', { name: 'x', path: '/U/x' });
+      board.notePid('s', 200, '/U/x');
+      board.dispatch({ event: 'UserPromptSubmit', cwd: '/U/x', sessionId: 's', at: 1 });
+      let calls = 0;
+      board.subscribe(() => calls++);
+      board.reapDeadSessions(() => 'alive', 'darwin'); // alive → no change, no emit
+      expect(calls).toBe(0);
+      board.reapDeadSessions(() => 'dead', 'darwin'); // dead → one removal + one emit
+      expect(calls).toBe(1);
+    });
+  });
+
   describe('discovery CPU cross-check (workflow-wait)', () => {
     const falcon = { id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' };
     const busy = [{ pid: 9, cwd: '/Users/me/falcon', active: true }];

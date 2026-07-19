@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { augmentedPath } from './afterburner-cli';
+import { isClaudeCommand } from './discover';
 
 export interface Command {
   cmd: string;
@@ -91,6 +92,33 @@ export function isClaudeProcess(pid: number, platform: NodeJS.Platform = process
     return /claude/i.test(out);
   } catch {
     return false; // no such process, or ps unavailable → don't kill
+  }
+}
+
+export type ProcessProbe = 'alive' | 'dead' | 'unknown';
+
+/**
+ * Probe a recorded session pid, distinguishing a CONCLUSIVE "gone" from an inconclusive probe
+ * FAILURE — so the session reaper never erases a live session just because `ps` couldn't run
+ * (EMFILE under load, a timeout). Unlike {@link isClaudeProcess} (a kill guard where any doubt is
+ * "don't"), the reaper needs to tell "definitely dead" from "couldn't tell":
+ * - `alive`   — `ps` ran and the pid is a live Claude process.
+ * - `dead`    — `ps` ran and the pid is absent (exit 1) OR belongs to a non-Claude process (its
+ *               Claude session ended; the pid may have been reused) → the session is gone.
+ * - `unknown` — `ps` itself failed (ENOENT / timeout / EMFILE), so we can't tell — NEVER reap.
+ * macOS/Linux only; win32 → `unknown` (never reaped).
+ */
+export function probeClaudeProcess(pid: number, platform: NodeJS.Platform = process.platform): ProcessProbe {
+  if (platform === 'win32' || !Number.isInteger(pid) || pid <= 1) return 'unknown';
+  try {
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 2000 });
+    // Strict classifier (the executable IS claude), NOT a substring match — else a reused pid running
+    // e.g. `vim claude-notes.md` would read 'alive' and keep a dead session's status pinned.
+    return isClaudeCommand(out) ? 'alive' : 'dead'; // ran (exit 0): a live Claude, else the pid moved on
+  } catch (err) {
+    // `ps -p <absent>` exits 1 with empty output → a conclusive "no such process". Any OTHER failure
+    // (ENOENT, or a 2s timeout that SIGTERMs ps → status null) is inconclusive — never call it dead.
+    return (err as { status?: number | null }).status === 1 ? 'dead' : 'unknown';
   }
 }
 

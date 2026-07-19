@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { runClaude } from '@pimmesz/jetstream-claude';
 import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { installHooks, type HookCommands } from './hooks-install';
-import { runDoctor, formatReport } from './doctor';
+import { runDoctor, formatReport, commandOnPath } from './doctor';
 import { offerProfile, runInit } from './init';
 import {
   buildLayoutProfile,
@@ -221,6 +221,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           io: chatIo,
           board: readBoardLayout(),
           paintCoord: paintCoordByRow,
+          claudeAvailable: () => commandOnPath('claude'),
           ask: async (prompt) => {
             const result = await runClaude({ prompt, appendSystemPrompt: SETUP_SYSTEM }, () => {});
             return result.isError || !result.result ? null : result.result;
