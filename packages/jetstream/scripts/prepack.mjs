@@ -3,11 +3,11 @@
 // CURRENT source. NOT part of `pnpm build` — dev builds stay fast.
 //
 // WHY THIS BUILDS THE CORES ITSELF (the important bit):
-// This exact step, when it lived in afterburner, assumed CI had already built the sibling
+// This exact step, in an earlier monorepo, assumed CI had already built the sibling
 // cores. It hadn't — the publish job ran `npm publish` straight after install, so esbuild hit
 // "Could not resolve @pimmesz/jetstream-status" (the core's package.json `main` points at a
-// dist/ that didn't exist yet), prepack threw, and EVERY publish failed silently from
-// afterburner 3.6.0 onward while the repo kept version-bumping to 3.11.0. Ordering that lives
+// dist/ that didn't exist yet), prepack threw, and EVERY publish failed silently while the
+// repo kept version-bumping. Ordering that lives
 // in a workflow can drift away from the script that depends on it; ordering that lives HERE
 // cannot. So: prepack builds its own prerequisites, and asserts its outputs.
 import { execFileSync } from 'node:child_process';

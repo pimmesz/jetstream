@@ -32,8 +32,6 @@ const JETSTREAM_LABELS: Record<string, string> = {
   grid: 'grid',
   interruptall: 'stop',
   model: 'model',
-  heartbeat: 'beat',
-  review: 'review',
   dial: 'dial',
   slot: 'slot',
 };

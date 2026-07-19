@@ -1,6 +1,6 @@
 /**
- * Pure long-press math shared by the press-driven actions (Project, Heartbeat, the Fleet
- * dial). Each action records key-down time in a per-instance map; on key-up this reads AND
+ * Pure long-press math shared by the press-driven actions (Project, Attention, Permission, the
+ * Fleet dial). Each action records key-down time in a per-instance map; on key-up this reads AND
  * clears the entry (delete-on-read, so a stray second up-event can't reuse a stale start)
  * and returns how long the press was held. Never pressed → 0.
  */

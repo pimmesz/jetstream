@@ -294,14 +294,15 @@ describe('buildOpsProfile (the shipped controls page)', () => {
       const uuids = Object.values(actions).map((a) => a.UUID);
       expect(actions['0,0']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'board' } });
       for (const u of [
-        'gg.pim.jetstream.heartbeat',
-        'gg.pim.jetstream.review',
         'gg.pim.jetstream.model',
         'gg.pim.jetstream.interruptall',
         'gg.pim.jetstream.settings',
       ]) {
         expect(uuids).toContain(u);
       }
+      // The afterburner-driving keys are gone from the ops page.
+      expect(uuids).not.toContain('gg.pim.jetstream.heartbeat');
+      expect(uuids).not.toContain('gg.pim.jetstream.review');
       expect(JSON.stringify(manifest)).not.toMatch(/"path"|"name"/); // baked — no user data
     }
     expect(opsProfileName(STANDARD)).toBe('Jetstream Ops');

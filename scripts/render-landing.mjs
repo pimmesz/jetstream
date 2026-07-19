@@ -8,7 +8,7 @@
 // README. Markdown is rendered by spawning `npx marked`, so this adds nothing
 // to package.json / pnpm-lock.yaml.
 //
-// Ported from afterburner, with two deliberate differences: the version for the
+// Two notable details: the version for the
 // JSON-LD comes from packages/jetstream/package.json (the published package, not
 // the private workspace root, which is pinned at 0.0.0), and the site lives at a
 // GitHub Pages project subpath rather than a custom domain.

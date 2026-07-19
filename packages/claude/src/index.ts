@@ -33,7 +33,7 @@ export function buildArgs(opts: LaunchOptions): string[] {
 /** A copy of `env` with API/token credentials removed, so a headless run spends the
  * subscription and can't silently bill the metered per-token API. Both
  * `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` can outrank the subscription login,
- * so both are stripped (matching afterburner's own defense). Pure. */
+ * so both are stripped. Pure. */
 export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const clean: NodeJS.ProcessEnv = { ...env };
   delete clean.ANTHROPIC_API_KEY;

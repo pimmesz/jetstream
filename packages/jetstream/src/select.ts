@@ -2,7 +2,7 @@ import { emitKeypressEvents } from 'node:readline';
 
 /**
  * A zero-dependency single-choice picker: arrow keys (↑/↓ + ⏎) on a real terminal, a numbered list
- * read through the injected `rl` otherwise (piped input, tests). Mirrors the afterburner CLI's
+ * read through the injected `rl` otherwise (piped input, tests). Mirrors the CLI's
  * `selectOne` feel. ALWAYS restores the terminal (raw mode off, readline's own keypress listeners
  * reattached) on every exit path — a stuck terminal is the one unforgivable bug.
  */

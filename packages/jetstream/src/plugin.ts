@@ -21,8 +21,6 @@ import { SettingsKey } from './actions/settings';
 import { FleetDialKey } from './actions/dial';
 import { InterruptAllKey } from './actions/interrupt-all';
 import { ModelKey } from './actions/model';
-import { HeartbeatKey } from './actions/heartbeat';
-import { ReviewKey } from './actions/review';
 import { NavKey } from './actions/nav';
 import { BuildKey } from './actions/build';
 import { CoordinateKey } from './actions/coord';
@@ -54,8 +52,6 @@ const settingsKey = new SettingsKey();
 const fleetDialKey = new FleetDialKey();
 const interruptAllKey = new InterruptAllKey();
 const modelKey = new ModelKey();
-const heartbeatKey = new HeartbeatKey();
-const reviewKey = new ReviewKey();
 const navKey = new NavKey();
 const buildKey = new BuildKey();
 const coordinateKey = new CoordinateKey();
@@ -74,8 +70,6 @@ streamDeck.actions.registerAction(settingsKey);
 streamDeck.actions.registerAction(fleetDialKey);
 streamDeck.actions.registerAction(interruptAllKey);
 streamDeck.actions.registerAction(modelKey);
-streamDeck.actions.registerAction(heartbeatKey);
-streamDeck.actions.registerAction(reviewKey);
 streamDeck.actions.registerAction(navKey);
 streamDeck.actions.registerAction(buildKey);
 streamDeck.actions.registerAction(coordinateKey);
@@ -137,11 +131,6 @@ config.subscribe(() => {
 // CI/PR status polls gh on a fixed cadence; refresh() no-ops when no CI key is placed.
 setInterval(() => void ciKey.refresh(), CI_REFRESH_MS).unref();
 
-// afterburner heartbeat + review queue: poll the sibling CLI on a slow cadence. Both no-op
-// (never spawn) when no such key is placed, so a board without them costs nothing.
-setInterval(() => void heartbeatKey.refresh(), 60_000).unref();
-setInterval(() => void reviewKey.refresh(), 120_000).unref();
-
 // After the machine sleeps, the interval timers pause/drift — so the moment it wakes, refresh
 // everything now instead of waiting up to a full poll cycle (a usage window may have reset, CI
 // may have moved, the elapsed timers are stale). Cheap: each refresh no-ops when its key is unplaced.
@@ -149,8 +138,6 @@ streamDeck.system.onSystemDidWakeUp(() => {
   renderBoard();
   void usageKey.refresh();
   void ciKey.refresh();
-  void heartbeatKey.refresh();
-  void reviewKey.refresh();
 });
 
 function pidOf(raw: unknown): number | undefined {

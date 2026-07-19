@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
-import { augmentedPath } from './afterburner-cli';
+import { augmentedPath } from './exec-path';
 
 /** Aggregate CI state for a PR — or a roll-up across several. */
 export type CiState = 'passing' | 'failing' | 'pending' | 'none' | 'unknown';
@@ -128,14 +128,14 @@ const defaultExec: CiExec = (cmd, args, opts) =>
 
 /**
  * Impure: the worst CI state across a repo's OPEN pull requests whose head branch starts
- * with `branchPrefix` (default `afterburner/`). Uses `gh` with array argv (never a shell)
+ * with `branchPrefix` (empty = all open PRs). Uses `gh` with array argv (never a shell)
  * and carries no untrusted text into the command; returns `unknown` on ANY failure (gh
  * missing / not authed / network / bad JSON) so a CI key can never throw into render.
  * `exec` is injectable for tests.
  */
 export async function readRepoCi(
   cwd: string,
-  branchPrefix = 'afterburner/',
+  branchPrefix = '',
   exec: CiExec = defaultExec,
 ): Promise<CiState> {
   let stdout: string;

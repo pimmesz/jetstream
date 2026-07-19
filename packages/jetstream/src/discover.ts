@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { augmentedPath } from './afterburner-cli';
+import { augmentedPath } from './exec-path';
 
 /**
  * Discover running Claude Code CLI sessions, the directory each is in, and whether each is

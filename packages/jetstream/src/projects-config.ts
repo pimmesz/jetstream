@@ -6,7 +6,7 @@ import type { JetstreamConfig } from './config';
 
 /**
  * The optional config file the plugin reads at startup to seed its board and settings —
- * afterburner's "edit a config, run a command" flow. Stream Deck owns the physical layout,
+ * an "edit a config, run a command" flow. Stream Deck owns the physical layout,
  * so this NEVER places keys or writes a key's Property Inspector: it seeds the plugin's own
  * registry (fleet / attention / project matching), and presets the plugin settings.
  */

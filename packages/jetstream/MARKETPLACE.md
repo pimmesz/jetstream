@@ -50,10 +50,9 @@ automation, git, pull request, usage, monitoring
 > `doctor`) and a conversational setup are one command away.
 >
 > **Stream Deck +:** a dial scrubs your whole fleet on the touchscreen. **Two-page layouts**
-> put a status Board and a controls page (model toggle, stop-all, review queue) a tap apart.
+> put a status Board and a controls page (model toggle, stop-all) a tap apart.
 >
-> Works with Claude Code standalone, and pairs with afterburner (https://afterburner.run) to
-> monitor and fire automated pull-request runs from your deck.
+> Works with Claude Code — no other tooling required.
 >
 > **Highlights**
 > - Live per-project status board (working / needs you / done)
@@ -99,10 +98,10 @@ Jetstream turns your Stream Deck into a live cockpit for Claude Code.
 - Launch keys — fire preset headless prompts in a project with one press.
 - Fleet roll-up — one key summarizing every repo, colored by the worst state present.
 - Stream Deck + — a dial scrubs your whole fleet on the touchscreen.
-- Two-page deck — a status Board and a controls page (model / stop-all / review / heartbeat).
+- Two-page deck — a status Board and a controls page (model / stop-all).
 - No-terminal setup — auto-wired hooks + an in-app fleet editor, health check, and layout
   builder; a bundled CLI and conversational `chat` setup for keyboard folks.
-Works with Claude Code standalone; pairs with Afterburner. macOS.
+Works with Claude Code. macOS.
 
 Future versions: list ONLY what changed since the last release, e.g.
 > ### v1.0.1

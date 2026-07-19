@@ -3,9 +3,9 @@ import { resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
 import { formatNextReset, keyFace } from '../render';
 
 /**
- * The usage gauge: 5h/7d used % + the sooner reset countdown, from the Jetstream
- * usage cache (statusline hook) with afterburner as fallback. Refreshed by the
- * plugin's timer; shows an explicit "install hook" state when no data exists.
+ * The usage gauge: 5h/7d used % + the sooner reset countdown, from the Jetstream usage cache
+ * (the statusline hook). Refreshed by the plugin's timer; shows an explicit "install hook" state
+ * when no data exists.
  */
 @action({ UUID: 'gg.pim.jetstream.usage' })
 export class UsageKey extends SingletonAction {
@@ -17,16 +17,16 @@ export class UsageKey extends SingletonAction {
 
   async refresh(now = Date.now()): Promise<void> {
     // No Usage key on the deck → don't spend a subprocess resolving usage nobody will see
-    // (mirrors the CI / heartbeat / review keys, which all gate on a placed key first).
+    // (mirrors the CI key, which also gates on a placed key first).
     if (![...this.actions].some((a) => a.isKey())) return;
     this.feed = await resolveUsage();
     const feed = this.feed;
     const face = feed.available
       ? keyFace({
           color: gaugeColor(feed),
-          // Weekly is the headline (afterburner's whole premise) → the big label. Show the
-          // 5-hour window on the line above when both exist, and the sooner reset below. Both
-          // windows stay readable instead of 7d hiding in a tiny sub-line.
+          // Weekly is the headline → the big label. Show the 5-hour window on the line above when
+          // both exist, and the sooner reset below. Both windows stay readable instead of 7d
+          // hiding in a tiny sub-line.
           ...(feed.fiveHour && feed.sevenDay
             ? { top: `5h ${Math.round(feed.fiveHour.usedPct)}%` }
             : {}),

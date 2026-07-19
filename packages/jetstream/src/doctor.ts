@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { get as httpsGet } from 'node:https';
 import { delimiter, join } from 'node:path';
 import { defaultSettingsPath } from './hooks-install';
 import { projectsConfigPath } from './projects-config';
 import { pluginAlive } from './slot-client';
+import { PLUGIN_VERSION } from './server';
 import { readBoardLayout, type BoardLayout } from './board-layout';
 
 /**
@@ -232,6 +234,8 @@ export interface DoctorIO {
   listenerAlive: () => Promise<boolean>;
   /** The detected Jetstream board (or null when none), for the "no keys placed" check. Injected for tests. */
   boardLayout: () => BoardLayout | null;
+  /** The latest published npm version (null when the registry can't be reached). Injected for tests. */
+  latestVersion: () => Promise<string | null>;
 }
 
 export function defaultDoctorIO(): DoctorIO {
@@ -243,6 +247,7 @@ export function defaultDoctorIO(): DoctorIO {
     projectsRaw: () => readIfPresent(projectsConfigPath()),
     listenerAlive: () => pluginAlive(),
     boardLayout: () => readBoardLayout(),
+    latestVersion: () => fetchLatestVersion(),
   };
 }
 
@@ -259,9 +264,81 @@ function checkListener(alive: boolean): CheckResult {
       };
 }
 
+const SEMVER = /^\d+\.\d+\.\d+$/;
+
+/** Is version `a` newer than `b`? Both are numeric `X.Y.Z` (CI's release gate enforces that). */
+function isNewerVersion(a: string, b: string): boolean {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+/** Whether a newer @pimmesz/jetstream is published. Best-effort: `latest` is null when the registry
+ * couldn't be reached (offline / timeout), so this NEVER warns without a definite answer and doctor
+ * still exits clean on a plane. Compares the npm PACKAGE version (baked into the build), which is
+ * what `jetstream update` bumps — not the independent sdPlugin manifest version. Pure. */
+export function checkLatestVersion(installed: string, latest: string | null): CheckResult {
+  if (latest === null || !SEMVER.test(installed) || !SEMVER.test(latest)) {
+    return { status: 'ok', message: `version ${installed}` }; // no definite comparison → just report it
+  }
+  return isNewerVersion(latest, installed)
+    ? { status: 'warn', message: `${installed} installed — ${latest} is available; run \`jetstream update\`` }
+    : { status: 'ok', message: `on the latest version (${installed})` };
+}
+
+/** The latest published @pimmesz/jetstream version from the npm registry, or null on ANY failure
+ * (offline, timeout, non-200, parse) — so the version check stays strictly best-effort and doctor
+ * exits clean with no network. A short timeout keeps `doctor` snappy; the response listeners settle
+ * null on an abort so a mid-stream reset can't hang or throw (the same care as slot-client/npm-cli). */
+function fetchLatestVersion(timeoutMs = 1500): Promise<string | null> {
+  return new Promise((resolve) => {
+    const req = httpsGet(
+      { host: 'registry.npmjs.org', path: '/@pimmesz/jetstream/latest', timeout: timeoutMs, headers: { accept: 'application/json' } },
+      (res) => {
+        res.on('error', () => resolve(null));
+        res.on('close', () => resolve(null));
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+          if (body.length > 1_000_000) {
+            resolve(null); // a manifest is small — cap defensively
+            req.destroy();
+          }
+        });
+        res.on('end', () => {
+          try {
+            const v = (JSON.parse(body) as { version?: unknown }).version;
+            resolve(typeof v === 'string' ? v : null);
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
 /** Run every read-only check. Never mutates, never throws. */
 export async function runDoctor(io: DoctorIO = defaultDoctorIO()): Promise<CheckResult[]> {
   const settings = io.settingsRaw(); // read once, shared by the hooks + usage-statusline checks
+  // The two async probes (loopback listener + npm registry) run in parallel so doctor isn't serial.
+  const [listener, latest] = await Promise.all([io.listenerAlive(), io.latestVersion()]);
   return [
     checkClaudeOnPath(io.claudeOnPath()),
     checkAnthropicEnv(io.env),
@@ -270,7 +347,8 @@ export async function runDoctor(io: DoctorIO = defaultDoctorIO()): Promise<Check
     checkProjectsConfig(io.projectsRaw()),
     checkBoardKeys(io.boardLayout()),
     checkGhForCi(io.ghOnPath()),
-    checkListener(await io.listenerAlive()),
+    checkListener(listener),
+    checkLatestVersion(PLUGIN_VERSION, latest),
   ];
 }
 

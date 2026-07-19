@@ -62,7 +62,7 @@ const say = (log: () => void): void => {
  * - Wires the silent lifecycle hooks (status board, incl. SubagentStart/Stop), the blocking
  *   PermissionRequest hook (deck Approve/Deny; an unanswered prompt falls through to Claude's
  *   own dialog after its timeout), AND the statusline usage hook — the latter only when the user
- *   has NO statusline (mergeHooks never clobbers a foreign one, e.g. afterburner's), so the
+ *   has NO statusline (mergeHooks never clobbers a foreign one), so the
  *   Usage key works on install without surprising anyone. The higher-overhead --tool-detail
  *   hooks stay opt-in (a node process per tool call) — enable them from the CLI or the
  *   settings Property Inspector.

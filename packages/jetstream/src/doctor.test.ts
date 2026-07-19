@@ -6,6 +6,7 @@ import {
   checkAnthropicEnv,
   checkBoardKeys,
   checkHooksPresent,
+  checkLatestVersion,
   checkProjectsConfig,
   checkGhForCi,
   checkUsageStatusline,
@@ -26,6 +27,7 @@ describe('runDoctor listener check', () => {
     projectsRaw: () => undefined,
     listenerAlive: async () => listenerAlive,
     boardLayout: () => null,
+    latestVersion: async () => null,
   });
   it('warns when the hook listener is not responding (the silent dark-board case)', async () => {
     const listener = (await runDoctor(io(false))).find((r) => /listener/i.test(r.message));
@@ -81,6 +83,35 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
     expect(corrupt.fixId).toBeUndefined(); // corrupt → NOT auto-fixable (install would re-fail the parse)
     expect(corrupt.message).toContain('not valid JSON');
     expect(corrupt.message).not.toEqual(absent.message); // don't send the user to a fix that also fails
+  });
+});
+
+describe('checkLatestVersion', () => {
+  it('warns (with the update command) when a newer version is published', () => {
+    const r = checkLatestVersion('1.3.1', '1.4.0');
+    expect(r.status).toBe('warn');
+    expect(r.message).toContain('jetstream update');
+    expect(r.message).toContain('1.4.0');
+  });
+
+  it('ok when already on the latest', () => {
+    expect(checkLatestVersion('1.4.0', '1.4.0').status).toBe('ok');
+    expect(checkLatestVersion('1.4.0', '1.4.0').message).toContain('latest');
+  });
+
+  it('ok (never warns) when installed is AHEAD of the registry — a local dev build', () => {
+    expect(checkLatestVersion('1.5.0', '1.4.0').status).toBe('ok');
+  });
+
+  it('stays quiet (best-effort) when the registry is unreachable or a version is non-numeric', () => {
+    expect(checkLatestVersion('1.4.0', null).status).toBe('ok'); // offline
+    expect(checkLatestVersion('dev', '1.4.0').status).toBe('ok'); // untooled build
+    expect(checkLatestVersion('1.4.0', 'garbage').status).toBe('ok');
+  });
+
+  it('compares numerically, not lexically (1.10.0 > 1.9.0)', () => {
+    expect(checkLatestVersion('1.9.0', '1.10.0').status).toBe('warn');
+    expect(checkLatestVersion('1.10.0', '1.9.0').status).toBe('ok');
   });
 });
 

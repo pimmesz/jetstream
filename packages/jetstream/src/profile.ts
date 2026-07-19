@@ -363,19 +363,17 @@ export function buildDefaultProfile(deck: DeckModel): BuiltProfile {
   return { manifest, placedProjects: 0, skippedProjects: 0 };
 }
 
-/** The OPS (second) page: the control/action keys that don't fit the status board — the
- * afterburner heartbeat, review queue, model toggle, stop-all, a strip of Launch invitation
- * keys, and a nav key back to the board. Standard + XL only (the Mini has no room for a
- * second page). Everything works with zero config except the Launch keys (invitations). */
+/** The OPS (second) page: the control/action keys that don't fit the status board — the model
+ * toggle, stop-all, a strip of Launch invitation keys, and a nav key back to the board. Standard +
+ * XL only (the Mini has no room for a second page). Everything works with zero config except the
+ * Launch keys (invitations). */
 function fixedOpsLayout(deck: DeckModel): Map<string, ProfileAction> {
   const slots = new Map<string, ProfileAction>();
   const at = (col: number, row: number, entry: ProfileAction): void => {
     slots.set(`${col},${row}`, entry);
   };
   at(0, 0, action('Page: Board', 'gg.pim.jetstream.nav', { target: 'board' } satisfies NavSettings));
-  at(1, 0, action('Afterburner heartbeat', 'gg.pim.jetstream.heartbeat'));
-  at(2, 0, action('Review queue', 'gg.pim.jetstream.review'));
-  at(3, 0, action('Model toggle', 'gg.pim.jetstream.model'));
+  at(1, 0, action('Model toggle', 'gg.pim.jetstream.model'));
   at(deck.cols - 1, 0, action('Stop all', 'gg.pim.jetstream.interruptall'));
   at(deck.cols - 1, deck.rows - 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
   // A row of Launch invitation keys (render "set prompt" until the user configures them).

@@ -16,10 +16,10 @@ describe('mergeConfig', () => {
   });
 
   it('takes a non-empty ciBranchPrefix override, else the default', () => {
-    expect(mergeConfig({}).ciBranchPrefix).toBe('afterburner/'); // default
+    expect(mergeConfig({}).ciBranchPrefix).toBe(''); // default: watch all open PRs
     expect(mergeConfig({ ciBranchPrefix: 'feature/' }).ciBranchPrefix).toBe('feature/');
-    expect(mergeConfig({ ciBranchPrefix: '  ' }).ciBranchPrefix).toBe('afterburner/'); // blank ignored
-    expect(mergeConfig({ ciBranchPrefix: 42 }).ciBranchPrefix).toBe('afterburner/'); // wrong type ignored
+    expect(mergeConfig({ ciBranchPrefix: '  ' }).ciBranchPrefix).toBe(''); // blank ignored → base
+    expect(mergeConfig({ ciBranchPrefix: 42 }).ciBranchPrefix).toBe(''); // wrong type ignored → base
   });
 
   it('carries a trimmed launchModel string, defaulting to no override', () => {

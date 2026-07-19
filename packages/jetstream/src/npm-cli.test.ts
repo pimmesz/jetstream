@@ -81,8 +81,8 @@ describe('resolveJetstreamCli', () => {
 });
 
 describe('forwardedArgs', () => {
-  // The npm bin IS `jetstream`, so everything after argv[1] belongs to the child — unlike
-  // afterburner's `afterburner jetstream <args>`, which had to skip the subcommand name.
+  // The npm bin IS `jetstream`, so everything after argv[1] belongs to the child (no subcommand
+  // name to skip).
   it('forwards everything after the bin name, flags included', () => {
     expect(forwardedArgs(['node', '/usr/local/bin/jetstream', 'init'])).toEqual(['init']);
     expect(

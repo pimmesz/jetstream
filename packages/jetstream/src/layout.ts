@@ -44,8 +44,6 @@ const NO_SETTINGS: Record<string, string> = {
   build: 'gg.pim.jetstream.build',
   'stop-all': 'gg.pim.jetstream.interruptall',
   model: 'gg.pim.jetstream.model',
-  heartbeat: 'gg.pim.jetstream.heartbeat',
-  review: 'gg.pim.jetstream.review',
   micmute: 'gg.pim.jetstream.micmute',
   // Volume keys are slot-kind ONLY (no standalone action); the uuid here is a placeholder for the
   // prompt-name derivation and is overridden by the slot-kind KEY_TYPES entries below.
@@ -68,8 +66,6 @@ const NO_SETTINGS_NAMES: Record<string, string> = {
   build: 'Build version',
   'stop-all': 'Stop all',
   model: 'Model toggle',
-  heartbeat: 'Heartbeat',
-  review: 'Review queue',
   micmute: 'Mic mute',
   volup: 'Volume up',
   voldown: 'Volume down',

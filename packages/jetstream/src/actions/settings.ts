@@ -79,6 +79,9 @@ function pluginDoctorIO(): ReturnType<typeof defaultDoctorIO> {
     // orphaned prior plugin still holds the port while this instance failed to bind — a green board
     // that never updates. isListenerBound() is the same truth the Fleet key uses, so they agree.
     listenerAlive: async () => isListenerBound(),
+    // The in-plugin health check stays OFFLINE — no npm-registry call on a keypress (local-only
+    // ethos). The CLI `jetstream doctor` does the network version check; here it just reports the version.
+    latestVersion: async () => null,
   };
 }
 

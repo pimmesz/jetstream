@@ -2,7 +2,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { augmentedPath } from './afterburner-cli';
+import { augmentedPath } from './exec-path';
 import { isClaudeCommand } from './discover';
 
 export interface Command {

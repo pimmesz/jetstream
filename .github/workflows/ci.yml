@@ -44,8 +44,8 @@ jobs:
 
       # The real publish gate: `npm pack` runs prepack, so this proves the exact tarball
       # (plugin bundle + packed .streamDeckPlugin + the `jetstream` bin) still builds on
-      # every PR — instead of discovering it only when a release tries to publish, which
-      # is precisely how afterburner shipped nothing between 3.6.0 and 3.11.0.
+      # every PR — instead of discovering it only when a release tries to publish (a class of
+      # bug where a broken prepack silently ships nothing while versions keep bumping).
       - name: Pack the npm tarball (proves prepack)
         run: npm pack --dry-run
         working-directory: packages/jetstream

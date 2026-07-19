@@ -10,8 +10,8 @@ export type JetstreamConfig = {
   longPressMs: number;
   usageRefreshSec: number;
   escalateAfterSec: number;
-  /** Branch namespace whose open PRs the CI key watches. Defaults to afterburner's, but
-   * a non-afterburner user sets their own so the CI key isn't stuck on "no PRs". */
+  /** Branch-name prefix whose open PRs the CI key watches. Empty (the default) watches ALL your
+   * open PRs; set a prefix (e.g. `feature/`) to scope the key to a subset. */
   ciBranchPrefix: string;
   /** Global model override the Launch keys fall back to when their own `model` is unset,
    * cycled by the Model key. Plain string (a `claude -p` alias); '' = no override. */
@@ -31,7 +31,7 @@ export const DEFAULTS: JetstreamConfig = {
   longPressMs: 1000,
   usageRefreshSec: 60,
   escalateAfterSec: 300,
-  ciBranchPrefix: 'afterburner/',
+  ciBranchPrefix: '',
   launchModel: '',
   allowRunKeys: false,
   allowStopKeys: false,

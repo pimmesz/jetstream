@@ -23,7 +23,7 @@ export class CiKey extends SingletonAction {
     void this.refresh();
   }
 
-  /** Poll the fleet's open afterburner PRs and roll up the worst CI state. No-ops (no `gh`) when
+  /** Poll the fleet's open PRs and roll up the worst CI state. No-ops (no `gh`) when
    * no CI key is placed. Single-flight: while a poll is in progress, an overlapping refresh (the
    * next 60s tick, or an onWillAppear) shares the one already running instead of stacking a second
    * full `gh` fan-out — so polls can never pile up and hammer the API. */

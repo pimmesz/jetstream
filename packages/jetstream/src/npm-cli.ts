@@ -14,8 +14,7 @@ import { fileURLToPath } from 'node:url';
  * (`gg.pim.jetstream.sdPlugin/bin/jetstream.js`).
  *
  * Distribution is CLI-first via npm (`npm i -g @pimmesz/jetstream` → `jetstream install`).
- * This package owns its own delivery: it was previously bundled inside @pimmesz/afterburner,
- * which coupled every Jetstream release to an afterburner release.
+ * This package owns its own delivery, so a Jetstream release is self-contained and independent.
  *
  * Zero runtime dependencies on purpose — everything the plugin itself needs is inlined into
  * the .sdPlugin bundle at build time, so this installer only uses node builtins.

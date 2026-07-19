@@ -6,7 +6,7 @@ project; each glows with that project's live Claude status — grey (no session)
 Plus a "needs you" doorbell and a usage gauge. It reads status from Claude Code lifecycle hooks, so
 it works for the interactive sessions you actually run all day, not just headless launches.
 
-Standalone — no afterburner required; afterburner is just one of the projects on the board.
+Standalone — it works with Claude Code alone; no other tooling required.
 
 Status: **BUILT (v1.3 + item G, plus the post-G wave below).** Cores + plugin unit-tested (see
 `pnpm test` for the live count), passes `streamdeck validate`, packs.
@@ -37,8 +37,7 @@ then offers the generated key layout in the same conversation; a **two-page bund
 (profile.ts) — a **Board** page (status keys) and an **Ops** page (controls) ship in the manifest's
 `Profiles` for Mini/MK.2/XL, linked by a **page-nav key** (nav.ts); the **CI / PR status key** (ci.ts —
 no longer v2); the formerly-deferred **Stream Deck + dial** (dial.ts + encoder.ts); the Ops-page
-control keys — **afterburner heartbeat** (heartbeat.ts), **review queue** (review.ts), **model toggle**
-(model.ts), and **stop-all** (interrupt-all.ts) — see the Ops-page table below;
+control keys — **model toggle** (model.ts) and **stop-all** (interrupt-all.ts) — see the Ops-page table below;
 **live-process session discovery** (discover.ts) + **board restart-persistence** (state.ts) — see the
 status section; and the `projects.json`↔placed-key overlap fix (state.ts `projects()`: a placed key
 suppresses a seed claiming the same path and overrides by id, so a repo never shows twice — deck
@@ -56,7 +55,7 @@ the editor/folder open works everywhere).
 | **Fleet** roll-up      | one always-visible key: `3w 1! 2✓` counts, coloured by the WORST state present (needsInput > working > done) | lit board: ack blip · dark board: shows why (`add repos` / `wire hooks` / `all idle`)             | `status.summarize`/`worstStatus`   |
 | **Attention** doorbell | dim; lights **amber** and names the project when ANY project needs input                              | jump to that project                                                                              | `status.needsAttention`            |
 | **Usage** gauge        | 5h / 7d used %, sooner-of reset countdown                                                             | (read-only)                                                                                        | `usage.resolveUsage`               |
-| **CI / PR** status     | worst CI state across the fleet's open `afterburner/` PRs — green / red / running; flashes on a new failure | (read-only)                                                                                        | `ci-status` (`gh` poll)            |
+| **CI / PR** status     | worst CI state across the fleet's open PRs — green / red / running; flashes on a new failure | (read-only)                                                                                        | `ci-status` (`gh` poll)            |
 | **Launch preset**\*    | a canned prompt / skill for a chosen project                                                          | fire headless `claude -p`, stream idle→working→done onto the key                                  | `claude.runClaude`                 |
 
 \* optional in v1. Projects are user-configured `{ id, name, path }` — whatever repos you run
@@ -74,13 +73,10 @@ lifecycle hook reports its parent PID for this).
 
 The bundled deck is two pages — **Board** (the keys above) and **Ops** (controls) — linked by a
 **Nav** key (nav.ts) that flips the device between the bundled Board/Ops profiles (Standard + XL;
-the Mini has no room for a second page). Heartbeat and Review need the separate `afterburner` CLI
-and show an explicit "no afterburner" face without it; both no-op (never spawn) when unplaced.
+the Mini has no room for a second page).
 
 | Key                    | Face / colour                                                                     | Press                                                                          | Backed by                     |
 | ---------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------- |
-| **Heartbeat**          | `armed live` / `dry-run` / `idle`, plus `N benched` (failure-backoff)             | short: re-poll · long: fire a cycle (`afterburner run-once`)                    | `afterburner status --json`   |
-| **Review** queue       | `N PRs · M ✓` — green when a PR is ready (CI green or nothing to wait on)          | open the top ready PR in the browser — deliberately open-only, never merge      | `afterburner review --json`   |
 | **Model** toggle       | the global Launch-model override: `default` → `opus` → `sonnet` → `haiku`          | cycle it (Launch keys without their own model pick it up live)                  | Stream Deck global settings   |
 | **Stop all**           | `N working` — red while anything runs                                              | SIGINT every running Claude session across the fleet (the panic key)            | `board.allPids()` + switchto  |
 | **Fleet dial** (SD +)  | touchscreen: the selected project's name + live status line                        | rotate scrubs the fleet · tap / short press opens it · long press interrupts    | encoder.ts (dial.ts is glue)  |
@@ -134,7 +130,7 @@ A keypress must **not** silently bill the metered API. Run under the **subscript
 Default execution = `claude -p` subprocess; the Agent SDK is opt-in only if confirmed on subscription
 auth (else it bills the API — label loudly). **BUILD VERIFY the metering before wiring any SDK path.**
 
-## Architecture (monorepo, under afterburner's `packages/`)
+## Architecture (monorepo)
 
 - **`packages/usage`** — BUILT (12 tests). Reads Claude/Codex usage into a typed `UsageFeed`; ships a
   statusline hook that captures it to a cache the reader/resolver reads. Node built-ins only.
@@ -145,7 +141,7 @@ auth (else it bills the API — label loudly). **BUILD VERIFY the metering befor
   to the plugin. Pure reducer + a thin hook. Node built-ins only.
 - **`packages/jetstream`** — BUILT. The `@elgato/streamdeck` plugin: `<uuid>.sdPlugin` +
   `manifest.json`, one `SingletonAction` per key type (project / fleet / attention / usage / CI /
-  launch / approve-deny / settings / nav / model / review / heartbeat / stop-all, plus the SD+ fleet
+  launch / approve-deny / settings / nav / model / stop-all, plus the SD+ fleet
   dial), the **local HTTP hook-listener server** feeding the `status` reducer, key rendering (colour +
   label + elapsed), the switch/launch actions, the consolidated **`jetstream` CLI** (`init` — the
   guided wizard: projects.json + hooks + an optional prebuilt key layout; `chat` — the conversational
@@ -154,16 +150,13 @@ auth (else it bills the API — label loudly). **BUILD VERIFY the metering befor
   health check; `setup` does hooks + a `projects.json` template), the bundled two-page Board/Ops
   profiles (profile.ts), and startup **`projects.json`** seeding of the board's fleet. Depends on the
   three cores via `workspace:*`.
-  Distribution is **CLI-first**: the packed plugin (UUID `gg.pim.jetstream`) is bundled into the
-  `@pimmesz/afterburner` npm package and installed with `afterburner jetstream install`. The Elgato
-  Marketplace is a parked/later discovery channel, not the primary path.
+  Distribution is **CLI-first**: the packed plugin (UUID `gg.pim.jetstream`) ships inside the
+  `@pimmesz/jetstream` npm package and installs with `npm i -g @pimmesz/jetstream` → `jetstream
+  install`. The Elgato Marketplace is a parked/later discovery channel, not the primary path.
 
-afterburner is **not** a dependency — it's just a project path on the board. (`usage` can shell out to
-`afterburner statusline print --json` as an optional fallback when present, nothing more.)
-
-Gate: each package has its own `typecheck`/`test`/`check`; afterburner's root gate is scoped away from
-`packages/` (proven green), so it stays independent. Add a `packages-ci.yml`; do **not** edit
-afterburner's `ci.yml`. Changesets only when a package publishes to npm (deferred — ships via Elgato).
+Gate: each package has its own `typecheck`/`test`/`check`; the root `ci.yml` runs `pnpm check` +
+`pnpm lint` + `npm pack --dry-run` across every package on each PR, and publishes to npm (OIDC
+trusted publisher) on a push to `main`.
 
 ## Open items to verify during PHASE 2
 

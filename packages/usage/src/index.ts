@@ -1,10 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { dirname, join, delimiter } from 'node:path';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
 
 /** One rolling window's used percentage (0–100, counts up) + its reset time
  * (epoch SECONDS, as the source reports it). */
@@ -68,23 +64,6 @@ export function parseClaudeStatusline(raw: unknown): UsageFeed {
   return feed;
 }
 
-/** Parse the JSON emitted by `afterburner statusline print --json` (already feed-
- * shaped) into a UsageFeed. Defensive. */
-export function parseAfterburnerJson(raw: unknown): UsageFeed {
-  const root = asRecord(raw);
-  if (!root) return { source: 'claude', available: false, note: 'unparseable afterburner output' };
-  const source = typeof root.source === 'string' ? root.source : 'claude';
-  const fiveHour = toWindow(asRecord(root.fiveHour)?.usedPct, asRecord(root.fiveHour)?.resetsAt);
-  const sevenDay = toWindow(asRecord(root.sevenDay)?.usedPct, asRecord(root.sevenDay)?.resetsAt);
-  const available = root.available === true && (fiveHour !== undefined || sevenDay !== undefined);
-  const feed: UsageFeed = { source, available };
-  if (typeof root.model === 'string') feed.model = root.model;
-  if (fiveHour) feed.fiveHour = fiveHour;
-  if (sevenDay) feed.sevenDay = sevenDay;
-  if (!available && typeof root.note === 'string') feed.note = root.note;
-  return feed;
-}
-
 /** Validate/coerce a persisted feed read back from the cache (untrusted disk). */
 export function parseFeed(raw: unknown): UsageFeed | null {
   const root = asRecord(raw);
@@ -130,48 +109,18 @@ export async function readCache(cachePath = defaultCachePath()): Promise<UsageFe
   }
 }
 
-async function afterburnerUsage(): Promise<UsageFeed | null> {
-  try {
-    // Augment PATH so `afterburner` resolves under the Stream Deck GUI's stripped launchd PATH
-    // (which lacks /opt/homebrew/bin) — mirrors jetstream's augmentedPath. Without this the
-    // fallback silently fails with ENOENT and the gauge shows "no usage / install hook".
-    const PATH = [
-      process.env.PATH,
-      join(homedir(), '.local', 'bin'),
-      '/opt/homebrew/bin',
-      '/usr/local/bin',
-      join(homedir(), '.npm-global', 'bin'),
-    ]
-      .filter(Boolean)
-      .join(delimiter);
-    // `--claude` forces the Claude usage line: afterburner otherwise prefers Codex, which would
-    // report the wrong tool's numbers on a Claude-focused deck (7% Codex vs 74% Claude).
-    const { stdout } = await execFileAsync(
-      'afterburner',
-      ['statusline', 'print', '--json', '--claude'],
-      { timeout: 4000, env: { ...process.env, PATH } },
-    );
-    return parseAfterburnerJson(JSON.parse(stdout));
-  } catch {
-    return null;
-  }
-}
-
 export interface ResolveDeps {
   readCacheFn?: (cachePath?: string) => Promise<UsageFeed | null>;
-  afterburnerFn?: () => Promise<UsageFeed | null>;
 }
 
-/** Resolve the current usage: the Jetstream cache first, then `afterburner statusline
- * print --json`, then an explicit unavailable feed. Never throws. */
+/** Resolve the current usage from the Jetstream statusline cache, or an explicit unavailable
+ * feed when there's no data yet. Never throws. */
 export async function resolveUsage(deps: ResolveDeps = {}): Promise<UsageFeed> {
   const cached = await (deps.readCacheFn ?? readCache)();
   if (cached?.available) return cached;
-  const ab = await (deps.afterburnerFn ?? afterburnerUsage)();
-  if (ab?.available) return ab;
   return {
     source: 'claude',
     available: false,
-    note: 'no usage yet — install the Jetstream statusline hook (or afterburner)',
+    note: 'no usage yet — install the Jetstream statusline hook (`jetstream hooks install`)',
   };
 }

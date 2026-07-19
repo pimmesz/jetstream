@@ -131,7 +131,7 @@ export interface HookCommands {
  * a hook is added once, keyed by its SCRIPT (a same-script entry left by a different
  * node runtime or install location is refreshed in place, never duplicated); nothing
  * foreign is removed or reordered. The statusline is set only when the user has none
- * (never clobber e.g. afterburner's) — but one that already runs OUR usage hook is
+ * (never clobber a foreign one) — but one that already runs OUR usage hook is
  * refreshed the same way the hooks are.
  */
 export function mergeHooks(settings: unknown, commands: HookCommands): MergeResult {

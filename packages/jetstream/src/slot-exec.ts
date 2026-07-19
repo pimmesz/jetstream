@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { augmentedPath } from './afterburner-cli';
+import { augmentedPath } from './exec-path';
 import { isHttpUrl } from './slot-command';
 import type { SlotSettings } from './actions/slot';
 

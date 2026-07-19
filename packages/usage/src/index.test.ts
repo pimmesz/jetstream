@@ -5,7 +5,6 @@ import { describe, it, expect } from 'vitest';
 import {
   clampPct,
   parseClaudeStatusline,
-  parseAfterburnerJson,
   parseFeed,
   formatLine,
   resolveUsage,
@@ -58,49 +57,6 @@ describe('parseClaudeStatusline', () => {
     });
     expect(parseClaudeStatusline({ rate_limits: {} }).available).toBe(false);
     expect(parseClaudeStatusline('nope').available).toBe(false);
-  });
-});
-
-describe('parseAfterburnerJson', () => {
-  it('maps afterburner`s feed-shaped JSON', () => {
-    expect(
-      parseAfterburnerJson({
-        source: 'codex',
-        available: true,
-        fiveHour: { usedPct: 43, resetsAt: 111 },
-        sevenDay: { usedPct: 72, resetsAt: 222 },
-      }),
-    ).toEqual({
-      source: 'codex',
-      available: true,
-      fiveHour: { usedPct: 43, resetsAt: 111 },
-      sevenDay: { usedPct: 72, resetsAt: 222 },
-    });
-  });
-
-  it('honors available:false even if a window sneaks in', () => {
-    expect(parseAfterburnerJson({ source: 'codex', available: false, note: 'x' }).available).toBe(
-      false,
-    );
-  });
-
-  it('degrades to unavailable on a non-object root', () => {
-    expect(parseAfterburnerJson('garbage')).toEqual({
-      source: 'claude',
-      available: false,
-      note: 'unparseable afterburner output',
-    });
-    expect(parseAfterburnerJson(null).available).toBe(false);
-  });
-
-  it('passes the model through and defaults a missing source to claude', () => {
-    const feed = parseAfterburnerJson({
-      available: true,
-      model: 'Opus',
-      fiveHour: { usedPct: 12 },
-    });
-    expect(feed.model).toBe('Opus');
-    expect(feed.source).toBe('claude');
   });
 });
 
@@ -174,30 +130,16 @@ describe('writeCache / readCache', () => {
   });
 });
 
-describe('resolveUsage (fallback chain)', () => {
+describe('resolveUsage (statusline cache)', () => {
   const feed = (o: Partial<UsageFeed>): UsageFeed => ({ source: 'claude', available: true, ...o });
 
-  it('prefers the cache when available', async () => {
-    const out = await resolveUsage({
-      readCacheFn: async () => feed({ model: 'cache' }),
-      afterburnerFn: async () => feed({ model: 'ab' }),
-    });
+  it('returns the cache when available', async () => {
+    const out = await resolveUsage({ readCacheFn: async () => feed({ model: 'cache' }) });
     expect(out.model).toBe('cache');
   });
 
-  it('falls back to afterburner when the cache is empty', async () => {
-    const out = await resolveUsage({
-      readCacheFn: async () => null,
-      afterburnerFn: async () => feed({ model: 'ab' }),
-    });
-    expect(out.model).toBe('ab');
-  });
-
-  it('returns an explicit unavailable feed when nothing is readable', async () => {
-    const out = await resolveUsage({
-      readCacheFn: async () => null,
-      afterburnerFn: async () => null,
-    });
+  it('returns an explicit unavailable feed (with the install hint) when the cache is empty', async () => {
+    const out = await resolveUsage({ readCacheFn: async () => null });
     expect(out.available).toBe(false);
     expect(out.note).toMatch(/install the Jetstream statusline hook/);
   });
