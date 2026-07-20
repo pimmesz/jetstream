@@ -294,7 +294,12 @@ export class SettingsKey extends SingletonAction {
    * and the settings face's setup counter updates. Never throws. */
   private async fixHooks(): Promise<void> {
     try {
-      await installHooks({ commands: hookCommands(pluginBinDir(), false) });
+      // Pressing Fix IS the consent to take the statusline slot — without this the button was a
+      // no-op for anyone whose statusline belonged to another tool (the blank-gauge bug).
+      await installHooks({
+        commands: hookCommands(pluginBinDir(), false),
+        replaceStatusline: true,
+      });
     } catch (error) {
       const checks = await this.pluginHealth();
       checks.push({ status: 'warn', message: `Couldn't install hooks: ${errMsg(error)}` });

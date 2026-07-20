@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { DEFAULTS, LIMITS, type JetstreamConfig } from './config';
 import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos } from './fleet';
-import { installHooks, type HookCommands } from './hooks-install';
+import { installHooks, type HookCommands, type InstallResult } from './hooks-install';
 import { defaultOpenFile } from './open-file';
 import { DECK_MODELS, type DeckModel, writeProfileFile } from './profile';
 import { parseProjectsConfig, projectsConfigPath } from './projects-config';
@@ -318,11 +318,12 @@ export async function runInit(deps: InitDeps): Promise<number> {
   }
 
   // Wire the Claude hooks (idempotent; the plugin's first-launch auto-wire does the same).
+  let hooks: InstallResult;
   try {
-    const result = await install({ commands: deps.commands });
-    if (result.changed) {
-      io.say(`Jetstream hooks installed into ${result.settingsPath}.`);
-      if (result.backupCreated) io.say(`(previous settings backed up to ${result.backupPath})`);
+    hooks = await install({ commands: deps.commands });
+    if (hooks.changed) {
+      io.say(`Jetstream hooks installed into ${hooks.settingsPath}.`);
+      if (hooks.backupCreated) io.say(`(previous settings backed up to ${hooks.backupPath})`);
     } else {
       io.say('Jetstream hooks were already installed — nothing changed.');
     }
@@ -331,6 +332,36 @@ export async function runInit(deps: InitDeps): Promise<number> {
       `Could not install the Claude hooks: ${error instanceof Error ? error.message : String(error)}`,
     );
     return 1;
+  }
+
+  // A foreign statusline is never taken without asking — but ASK, rather than leaving the gauge
+  // dark with no explanation (that silence is what shipped a blank Usage key). The prompt sits
+  // OUTSIDE the installer's catch on purpose: a Ctrl-C / EOF here must reach the CLI's abort
+  // handler (exit 130), not be misreported as "could not install the hooks".
+  if (hooks.statuslineBlocked) {
+    io.say('');
+    io.say('Your Claude statusline is set to something else, so the usage gauge is not wired');
+    io.say('and the Usage key stays blank.');
+    if (yes(await io.ask("Replace it with Jetstream's usage gauge? [y/N] "))) {
+      try {
+        const replaced = await install({ commands: deps.commands, replaceStatusline: true });
+        io.say(
+          replaced.changed
+            ? 'Statusline replaced — the Usage key lights up after your next `claude` prompt.'
+            : 'Statusline unchanged.',
+        );
+        if (replaced.backupCreated) {
+          io.say(`(previous settings backed up to ${replaced.backupPath})`);
+        }
+      } catch (error) {
+        // Non-fatal: the hooks themselves are installed; only the optional swap failed.
+        io.say(
+          `Could not replace the statusline: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else {
+      io.say('Left your statusline as-is — the Usage key stays blank.');
+    }
   }
 
   io.say('');

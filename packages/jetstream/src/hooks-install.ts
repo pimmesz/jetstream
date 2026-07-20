@@ -57,6 +57,10 @@ function sameScript(existing: unknown, command: string): boolean {
 export interface MergeResult {
   next: Record<string, unknown>;
   changed: boolean;
+  /** A FOREIGN statusline holds the slot, so the usage gauge could NOT be wired. Reported rather
+   * than skipped in silence — that silence is exactly what left a gauge dark with no explanation.
+   * The caller decides: the CLI asks to replace it, the plugin's silent auto-setup leaves it. */
+  statuslineBlocked: boolean;
 }
 
 /** Add the command to the event's entries, or UPDATE the FIRST existing entry that runs the
@@ -130,11 +134,17 @@ export interface HookCommands {
  * Merge Jetstream's hooks into a Claude Code settings object. Pure and idempotent:
  * a hook is added once, keyed by its SCRIPT (a same-script entry left by a different
  * node runtime or install location is refreshed in place, never duplicated); nothing
- * foreign is removed or reordered. The statusline is set only when the user has none
- * (never clobber a foreign one) — but one that already runs OUR usage hook is
- * refreshed the same way the hooks are.
+ * foreign is removed or reordered. The statusline is set when the user has none, and one that
+ * already runs OUR usage hook is refreshed the same way the hooks are. A FOREIGN statusline is
+ * taken ONLY with `replaceStatusline` (explicit user consent); otherwise it is left alone and
+ * flagged via `statuslineBlocked` so the caller can offer to replace it instead of the gauge
+ * silently staying dark.
  */
-export function mergeHooks(settings: unknown, commands: HookCommands): MergeResult {
+export function mergeHooks(
+  settings: unknown,
+  commands: HookCommands,
+  replaceStatusline = false,
+): MergeResult {
   const base = asRecord(settings) ?? {};
   const next: Record<string, unknown> = { ...base };
   const hooks: Record<string, unknown> = { ...(asRecord(base.hooks) ?? {}) };
@@ -153,27 +163,35 @@ export function mergeHooks(settings: unknown, commands: HookCommands): MergeResu
   }
   next.hooks = hooks;
 
+  let statuslineBlocked = false;
   if (commands.usage !== undefined) {
     const existing = asRecord(base.statusLine);
+    const ours = existing?.type === 'command' && sameScript(existing.command, commands.usage);
     if (base.statusLine === undefined) {
       next.statusLine = { type: 'command', command: commands.usage };
       changed = true;
-    } else if (
-      existing?.type === 'command' &&
-      sameScript(existing.command, commands.usage) &&
-      existing.command !== commands.usage
-    ) {
-      // Ours, but pointing at a stale runtime/path — refresh; foreign ones stay.
+    } else if (ours && existing?.command !== commands.usage) {
+      // Ours, but pointing at a stale runtime/path — refresh.
       next.statusLine = { ...existing, command: commands.usage };
       changed = true;
+    } else if (!ours && replaceStatusline) {
+      // Foreign, but the caller has explicit consent — take the slot.
+      next.statusLine = { type: 'command', command: commands.usage };
+      changed = true;
+    } else if (!ours) {
+      // Foreign, no consent — leave it untouched, but TELL the caller why the gauge stays dark.
+      statuslineBlocked = true;
     }
   }
-  return { next, changed };
+  return { next, changed, statuslineBlocked };
 }
 
 export interface InstallOptions {
   settingsPath?: string;
   commands: HookCommands;
+  /** Replace a FOREIGN statusline with ours. Requires explicit user consent — the CLI asks first,
+   * the inspector's Fix button IS the consent; the plugin's silent auto-setup never sets it. */
+  replaceStatusline?: boolean;
 }
 
 export interface InstallResult {
@@ -184,6 +202,8 @@ export interface InstallResult {
   /** True only when THIS install created the backup — gates the "backed up to …"
    * message so a re-install doesn't claim a stale backup as fresh. */
   backupCreated?: boolean;
+  /** A foreign statusline blocked the usage gauge — re-run with `replaceStatusline` to take it. */
+  statuslineBlocked?: boolean;
 }
 
 export function defaultSettingsPath(home = homedir()): string {
@@ -251,8 +271,12 @@ export async function installHooks(options: InstallOptions): Promise<InstallResu
         );
       }
     }
-    const { next, changed } = mergeHooks(parsed, options.commands);
-    if (!changed) return { changed: false, settingsPath };
+    const { next, changed, statuslineBlocked } = mergeHooks(
+      parsed,
+      options.commands,
+      options.replaceStatusline,
+    );
+    if (!changed) return { changed: false, settingsPath, statuslineBlocked };
 
     if (raw !== undefined && backup === undefined) backup = await backupOnce(settingsPath, raw);
 
@@ -271,6 +295,7 @@ export async function installHooks(options: InstallOptions): Promise<InstallResu
     return {
       changed: true,
       settingsPath,
+      statuslineBlocked,
       ...(backup ? { backupPath: backup.backupPath, backupCreated: backup.backupCreated } : {}),
     };
   }

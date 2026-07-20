@@ -44,6 +44,8 @@ Commands:
   init                            Guided setup: build projects.json (your whole fleet) +
                                   settings, wire the Claude hooks, print next steps
   hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
+    [--replace-statusline]        …and take the statusline slot from another tool, so the
+                                  usage gauge works (your statusline is kept without this)
   doctor                          Read-only health check — why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps
   board                           Print your current Stream Deck board as a coordinate map (a1…hN)
@@ -81,15 +83,26 @@ async function runHooks(args: string[], binDir: string): Promise<number> {
     return 1;
   }
   let toolDetail = false;
+  let replaceStatusline = false;
   try {
-    const { values } = parseArgs({ args: rest, options: { 'tool-detail': { type: 'boolean' } } });
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        'tool-detail': { type: 'boolean' },
+        'replace-statusline': { type: 'boolean' },
+      },
+    });
     toolDetail = values['tool-detail'] === true;
+    replaceStatusline = values['replace-statusline'] === true;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
   try {
-    const result = await installHooks({ commands: hookCommands(binDir, toolDetail) });
+    const result = await installHooks({
+      commands: hookCommands(binDir, toolDetail),
+      replaceStatusline,
+    });
     if (result.changed) {
       console.log(`Jetstream hooks installed into ${result.settingsPath}`);
       if (result.backupCreated) {
@@ -98,6 +111,15 @@ async function runHooks(args: string[], binDir: string): Promise<number> {
       console.log('Restart any running `claude` sessions to pick them up.');
     } else {
       console.log('Jetstream hooks were already installed — nothing changed.');
+    }
+    // Never leave the gauge dark without saying why: a foreign statusline is kept on purpose,
+    // so name it and give the one flag that takes it (this command stays scriptable — `setup`
+    // calls it — so it prompts nowhere).
+    if (result.statuslineBlocked) {
+      console.log('');
+      console.log('Your Claude statusline is set to something else, so the usage gauge is NOT');
+      console.log('wired and the Usage key will stay blank. Your statusline was left untouched.');
+      console.log('To hand the slot to Jetstream: jetstream hooks install --replace-statusline');
     }
     return 0;
   } catch (error) {

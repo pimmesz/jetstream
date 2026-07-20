@@ -59,10 +59,30 @@ describe('mergeHooks', () => {
     expect(JSON.stringify(stop)).toContain('status-hook.js');
   });
 
-  it('never clobbers an existing statusLine', () => {
+  it('never clobbers an existing statusLine — and SAYS the gauge was blocked', () => {
     const settings = { statusLine: { type: 'command', command: 'afterburner statusline' } };
-    const { next } = mergeHooks(settings, { status: STATUS, usage: USAGE });
+    const { next, statuslineBlocked } = mergeHooks(settings, { status: STATUS, usage: USAGE });
     expect(next.statusLine).toEqual({ type: 'command', command: 'afterburner statusline' });
+    // The silence here is what left a Usage key dark with no explanation — it must be reported.
+    expect(statuslineBlocked).toBe(true);
+  });
+
+  it('takes a foreign statusLine only with explicit consent', () => {
+    const settings = { statusLine: { type: 'command', command: 'afterburner statusline' } };
+    const { next, changed, statuslineBlocked } = mergeHooks(
+      settings,
+      { status: STATUS, usage: USAGE },
+      true,
+    );
+    expect(next.statusLine).toEqual({ type: 'command', command: USAGE });
+    expect(changed).toBe(true);
+    expect(statuslineBlocked).toBe(false); // consented → nothing is blocked
+  });
+
+  it('does not flag a block when the slot was free or already ours', () => {
+    expect(mergeHooks({}, { status: STATUS, usage: USAGE }).statuslineBlocked).toBe(false);
+    const ours = { statusLine: { type: 'command', command: USAGE } };
+    expect(mergeHooks(ours, { status: STATUS, usage: USAGE }).statuslineBlocked).toBe(false);
   });
 
   it('skips PermissionRequest when no permission command is given', () => {

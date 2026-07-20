@@ -1,6 +1,22 @@
+import { readFileSync } from 'node:fs';
 import { action, SingletonAction } from '@elgato/streamdeck';
 import { resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
+import { usageStatuslineWired } from '../doctor';
+import { defaultSettingsPath } from '../hooks-install';
 import { formatNextReset, keyFace } from '../render';
+
+/** Sub-label for a BLANK gauge: "install hook" when our statusline isn't wired — running claude
+ * would change nothing, so saying "run claude" sends you the wrong way — else "run claude" (wired,
+ * there's just no data yet). Reads settings only while the gauge is blank, never on the happy path. */
+function blankSub(): string {
+  let raw: string | undefined;
+  try {
+    raw = readFileSync(defaultSettingsPath(), 'utf8');
+  } catch {
+    raw = undefined;
+  }
+  return usageStatuslineWired(raw) ? 'run claude' : 'install hook';
+}
 
 /**
  * The usage gauge: 5h/7d used % + the sooner reset countdown, from the Jetstream usage cache
@@ -38,7 +54,7 @@ export class UsageKey extends SingletonAction {
           subMax: 18,
           sub: formatNextReset(feed.fiveHour?.resetsAt, feed.sevenDay?.resetsAt, now),
         })
-      : keyFace({ color: '#26262b', label: 'no usage', sub: 'run claude' });
+      : keyFace({ color: '#26262b', label: 'no usage', sub: blankSub() });
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');

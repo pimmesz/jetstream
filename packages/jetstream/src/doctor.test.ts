@@ -10,6 +10,7 @@ import {
   checkProjectsConfig,
   checkGhForCi,
   checkUsageStatusline,
+  usageStatuslineWired,
   commandOnPath,
   hasJetstreamHooks,
   runDoctor,
@@ -123,7 +124,9 @@ describe('checkUsageStatusline', () => {
     });
 
   it('ok when the usage statusline hook is wired', () => {
-    const raw = withStatusHook({ statusLine: { command: '"/n" "/x/bin/usage-hook.js"' } });
+    const raw = withStatusHook({
+      statusLine: { type: 'command', command: '"/n" "/x/bin/usage-hook.js"' },
+    });
     expect(checkUsageStatusline(raw).status).toBe('ok');
   });
 
@@ -138,6 +141,46 @@ describe('checkUsageStatusline', () => {
     expect(checkUsageStatusline(undefined).status).toBe('ok');
     expect(checkUsageStatusline('{}').status).toBe('ok'); // no Jetstream hooks at all
     expect(checkUsageStatusline('{bad json').status).toBe('ok'); // corrupt → don't double-warn
+  });
+
+  // The regression that blanked the gauge: mergeHooks never clobbers a foreign statusline, so the
+  // old "run `jetstream hooks install`" advice (and the one-press Fix) silently did nothing.
+  it('points at the routes that actually take the slot when a foreign statusline holds it', () => {
+    const raw = withStatusHook({
+      statusLine: { type: 'command', command: '"/n" "/opt/homebrew/bin/afterburner" statusline' },
+    });
+    const r = checkUsageStatusline(raw);
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/another statusline/i);
+    // Both consenting routes, and NOT the bare `hooks install` that silently no-ops here.
+    expect(r.message).toContain('--replace-statusline');
+    expect(r.message).toMatch(/press Fix/i);
+    expect(r.fixId).toBe('hooks'); // the press is the consent, so the button can fix it
+  });
+
+  it('treats a non-object statusline as foreign too (mergeHooks only fills an ABSENT slot)', () => {
+    const r = checkUsageStatusline(withStatusHook({ statusLine: 'some-other-tool' }));
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/another statusline/i);
+  });
+});
+
+describe('usageStatuslineWired', () => {
+  const statusLine = (extra: Record<string, unknown>): string => JSON.stringify({ statusLine: extra });
+
+  it('is true only when the configured statusline runs OUR usage hook', () => {
+    expect(usageStatuslineWired(statusLine({ type: 'command', command: '"/n" "/x/bin/usage-hook.js"' }))).toBe(true);
+    expect(usageStatuslineWired(statusLine({ type: 'command', command: 'afterburner statusline' }))).toBe(false);
+    expect(usageStatuslineWired(JSON.stringify({}))).toBe(false);
+    expect(usageStatuslineWired(undefined)).toBe(false);
+    expect(usageStatuslineWired('{bad json')).toBe(false);
+  });
+
+  // Must agree with mergeHooks' own "is it ours?" test, which requires type:'command' — otherwise
+  // doctor shows a green check over a slot the installer still refuses to wire.
+  it('requires type:"command", matching what the installer treats as ours', () => {
+    expect(usageStatuslineWired(statusLine({ command: '"/n" "/x/bin/usage-hook.js"' }))).toBe(false);
+    expect(usageStatuslineWired(statusLine({ type: 'other', command: 'x/usage-hook.js' }))).toBe(false);
   });
 });
 

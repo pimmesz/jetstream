@@ -113,6 +113,26 @@ export function checkHooksPresent(raw: string | undefined): CheckResult {
  * with status+permission wired but no usage statusLine passes that check while the Usage key stays
  * blank. Flag exactly that gap. Stays quiet when settings are absent/corrupt or Jetstream isn't set
  * up at all — `checkHooksPresent` already leads the way there. Pure. */
+/** Is OUR usage statusline hook the configured statusline? Pure — `raw` is the settings file text.
+ * Shared with the Usage key so a blank gauge can tell "not wired" from "wired, no data yet". */
+export function usageStatuslineWired(raw: string | undefined): boolean {
+  let parsed: unknown;
+  try {
+    parsed = raw === undefined ? undefined : JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  const statusLine = asRecord(asRecord(parsed)?.statusLine);
+  // Require type:'command' so this agrees with mergeHooks' own "is it ours?" test — without it
+  // doctor could report the gauge wired while the installer still treats the slot as foreign and
+  // refuses to wire it, leaving a green check over a permanently blank key.
+  return (
+    statusLine?.type === 'command' &&
+    typeof statusLine.command === 'string' &&
+    statusLine.command.includes('usage-hook.js')
+  );
+}
+
 export function checkUsageStatusline(raw: string | undefined): CheckResult {
   let parsed: unknown;
   try {
@@ -120,11 +140,21 @@ export function checkUsageStatusline(raw: string | undefined): CheckResult {
   } catch {
     parsed = undefined;
   }
-  const command = asRecord(asRecord(parsed)?.statusLine)?.command;
-  if (typeof command === 'string' && command.includes('usage-hook.js')) {
+  if (usageStatuslineWired(raw)) {
     return { status: 'ok', message: 'usage gauge statusline (usage-hook.js) wired' };
   }
   if (parsed !== undefined && hasJetstreamHooks(parsed)) {
+    // A foreign statusline is kept unless you consent to replacing it, so plain `hooks install`
+    // deliberately leaves the gauge dark. Name the two routes that DO take the slot — the
+    // inspector's Fix button (the press is the consent) keeps its fixId.
+    if (asRecord(parsed)?.statusLine !== undefined) {
+      return {
+        status: 'warn',
+        message:
+          'another statusline is configured, so the usage gauge is not wired and the Usage key stays blank — press Fix, or run `jetstream hooks install --replace-statusline`',
+        fixId: 'hooks',
+      };
+    }
     return {
       status: 'warn',
       message:
