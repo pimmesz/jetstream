@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import streamDeck, { action, SingletonAction } from '@elgato/streamdeck';
+import type { KeyDownEvent } from '@elgato/streamdeck';
 import { board } from '../state';
 import { config, type JetstreamConfig } from '../config';
 import { commandOnPath, defaultDoctorIO, runDoctor, type CheckResult } from '../doctor';
@@ -11,6 +12,7 @@ import { hookCommands } from '../cli';
 import { isListenerBound } from '../listener-status';
 import { installHooks } from '../hooks-install';
 import { defaultOpenFile } from '../open-file';
+import { openDoctorInTerminal } from '../exec-terminal';
 import {
   deckForDeviceType,
   defaultProfileName,
@@ -54,6 +56,13 @@ export function fixId(payload: unknown): string | undefined {
   return typeof fix === 'string' ? fix : undefined;
 }
 
+/** What a Settings-key press should do given readiness: while any check is failing (the amber
+ * "setup N/M" face) a press opens `jetstream doctor` so you can fix it; once every check passes
+ * the key is the contrast toggle. Same `warn` test the face uses, so press matches what it shows. */
+export function pressIntent(checks: CheckResult[]): 'doctor' | 'toggle' {
+  return checks.some((c) => c.status === 'warn') ? 'doctor' : 'toggle';
+}
+
 /** The bin/ dir where the bundled hook scripts sit (this file bundles into bin/plugin.js). */
 function pluginBinDir(): string {
   return dirname(fileURLToPath(import.meta.url));
@@ -95,6 +104,9 @@ function pluginDoctorIO(): ReturnType<typeof defaultDoctorIO> {
  */
 @action({ UUID: 'gg.pim.jetstream.settings' })
 export class SettingsKey extends SingletonAction {
+  /** Injected so a test can assert the doctor launch without spawning a real terminal. */
+  private openDoctor: () => Promise<boolean> = openDoctorInTerminal;
+
   override onWillAppear(): void {
     void this.renderAll();
   }
@@ -293,7 +305,15 @@ export class SettingsKey extends SingletonAction {
     void this.renderAll();
   }
 
-  override async onKeyDown(): Promise<void> {
+  override async onKeyDown(ev: KeyDownEvent): Promise<void> {
+    // While setup is incomplete (the amber "setup N/M" face), a press opens `jetstream doctor`
+    // in a terminal so you can fix the failing check — toggling a theme you can't yet see the
+    // point of would be useless. Once every check is green the key is the contrast toggle.
+    if (pressIntent(await this.pluginHealth()) === 'doctor') {
+      const opened = await this.openDoctor();
+      await (opened ? ev.action.showOk() : ev.action.showAlert());
+      return;
+    }
     const current = config.get();
     const next: JetstreamConfig = {
       ...current,

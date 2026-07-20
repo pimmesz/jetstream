@@ -6,7 +6,9 @@ import {
   isHealthCheck,
   isProfileSwitch,
   isToolDetail,
+  pressIntent,
 } from './settings';
+import type { CheckResult } from '../doctor';
 
 // Each guard matches exactly one { key: 'value' } shape from the property inspector and
 // must reject everything else — payloads arrive as untrusted unknown JSON.
@@ -51,6 +53,24 @@ describe('property-inspector payload guards', () => {
         expect(guard({ [other.key]: other.value })).toBe(false);
       }
     }
+  });
+});
+
+describe('pressIntent', () => {
+  const ok = (message: string): CheckResult => ({ status: 'ok', message });
+  const warn = (message: string): CheckResult => ({ status: 'warn', message });
+
+  it("opens doctor while any check is failing (the amber 'setup N/M' state)", () => {
+    expect(pressIntent([ok('claude on PATH'), warn('9/10: update available')])).toBe('doctor');
+    expect(pressIntent([warn('no projects yet')])).toBe('doctor');
+  });
+
+  it('toggles the theme once every check passes (10/10)', () => {
+    expect(pressIntent([ok('claude on PATH'), ok('on the latest version')])).toBe('toggle');
+  });
+
+  it('toggles for an empty checklist (nothing failing)', () => {
+    expect(pressIntent([])).toBe('toggle');
   });
 });
 
