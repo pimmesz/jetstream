@@ -134,7 +134,7 @@ describe('profileForDeviceType', () => {
 });
 
 describe('buildProfile', () => {
-  it('XL: controls anchor the bottom row, projects fill the top-left with name+path settings', () => {
+  it('XL: usage + settings anchor the bottom-left, projects fill the top-left with name+path settings', () => {
     const { manifest, placedProjects, skippedProjects } = buildProfile(XL, projects(3));
     const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
     // The XL default board is projects + two touches: the Usage gauge (d1) and the Jetstream mark
@@ -156,7 +156,9 @@ describe('buildProfile', () => {
     expect(xlUuids).not.toContain('gg.pim.jetstream.ci'); // control keys dropped from the XL default
     expect(xlUuids).not.toContain('gg.pim.jetstream.launch');
     expect(xlUuids).not.toContain('gg.pim.jetstream.permission');
-    expect(xlUuids).not.toContain('gg.pim.jetstream.settings');
+    // Settings IS on the XL default now, at d2 beside the usage gauge: a press opens
+    // `jetstream doctor`, and its inspector is where theme/timings/fleet live.
+    expect(xlUuids).toContain('gg.pim.jetstream.settings');
     // Projects fill the top row left-to-right, starting top-left.
     expect(actions['0,0']).toMatchObject({
       UUID: 'gg.pim.jetstream.project',
@@ -170,12 +172,13 @@ describe('buildProfile', () => {
     expect(manifest.Version).toBe('1.0');
   });
 
-  it('XL overflow: projects fill the free slots, capped by the two fixed keys', () => {
+  it('XL overflow: projects fill the free slots, capped by the three fixed keys', () => {
     const { manifest, placedProjects } = buildProfile(XL, projects(40));
     const actions = manifest.Actions as Record<string, { UUID: string }>;
     // 32 slots − 1 Usage gauge (d1) − 1 logo (a8) = 30 project slots. Every other control was dropped.
-    expect(placedProjects).toBe(30);
+    expect(placedProjects).toBe(29); // 32 keys − usage(d1) − settings(d2) − logo(a8)
     expect(actions['0,0']!.UUID).toBe('gg.pim.jetstream.project'); // top-left is a project
+    expect(actions['1,3']!.UUID).toBe('gg.pim.jetstream.settings'); // d2 — press opens `jetstream doctor`
     expect(actions['0,3']!.UUID).toBe('gg.pim.jetstream.usage'); // Usage still anchors d1
   });
 
@@ -249,7 +252,7 @@ describe('buildDefaultProfile (the shipped defaults)', () => {
     expect(actions['2,3']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } });
     expect(actions['6,0']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'empty' } }); // unplaced → slot
     const defUuids = Object.values(actions).map((a) => a.UUID);
-    expect(defUuids).not.toContain('gg.pim.jetstream.settings');
+    expect(defUuids).toContain('gg.pim.jetstream.settings'); // d2
     expect(defUuids).not.toContain('gg.pim.jetstream.ci');
     expect(manifest.Name).toBe('Jetstream XL');
     // Baked at publish time: no path/name may appear anywhere in the manifest.
@@ -362,7 +365,7 @@ describe('zip writer', () => {
   it('archive bytes are reproducible ACROSS runs (pinned digest — catches run-dependent bytes)', () => {
     const built = buildProfile(XL, projects(2));
     const digest = createHash('sha256').update(renderProfileArchive(built, 'fixed-id')).digest('hex');
-    expect(digest).toBe('9ffcba8b7219c00ba41ea1ec6c401d5a0967e351f42aba65b8ca5bf65414acab');
+    expect(digest).toBe('0ac2c2d5e28bde31bf2ee44b61b343f65f69bb23e5529947c6cc5fcb48a514da');
   });
 
   it.skipIf(!hasUnzip && !process.env.CI)('a real unzip extracts the archive and the manifest round-trips', () => {

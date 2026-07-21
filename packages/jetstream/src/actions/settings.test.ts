@@ -6,7 +6,7 @@ import {
   isHealthCheck,
   isProfileSwitch,
   isToolDetail,
-  pressIntent,
+  hasWarnings,
 } from './settings';
 import type { CheckResult } from '../doctor';
 
@@ -56,21 +56,22 @@ describe('property-inspector payload guards', () => {
   });
 });
 
-describe('pressIntent', () => {
+// This is now purely about the FACE. The press is unconditional — it always opens doctor — because
+// a press whose meaning depends on invisible health state is unpredictable: a permanently-warning
+// check (the token grace period warns for two releases) used to hijack the key for that whole
+// window, making its other action unreachable and a press look like it did nothing.
+describe('hasWarnings', () => {
   const ok = (message: string): CheckResult => ({ status: 'ok', message });
   const warn = (message: string): CheckResult => ({ status: 'warn', message });
 
-  it("opens doctor while any check is failing (the amber 'setup N/M' state)", () => {
-    expect(pressIntent([ok('claude on PATH'), warn('9/10: update available')])).toBe('doctor');
-    expect(pressIntent([warn('no projects yet')])).toBe('doctor');
+  it("is true while any check is failing (drives the amber 'setup N/M' face)", () => {
+    expect(hasWarnings([ok('claude on PATH'), warn('9/10: update available')])).toBe(true);
+    expect(hasWarnings([warn('no projects yet')])).toBe(true);
   });
 
-  it('toggles the theme once every check passes (10/10)', () => {
-    expect(pressIntent([ok('claude on PATH'), ok('on the latest version')])).toBe('toggle');
-  });
-
-  it('toggles for an empty checklist (nothing failing)', () => {
-    expect(pressIntent([])).toBe('toggle');
+  it('is false once every check passes, and for an empty checklist', () => {
+    expect(hasWarnings([ok('claude on PATH'), ok('on the latest version')])).toBe(false);
+    expect(hasWarnings([])).toBe(false);
   });
 });
 

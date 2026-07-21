@@ -184,12 +184,15 @@ function fixedLayout(deck: DeckModel): Map<string, ProfileAction> {
   }
 
   if (deck.key === 'xl') {
-    // On the XL every project gets its own key, so the roll-up + control keys are dropped: the board
-    // is projects plus two touches — the Usage gauge on d1, and the Jetstream mark in the top-right
-    // corner (a8). CI, Launch, Approve/Deny and Settings are left OFF the default here (they add
-    // little when every repo has a key); add any of them in the app or via `jetstream chat`. The
-    // smaller decks keep their control strips, where projects overflow and those keys earn their spot.
+    // On the XL every project gets its own key, so the roll-up + overflow keys are dropped: the
+    // board is projects plus three touches — the Usage gauge on d1, Jetstream settings beside it on
+    // d2 (a press opens `jetstream doctor`, and its inspector holds theme/timings/fleet), and the
+    // Jetstream mark in the top-right corner (a8). Approve/Deny are left OFF here: they add little
+    // when every repo has its own key, and nothing at all if you run with permissions bypassed —
+    // add them in the app or via `jetstream chat`. The smaller decks keep their control strips,
+    // where projects overflow and those keys earn their spot.
     at(0, 3, action('Usage gauge', 'gg.pim.jetstream.usage'));
+    at(1, 3, action('Jetstream settings', 'gg.pim.jetstream.settings'));
     at(7, 0, action('Jetstream', 'gg.pim.jetstream.slot', { kind: 'logo' }));
     return slots;
   }

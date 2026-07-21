@@ -57,11 +57,13 @@ export function fixId(payload: unknown): string | undefined {
   return typeof fix === 'string' ? fix : undefined;
 }
 
-/** What a Settings-key press should do given readiness: while any check is failing (the amber
- * "setup N/M" face) a press opens `jetstream doctor` so you can fix it; once every check passes
- * the key is the contrast toggle. Same `warn` test the face uses, so press matches what it shows. */
-export function pressIntent(checks: CheckResult[]): 'doctor' | 'toggle' {
-  return checks.some((c) => c.status === 'warn') ? 'doctor' : 'toggle';
+/** Whether the face should show the amber "setup N/M" nudge. INFORMATIONAL only — it changes what
+ * the key SHOWS, never what a press DOES. The press used to branch on this, which meant the key's
+ * behaviour depended on invisible state: a check that warns permanently (the loopback-token grace
+ * period does, for two whole releases) silently hijacked the key forever, so its other job was
+ * unreachable and pressing it looked like nothing happened. */
+export function hasWarnings(checks: CheckResult[]): boolean {
+  return checks.some((c) => c.status === 'warn');
 }
 
 /** The bin/ dir where the bundled hook scripts sit (this file bundles into bin/plugin.js). */
@@ -95,12 +97,15 @@ function pluginDoctorIO(): ReturnType<typeof defaultDoctorIO> {
 }
 
 /**
- * The settings key: shows the current theme; a press quick-toggles colour-blind
- * (high-contrast) mode. Its property inspector edits the full plugin config (theme,
- * long-press, refresh, escalate) via Stream Deck global settings, AND manages the fleet
- * (projects.json) — the terminal-free equivalent of `jetstream init`'s fleet step. The
- * inspector can't touch the filesystem (sandboxed webview), so it sends fleet messages
- * here and this backend performs the read/write + live board re-seed.
+ * The settings key. A PRESS always opens `jetstream doctor` in a terminal — one key, one job,
+ * never dependent on state you cannot see. The face shows the contrast state, or an amber
+ * "setup N/M" while any health check is failing.
+ *
+ * Everything configurable lives in its property inspector: theme (including the colour-blind
+ * high-contrast mode), long-press, refresh, escalation — via Stream Deck global settings — AND the
+ * fleet (projects.json), the terminal-free equivalent of `jetstream init`'s fleet step. The
+ * inspector can't touch the filesystem (sandboxed webview), so it sends fleet messages here and
+ * this backend performs the read/write + live board re-seed.
  */
 @action({ UUID: 'gg.pim.jetstream.settings' })
 export class SettingsKey extends SingletonAction {
@@ -311,22 +316,16 @@ export class SettingsKey extends SingletonAction {
   }
 
   override async onKeyDown(ev: KeyDownEvent): Promise<void> {
-    // While setup is incomplete (the amber "setup N/M" face), a press opens `jetstream doctor`
-    // in a terminal so you can fix the failing check — toggling a theme you can't yet see the
-    // point of would be useless. Once every check is green the key is the contrast toggle.
-    if (pressIntent(await this.pluginHealth()) === 'doctor') {
-      const opened = await this.openDoctor();
-      await (opened ? ev.action.showOk() : ev.action.showAlert());
-      return;
-    }
-    const current = config.get();
-    const next: JetstreamConfig = {
-      ...current,
-      theme: current.theme === 'default' ? 'highContrast' : 'default',
-    };
-    // Persist globally; the plugin's onDidReceiveGlobalSettings updates `config` and
-    // repaints every key.
-    await streamDeck.settings.setGlobalSettings(next);
+    // ALWAYS open `jetstream doctor`. One key, one job: what a press does must never depend on
+    // state the user cannot see. This used to branch on the health checks, so a check that warns
+    // PERMANENTLY — the loopback-token grace period does, for two whole releases — silently
+    // hijacked the key for that entire window. The contrast toggle it displaced was then
+    // unreachable, and pressing the key looked like nothing happened at all.
+    //
+    // Contrast (and every other setting) lives in this key's property inspector, which is where
+    // someone hunting for a setting actually looks.
+    const opened = await this.openDoctor();
+    await (opened ? ev.action.showOk() : ev.action.showAlert());
   }
 
   async renderAll(): Promise<void> {
@@ -334,7 +333,7 @@ export class SettingsKey extends SingletonAction {
     // Nudge: while setup is incomplete the face shows "setup N/M" (amber); once every check
     // passes it falls back to the contrast state. Open the inspector for the fixable list.
     const checks = await this.pluginHealth();
-    const warns = checks.filter((c) => c.status === 'warn').length;
+    const warns = hasWarnings(checks) ? checks.filter((c) => c.status === 'warn').length : 0;
     const sub =
       warns > 0
         ? `setup ${checks.length - warns}/${checks.length}`

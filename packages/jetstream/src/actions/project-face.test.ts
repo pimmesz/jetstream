@@ -18,15 +18,50 @@ describe('projectFace', () => {
     expect(f.glyph).toBeUndefined();
   });
 
-  it('needsInput → ! + approve? when deck-answerable, ? + answer otherwise', () => {
-    expect(projectFace({ ...base, name: 'x', configured: true, status: 'needsInput', answerable: true })).toMatchObject({
-      glyph: '!',
-      sub: 'approve?',
+  // The sub-line now names WHERE to act, and the corner stays empty: on an ordinary state the
+  // glyph only repeated the word underneath it, spending the key's one free spot on nothing.
+  it('needsInput says where to act, with no corner marker', () => {
+    const answerable = projectFace({ ...base, name: 'x', configured: true, status: 'needsInput', answerable: true });
+    expect(answerable.sub).toBe('approve on deck');
+    expect(answerable.glyph).toBeUndefined();
+
+    const keyboard = projectFace({ ...base, name: 'x', configured: true, status: 'needsInput', answerable: false });
+    expect(keyboard.sub).toBe('answer in Claude');
+    expect(keyboard.glyph).toBeUndefined();
+  });
+
+  it('leaves the corner empty on every ORDINARY state, and marks the exceptions', () => {
+    const ordinary = [
+      projectFace({ ...base, name: 'x', configured: true, status: 'done', since: base.now - 60_000 }),
+      projectFace({ ...base, name: 'x', configured: true, status: 'idle' }),
+      projectFace({ ...base, name: 'x', configured: true, status: 'working', since: base.now - 60_000 }),
+    ];
+    for (const face of ordinary) expect(face.glyph).toBeUndefined();
+
+    // A failure and a stall are alarms — redundancy is right there.
+    expect(projectFace({ ...base, name: 'x', configured: true, status: 'failed', since: base.now - 60_000 }).glyph).toBe('✕');
+    expect(
+      projectFace({ ...base, name: 'x', configured: true, status: 'working', since: base.now - 25 * 60_000 }).glyph,
+    ).toContain('⚠');
+    // …and a tool line is the one ordinary case where the sub does NOT say "working".
+    expect(
+      projectFace({ ...base, name: 'x', configured: true, status: 'working', tool: 'Bash', since: base.now - 60_000 }).glyph,
+    ).toBe('⋯');
+  });
+
+  it('gives a SHORT sub the larger font, and only long lines the small one', () => {
+    // render.ts picks 18px when subMax <= 16, 14px above it. A short line should not be shrunk to
+    // fit a width it never uses — the sub is the only colour-independent channel on the key.
+    expect(projectFace({ ...base, name: 'x', configured: true, status: 'done', since: base.now - 60_000 }).subMax).toBe(16);
+    const withBadge = projectFace({
+      ...base,
+      name: 'x',
+      configured: true,
+      status: 'done',
+      since: base.now - 60_000,
+      diffStat: { added: 120, deleted: 40 },
     });
-    expect(projectFace({ ...base, name: 'x', configured: true, status: 'needsInput', answerable: false })).toMatchObject({
-      glyph: '?',
-      sub: 'answer',
-    });
+    expect(withBadge.subMax).toBe(20);
   });
 
   it('working → "tool · elapsed"', () => {

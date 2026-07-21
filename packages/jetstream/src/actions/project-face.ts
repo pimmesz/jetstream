@@ -40,7 +40,8 @@ export interface ProjectFaceInput {
   status: ProjectStatus;
   since?: number;
   tool?: string;
-  /** The needsInput can be answered from the deck (a held permission) → `!`; else `?`. */
+  /** The needsInput can be answered from the deck (a held permission) → the sub-line reads
+   * `approve on deck`; otherwise `answer in Claude`. Wording only — neither carries a glyph. */
   answerable: boolean;
   /** The done-episode diff badge, or null while unknown / not done. */
   diffStat: DiffStat | null;
@@ -54,36 +55,61 @@ export interface ProjectFaceInput {
  * board reads, no side effects; the caller resolves status/diff/answerable and passes them in.
  */
 export function projectFace(i: ProjectFaceInput): Face {
-  if (!i.configured) return { color: '#26262b', label: i.name, subMax: 20, sub: 'set path' };
+  if (!i.configured) return { color: '#26262b', label: i.name, subMax: 16, sub: 'set path' };
   const stalled = isStalled(i);
+  const sub = projectSub(i, stalled);
+  const glyph = projectGlyph(i, stalled);
   return {
     color: colorFor(i.status, i.theme),
     label: i.name,
-    subMax: 20, // room for the diff badge (`+120/-40 · done 4m`)
-    glyph: stalled ? STALL_GLYPH : projectGlyph(i.status, i.answerable),
-    ...projectSub(i, stalled),
+    // Long lines (the diff badge, a tool name) need the room; everything else gets the LARGER
+    // 18px sub instead (render.ts picks the font from subMax). The sub-line is the only
+    // colour-independent channel on a key seen from across a room, so a short one should not be
+    // shrunk to fit a width it never uses.
+    subMax: (sub.sub?.length ?? 0) > 16 ? 20 : 16,
+    ...(glyph ? { glyph } : {}),
+    ...sub,
   };
 }
 
-/** A needsInput project the deck CAN answer (a held permission) shows `!`; one it can't (an open
- * elicitation → go to the keyboard) shows `?`. Otherwise the status glyph. */
-function projectGlyph(status: ProjectStatus, answerable: boolean): string {
-  if (status === 'needsInput') return answerable ? '!' : '?';
-  return glyphFor(status);
+/**
+ * The corner marker — reserved for EXCEPTIONS, not decoration.
+ *
+ * It used to carry the status on every key, which duplicated the sub-line word for word: `✓` over
+ * `done 4m`, `?` over `answer`, `⋯` over `working 1m`. Text is already colour-independent, so the
+ * accessibility case the glyph existed for was being made twice while the corner — the one free
+ * spot on the key — said nothing new. Leaving it EMPTY on ordinary states is what gives it meaning:
+ * a marked key is now genuinely worth looking at.
+ *
+ * It survives in exactly two cases: a stall or a failure (redundancy is right for an alarm), and a
+ * working key showing its tool, where the sub-line says `Bash · 12m` and nothing else says "working".
+ */
+function projectGlyph(i: ProjectFaceInput, stalled: boolean): string | undefined {
+  if (stalled) return STALL_GLYPH;
+  if (i.status === 'failed') return glyphFor('failed');
+  if (i.status === 'working' && i.tool && i.since !== undefined) return glyphFor('working');
+  return undefined;
 }
 
-/** The line under the label: `Bash · 12m` (working), `+120/-40 · done 4m` (finished), `approve?` /
- * `answer` (needs you — deck-answerable or not), or the plain status word. */
+/** The line under the label: `Bash · 12m` (working), `+120/-40 · done 4m` (finished), `approve on deck` /
+ * `answer in Claude` (needs you — deck-answerable or not), or the plain status word. */
 function projectSub(i: ProjectFaceInput, stalled: boolean): { sub: string } | Record<string, never> {
-  if (i.status === 'needsInput') return { sub: i.answerable ? 'approve?' : 'answer' };
+  // Name the place, not just the mood. `answer` never said where, and `approve?` read as though
+  // pressing THIS key approves — it does not; the separate Approve key does.
+  if (i.status === 'needsInput') return { sub: i.answerable ? 'approve on deck' : 'answer in Claude' };
   const elapsed = i.since !== undefined ? formatElapsed(i.now - i.since) : '';
   if (i.status === 'working' && elapsed) {
     if (stalled) return { sub: `stalled? ${elapsed}` };
     return { sub: i.tool ? `${i.tool} · ${elapsed}` : `working ${elapsed}` };
   }
   if (i.status === 'done' && elapsed) {
+    // Status word FIRST, badge second. The badge is variable-width and unbounded (a big refactor
+    // gives `+12000/-4000`), so with the badge leading, `fit()` truncated the trailing `done …`
+    // away — and now that ordinary keys carry no corner glyph, colour would be the only thing left
+    // saying "done". Leading with the word makes that structurally impossible: truncation can only
+    // ever eat digits.
     const badge = formatDiffStat(i.diffStat);
-    return { sub: badge ? `${badge} · done ${elapsed}` : `done ${elapsed}` };
+    return { sub: badge ? `done ${elapsed} · ${badge}` : `done ${elapsed}` };
   }
   // A died turn carries WHEN it died, like the other timed states — "failed 4m" tells you whether
   // to retry now or that you missed it an hour ago.
