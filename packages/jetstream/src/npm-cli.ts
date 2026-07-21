@@ -251,6 +251,10 @@ async function confirmPluginLive(
   alive: () => Promise<boolean>,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<void> {
+  // Say that we are waiting. The preceding message ends with "then set up your fleet…", which
+  // reads DONE — and then the process sits silent for up to ~40s while this polls, inviting a
+  // Ctrl-C or typing into a shell that is still busy.
+  say('Waiting for the plugin to come up on your deck (up to ~40s)…');
   for (let attempt = 0; attempt < HEALTH_ATTEMPTS; attempt++) {
     if (await alive()) {
       say('✓ Jetstream is live on your deck — run `jetstream chat` or `jetstream init` to set up your fleet.');

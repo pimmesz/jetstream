@@ -162,15 +162,43 @@ describe('folded slot kinds: build + stopall', () => {
     expect(slotFace({ kind: 'volup' })).toMatchObject({ label: 'vol +', sub: 'output' });
     expect(slotFace({ kind: 'volmute' })).toMatchObject({ label: 'mute', glyph: '🔇' });
     const press = async (kind: string) => {
-      const action = { showOk: vi.fn(async () => {}), setTitle: vi.fn(async () => {}), setImage: vi.fn(async () => {}), isKey: () => true };
+      const action = {
+        showOk: vi.fn(async () => {}),
+        showAlert: vi.fn(async () => {}),
+        setTitle: vi.fn(async () => {}),
+        setImage: vi.fn(async () => {}),
+        isKey: () => true,
+      };
       await new SlotKey().onKeyDown({ payload: { settings: { kind } }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+      return action;
     };
-    await press('volup');
+    vi.mocked(nudgeOutputVolume).mockResolvedValue(true);
+    vi.mocked(toggleOutputMute).mockResolvedValue(true);
+    expect((await press('volup')).showOk).toHaveBeenCalled();
     expect(nudgeOutputVolume).toHaveBeenCalledWith(6);
     await press('voldown');
     expect(nudgeOutputVolume).toHaveBeenCalledWith(-6);
-    await press('volmute');
+    expect((await press('volmute')).showOk).toHaveBeenCalled();
     expect(toggleOutputMute).toHaveBeenCalled();
+  });
+
+  // On a volume-fixed interface (or when osascript/bgm-vol fails) the helpers change nothing.
+  // Flashing ✓ for a guaranteed no-op tells the user it worked when it did not.
+  it('volume kinds ALERT instead of ✓ when the volume did not actually move', async () => {
+    vi.mocked(nudgeOutputVolume).mockResolvedValue(false);
+    vi.mocked(toggleOutputMute).mockResolvedValue(false);
+    const action = {
+      showOk: vi.fn(async () => {}),
+      showAlert: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      setImage: vi.fn(async () => {}),
+      isKey: () => true,
+    };
+    for (const kind of ['volup', 'voldown', 'volmute']) {
+      await new SlotKey().onKeyDown({ payload: { settings: { kind } }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    }
+    expect(action.showAlert).toHaveBeenCalledTimes(3);
+    expect(action.showOk).not.toHaveBeenCalled();
   });
 
   it('stopall is INERT until allowStopKeys — a planted fleet-SIGINT can never fire from /slot', async () => {

@@ -21,7 +21,7 @@ import { selectOne } from './select';
 import { paintCoordByRow, spinner } from './term';
 import { pluginAlive, sendSlot } from './slot-client';
 import { defaultOpenFile } from './open-file';
-import { projectsConfigPath, PROJECTS_TEMPLATE } from './projects-config';
+import { projectsConfigPath, PROJECTS_TEMPLATE , resolveProjectsConfigPath } from './projects-config';
 
 /**
  * The Jetstream CLI (`bin/jetstream.js`), which lives inside the installed .sdPlugin and is
@@ -132,7 +132,7 @@ async function runSetup(binDir: string): Promise<number> {
   const hooksCode = await runHooks(['install'], binDir);
   if (hooksCode !== 0) return hooksCode;
 
-  const path = projectsConfigPath();
+  const path = resolveProjectsConfigPath();
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, PROJECTS_TEMPLATE, { flag: 'wx' }); // wx: never overwrite an existing config
@@ -192,7 +192,14 @@ export async function run(argv: string[], binDir: string): Promise<number> {
       // The plugin CLI lives inside the plugin, so it can't replace its own package — the
       // npm-installed `jetstream` bin owns this verb (it intercepts `update` before forwarding
       // here). Reaching this case means an old wrapper or a direct bin invocation: say how.
-      console.log('Update via the npm CLI:\n  npm i -g @pimmesz/jetstream\n  jetstream install');
+      // Pin BOTH registry forms — a `@pimmesz:registry` line in .npmrc overrides a plain
+      // `--registry`, and a bare `npm i -g` against a stale mirror is the exact failure
+      // `jetstream update` exists to prevent. Printing it here would hand it right back.
+      console.log(
+        'Update via the npm CLI:\n' +
+          '  npm i -g --registry=https://registry.npmjs.org/ --@pimmesz:registry=https://registry.npmjs.org/ @pimmesz/jetstream\n' +
+          '  jetstream install',
+      );
       return 0;
     }
     case 'init': {
@@ -271,12 +278,25 @@ export async function run(argv: string[], binDir: string): Promise<number> {
             const runNote = layout.placements.some((p) => (p.settings as { kind?: string } | null)?.kind === 'run')
               ? '\n(Run keys only fire once you enable "allow run keys" in Jetstream settings.)'
               : '';
-            if (structural.length === 0 && slotEdits.length > 0 && (await pluginAlive())) {
+            const alive = structural.length === 0 && slotEdits.length > 0 ? await pluginAlive() : false;
+            // The plugin being down is a DIFFERENT problem from a coordinate having no key, and it
+            // used to fall through with no explanation at all — indistinguishable from "that key
+            // type needs an import", which does get one.
+            if (structural.length === 0 && slotEdits.length > 0 && !alive) {
+              chatIo.say(
+                "\n(the Jetstream plugin isn't answering — is the Stream Deck app running? — so this\n" +
+                  'can\'t be applied live; generating an importable profile instead.)',
+              );
+            }
+            if (alive) {
               const results = await Promise.all(
                 slotEdits.map(async (p) => {
                   const coord = coordLabel(p.column, p.row);
+                  // KEEP the status. Collapsing it to a boolean reported every failure — a 401, a
+                  // 500, a connection timeout, an old plugin with no /slot endpoint — as "that
+                  // coordinate has no key", sending the user to fix the wrong thing.
                   const status = await sendSlot({ coord, ...(p.settings ?? {}) });
-                  return { coord, ok: status === 200 };
+                  return { coord, ok: status === 200, status };
                 }),
               );
               const failed = results.filter((r) => !r.ok);
@@ -292,10 +312,17 @@ export async function run(argv: string[], binDir: string): Promise<number> {
               // real cause is that a live edit can only retarget a key that already exists (the
               // Stream Deck API cannot create one), and the profile below genuinely fixes it —
               // it merges your current board with the new keys, so nothing is lost.
+              // Name the actual cause per status; only 404 means "no key there".
+              const reason = (status: number): string => {
+                if (status === 404) return 'has no key yet (a live edit can only change a key that already exists)';
+                if (status === 401) return 'was refused by the plugin (token mismatch) — restart the Stream Deck app';
+                if (status === -1) return "didn't get a confirmation from the plugin (it may have applied anyway)";
+                return `was rejected by the plugin (HTTP ${status})`;
+              };
+              for (const f of failed) chatIo.say(`\n(${f.coord} ${reason(f.status)}.)`);
               chatIo.say(
-                `\n(${failed.map((r) => r.coord).join(', ')} has no key yet, and a live edit can only ` +
-                  'change a key that already exists. Generating an importable profile instead — it keeps ' +
-                  'your current board and adds these; double-click it to apply.)',
+                'Generating an importable profile instead — it keeps your current board and adds ' +
+                  'these; double-click it to apply.',
               );
             }
             // Fallback: rebuild + import the whole board (structural change, plugin down, or a live miss).
@@ -326,9 +353,20 @@ export async function run(argv: string[], binDir: string): Promise<number> {
             );
           },
         });
-      } catch {
-        console.error('\nAborted — nothing written.');
-        return 130;
+      } catch (error) {
+        // Only Ctrl-C / EOF is an abort. chat WRITES projects.json before it generates the layout
+        // profile, so a later failure (an unwritable ~/Downloads, a TCC denial) used to print
+        // "nothing written" one line after "Wrote 3 project(s)" — a false claim, the wrong cause,
+        // and the only diagnostic thrown away. `init`'s twin already says "nothing FURTHER".
+        const aborted =
+          (error as { code?: string })?.code === 'ABORT_ERR' ||
+          (error instanceof Error && error.message === 'input closed');
+        if (aborted) {
+          console.error('\nAborted — nothing further was written.');
+          return 130;
+        }
+        console.error(`\n${error instanceof Error ? error.message : String(error)}`);
+        return 1;
       } finally {
         rl.close();
       }
@@ -336,7 +374,10 @@ export async function run(argv: string[], binDir: string): Promise<number> {
     case 'board': {
       const board = readBoardLayout();
       if (!board) {
-        console.log('No Jetstream board found in your Stream Deck profiles yet — place some Project keys, then retry.');
+        console.log(
+          'No Jetstream board found — if your deck is on another profile, switch to your Jetstream\n' +
+            'board and retry, or run `jetstream chat` to build one.',
+        );
         return 0;
       }
       console.log(`${board.profileName} · ${board.deck.label}\n`);

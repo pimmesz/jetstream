@@ -6,6 +6,7 @@ import {
   initialState,
   statusByProject,
   needsAttention,
+  notificationStatus,
   colorFor,
   glyphFor,
   shouldEscalate,
@@ -432,5 +433,73 @@ describe('summarize / worstStatus (fleet roll-up)', () => {
     expect(worstStatus({ a: { status: 'working' }, b: { status: 'done' } })).toBe('working');
     expect(worstStatus({ a: { status: 'done' }, b: { status: 'idle' } })).toBe('done');
     expect(worstStatus({})).toBe('none');
+  });
+});
+
+// Claude fires Notification for several unrelated things. Treating them all as "needs you" made
+// amber meaningless: the most frequent by far is `idle_prompt`, a 60-second nudge sent AFTER a turn
+// has already finished — so a resting `done` key flipped to amber "answer" a minute after every
+// turn, taking its +120/-40 diff badge with it, and outranked genuinely-working repos.
+describe('Notification triage', () => {
+  it('only a notification that truly blocks on a human means needsInput', () => {
+    expect(notificationStatus('agent_needs_input')).toBe('needsInput');
+    expect(notificationStatus('worker_permission_prompt')).toBe('needsInput');
+    expect(notificationStatus('elicitation_dialog')).toBe('needsInput');
+  });
+
+  it('informational notifications leave the status ALONE', () => {
+    for (const type of ['idle_prompt', 'agent_completed', 'auth_success', 'push_notification']) {
+      expect(notificationStatus(type), type).toBeUndefined();
+    }
+  });
+
+  it('an older Claude with no notification_type keeps the previous behaviour', () => {
+    expect(notificationStatus(undefined)).toBe('needsInput');
+  });
+
+  it('an idle nudge does not disturb a finished turn', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'h1', at: 2 }));
+    expect(statusByProject(s, PROJECTS).falcon).toEqual({ status: 'done', since: 2 });
+    // 60s later Claude nudges. The key must stay green — with its `since`, so the elapsed timer
+    // and the diff badge survive.
+    s = reduce(s, ev({ event: 'Notification', sessionId: 'h1', at: 62_000, notificationType: 'idle_prompt' }));
+    expect(statusByProject(s, PROJECTS).falcon).toEqual({ status: 'done', since: 2 });
+  });
+
+  it('an idle nudge does not outrank a repo that is actually working', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'Notification', sessionId: 'h1', at: 2, notificationType: 'idle_prompt' }));
+    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('working');
+    expect(needsAttention(s, PROJECTS)).toEqual([]); // and it must not ring the doorbell
+  });
+
+  it('a real permission prompt still lights amber', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'Notification', sessionId: 'h1', at: 2, notificationType: 'worker_permission_prompt' }));
+    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('needsInput');
+  });
+});
+
+// The blocking set is an ALLOWLIST taken from Claude's own hook matcher metadata. Two mistakes are
+// easy here and both are silent: missing `permission_prompt` kills the doorbell for every user who
+// has NOT bypassed permissions, and matching `elicitation_` by prefix catches the dialog's own
+// completion events and flips a finished key back to "needs you".
+describe('Notification vocabulary (verified against Claude 2.1.216)', () => {
+  it('every blocking type rings, including the plain permission_prompt', () => {
+    for (const type of ['permission_prompt', 'worker_permission_prompt', 'agent_needs_input', 'elicitation_dialog']) {
+      expect(notificationStatus(type), type).toBe('needsInput');
+    }
+  });
+
+  it('an elicitation CLOSING is not a request — it must not re-raise the key', () => {
+    expect(notificationStatus('elicitation_complete')).toBeUndefined();
+    expect(notificationStatus('elicitation_response')).toBeUndefined();
+  });
+
+  it('a permission prompt still lights a done key amber (the non-bypass doorbell)', () => {
+    let s = reduce(initialState(), ev({ event: 'Stop', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'Notification', sessionId: 'h1', at: 2, notificationType: 'permission_prompt' }));
+    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('needsInput');
   });
 });

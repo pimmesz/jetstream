@@ -46,6 +46,48 @@ export interface HookEvent {
   /** The subagent's id, on a `SubagentStart`/`SubagentStop` event — fired in the PARENT session,
    * so this tracks which background agents are still running under it. */
   agentId?: string;
+  /** WHICH kind of notification, on a `Notification` event (`idle_prompt`, `agent_needs_input`,
+   * `worker_permission_prompt`, `elicitation_*`, …). Absent on older Claude builds. */
+  notificationType?: string;
+}
+
+/**
+ * What a `Notification` means for the board.
+ *
+ * Claude fires Notification for several unrelated things, and treating them all as "needs you" made
+ * amber meaningless: the most frequent one by far is `idle_prompt`, a 60-SECOND IDLE NUDGE sent
+ * after a turn has already finished. That flipped a resting `done` key to amber "answer" a minute
+ * after every turn — destroying the `+120/-40 · done 4m` badge with it (the diff cache is dropped
+ * when status leaves 'done') and outranking genuinely-working repos, since needsInput outranks
+ * working. A repo with subagents actively running would sit there claiming it needed you.
+ *
+ * Only a notification that genuinely BLOCKS on a human is 'needsInput'. Everything else returns
+ * undefined = "leave the status alone"; the real lifecycle events (Stop / UserPromptSubmit /
+ * SubagentStop) already say what the session is doing. An unknown or absent type keeps the old
+ * behaviour so older Claude builds don't regress.
+ */
+const BLOCKING_NOTIFICATIONS: ReadonlySet<string> = new Set([
+  'permission_prompt', // Claude asking to run a tool — the classic doorbell
+  'worker_permission_prompt', // "<agent> needs permission for <tool>" (a subagent asking)
+  'agent_needs_input',
+  'elicitation_dialog', // an MCP server is ASKING; _complete/_response are its ANSWERS
+]);
+
+export function notificationStatus(type: string | undefined): ProjectStatus | undefined {
+  if (type === undefined) return 'needsInput'; // pre-notification_type Claude — unchanged
+  return BLOCKING_NOTIFICATIONS.has(type) ? 'needsInput' : undefined;
+  // Everything else is informational and leaves the status ALONE — idle_prompt (the 60s nudge),
+  // auth_success, agent_completed, elicitation_complete, elicitation_response.
+  //
+  // An ALLOWLIST, not a prefix match: `elicitation_` also covers `elicitation_complete`
+  // ("confirmed elicitation N complete") and `elicitation_response` ("response … decline"), which
+  // are the dialog CLOSING — matching them flipped a finished key back to "needs you".
+  // `agent_completed` deliberately does not map to 'done' either: it fires for a SUBAGENT finishing
+  // inside a possibly-still-running parent turn, so it would paint a busy repo green.
+  //
+  // The full vocabulary, per Claude's own hook matcher metadata: permission_prompt, idle_prompt,
+  // auth_success, elicitation_dialog, elicitation_complete, elicitation_response,
+  // agent_needs_input, agent_completed — plus worker_permission_prompt for subagents.
 }
 
 /** A configured project key: an id, a display name, and the filesystem path whose
@@ -82,7 +124,21 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
   if (cwd.length > MAX_CWD_LEN || sessionId.length > MAX_SESSION_ID_LEN) return null;
   const toolName = typeof r?.tool_name === 'string' ? r.tool_name : undefined;
   const agentId = typeof r?.agent_id === 'string' ? r.agent_id : undefined;
-  return { event, cwd, sessionId, at, ...(toolName ? { toolName } : {}), ...(agentId ? { agentId } : {}) };
+  // Notification carries WHICH kind of notification it is. Without it every notification — most
+  // often Claude's 60-second idle nudge — became 'needs you'. Bounded like the other untrusted
+  // strings; an unknown or absent value falls back to today's behaviour.
+  const rawKind = r?.notification_type;
+  const notificationType =
+    typeof rawKind === 'string' && rawKind.length <= 64 ? rawKind : undefined;
+  return {
+    event,
+    cwd,
+    sessionId,
+    at,
+    ...(toolName ? { toolName } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(notificationType ? { notificationType } : {}),
+  };
 }
 
 const norm = (p: string): string => p.replace(/\/+$/, '');
@@ -154,7 +210,7 @@ export function initialState(): StatusState {
  * (they move the in-flight set, not the base status). */
 type LifecycleEvent = Exclude<HookEventName, 'SubagentStart' | 'SubagentStop'>;
 
-function statusForEvent(event: LifecycleEvent): ProjectStatus | 'remove' {
+function statusForEvent(event: LifecycleEvent, notificationType?: string): ProjectStatus | 'remove' | undefined {
   switch (event) {
     case 'SessionStart':
       return 'idle';
@@ -163,7 +219,7 @@ function statusForEvent(event: LifecycleEvent): ProjectStatus | 'remove' {
     case 'PostToolUse':
       return 'working';
     case 'Notification':
-      return 'needsInput';
+      return notificationStatus(notificationType);
     case 'Stop':
       return 'done';
     // A turn killed by the API (overloaded / rate_limit / billing_error / authentication_failed)
@@ -250,7 +306,12 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
     return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
   }
 
-  const status = statusForEvent(event.event);
+  const status = statusForEvent(event.event, event.notificationType);
+  // undefined = "this event says nothing about the status" (an informational Notification such as
+  // the idle nudge). Leave the session exactly as it is rather than inventing a transition.
+  if (status === undefined) {
+    return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
+  }
   if (status === 'remove') {
     delete next[event.sessionId]; // SessionEnd forgets the session AND its in-flight set
     // Tombstone the id (TTL-pruned + capped at 64) so a reordered straggler can't resurrect it.

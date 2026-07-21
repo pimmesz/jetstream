@@ -103,6 +103,11 @@ export function labelForAction(uuid: string, settings: unknown): string {
       volup: 'vol+',
       voldown: 'vol−',
       volmute: 'mute',
+      chat: 'chat',
+      // 'logo' was missing, so the bundled-mark key rendered as '·' in the board map — the exact
+      // failure the comment above warns about: the model reads it as a free coordinate and
+      // overwrites a key the user deliberately placed.
+      logo: 'logo',
     };
     if (typeof s.kind === 'string' && kindLabel[s.kind]) return kindLabel[s.kind]!;
     return '·'; // empty slot
@@ -298,7 +303,13 @@ export function readBoardLayout(
     const uuid = dir.replace(/\.sdProfile$/i, '').toLowerCase();
     // Active bonus only for actual JETSTREAM boards — a non-Jetstream profile that happens to be active
     // (e.g. a Spotify hotkey page) must not masquerade as your board and get rebuilt by chat.
-    const score = (active.has(uuid) && jetstreamKeys > 0 ? 1_000_000 : 0) + configured;
+    // `configured` counts only project-keys-with-a-path and non-empty slots, so a perfectly good
+    // board of just Fleet + Attention + Usage scored 0 and was indistinguishable from "no board at
+    // all" — while setup's own advice says placed project keys are optional. Any Jetstream key at
+    // all makes it a board. Safe: `configured`/`jetstreamKeys` only count our own UUIDs, so a
+    // foreign profile still scores 0 and can never masquerade as your board.
+    const score =
+      (active.has(uuid) && jetstreamKeys > 0 ? 1_000_000 : 0) + configured + (jetstreamKeys > 0 ? 1 : 0);
     if (score > bestScore) {
       best = { profileName: name, deck, keys, allUuids: read.allUuids };
       bestScore = score;
@@ -412,6 +423,10 @@ export function describeKeyForModel(k: BoardKey): string {
       volup: 'volup',
       voldown: 'voldown',
       volmute: 'volmute',
+      // The MODEL-facing half of the same gap kindLabel had: without these, a configured chat/logo
+      // key is described to the model as an empty slot it may freely overwrite.
+      chat: 'chat',
+      logo: 'logo',
     };
     if (typeof s.kind === 'string' && foldedType[s.kind]) return `${foldedType[s.kind]}${extra}`;
     return extra ? `slot${extra}` : 'empty';

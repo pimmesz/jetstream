@@ -3,7 +3,7 @@ import { get as httpsGet } from 'node:https';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultSettingsPath } from './hooks-install';
-import { projectsConfigPath } from './projects-config';
+import { parseProjectsConfig, resolveProjectsConfigPath } from './projects-config';
 import { pluginAlive } from './slot-client';
 import { PLUGIN_VERSION } from './server';
 import { readBoardLayout, type BoardLayout } from './board-layout';
@@ -63,6 +63,33 @@ export function hasJetstreamHooks(settings: unknown): boolean {
   return commands.some((command) => JETSTREAM_HOOK_FILES.some((file) => command.includes(file)));
 }
 
+/**
+ * Whether the LIFECYCLE hook that actually lights the board is installed.
+ *
+ * `hasJetstreamHooks` is deliberately broad — it answers "is Jetstream wired here at all", and
+ * counts the usage STATUSLINE too, which is what lets the statusline check stay quiet on a machine
+ * that has never installed anything. That breadth is wrong for "will my board work": a settings.json
+ * with only `usage-hook.js` as its statusline, or only the permission hook, satisfied it — so doctor
+ * reported "hooks present" while no lifecycle event could ever arrive and every key stayed dark.
+ * Only `status-hook.js`, under `hooks`, produces the events the board is made of.
+ */
+export function hasStatusHook(settings: unknown): boolean {
+  const hooks = asRecord(asRecord(settings)?.hooks);
+  if (!hooks) return false;
+  for (const value of Object.values(hooks)) {
+    if (!Array.isArray(value)) continue;
+    for (const entry of value) {
+      const entryHooks = asRecord(entry)?.hooks;
+      if (!Array.isArray(entryHooks)) continue;
+      for (const hook of entryHooks) {
+        const command = asRecord(hook)?.command;
+        if (typeof command === 'string' && command.includes('status-hook.js')) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` should be UNSET — set, they'd bill the
  * metered API instead of drawing the subscription (the exact concern `claude.sanitizeEnv`
  * strips for). Pure. */
@@ -106,8 +133,20 @@ export function checkHooksPresent(raw: string | undefined): CheckResult {
       message: '~/.claude/settings.json is present but not valid JSON — fix or remove it',
     };
   }
+  // The STATUS hook specifically: it is the one that lights the board. A machine with only the
+  // usage statusline or only the permission hook satisfies "some Jetstream hook exists" while no
+  // lifecycle event can ever arrive — doctor used to call that healthy and leave the user staring
+  // at a dark board with an all-green checklist.
+  if (hasStatusHook(parsed)) {
+    return { status: 'ok', message: 'Jetstream hooks present in ~/.claude/settings.json' };
+  }
   return hasJetstreamHooks(parsed)
-    ? { status: 'ok', message: 'Jetstream hooks present in ~/.claude/settings.json' }
+    ? {
+        status: 'warn',
+        message:
+          'the per-project status hook (status-hook.js) is missing from ~/.claude/settings.json — other Jetstream hooks are wired, but the board cannot light up. Run `jetstream hooks install`',
+        fixId: 'hooks',
+      }
     : { status: 'warn', message: 'Jetstream hooks not found — run `jetstream hooks install`', fixId: 'hooks' };
 }
 
@@ -246,12 +285,32 @@ export function checkProjectsConfig(raw: string | undefined): CheckResult {
   if (raw === undefined) {
     return { status: 'ok', message: 'no projects.json (optional) — projects come from placed keys' };
   }
+  let parsed: unknown;
   try {
-    JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     return { status: 'warn', message: 'projects.json is not valid JSON — the plugin will ignore it' };
   }
-  return { status: 'ok', message: 'projects.json is valid JSON' };
+  // Valid JSON is NOT the same as a usable fleet. The runtime parser silently drops any entry
+  // missing id/name/path and ignores a `projects` that isn't an array — so a file that parses fine
+  // can still yield an EMPTY fleet while this reported "valid JSON" and the board sat dark with no
+  // explanation anywhere. Check what the plugin will actually load, not just that it parses.
+  const raw_projects = (parsed as { projects?: unknown } | null)?.projects;
+  if (raw_projects === undefined) {
+    return { status: 'ok', message: 'projects.json has no "projects" list — projects come from placed keys' };
+  }
+  if (!Array.isArray(raw_projects)) {
+    return { status: 'warn', message: 'projects.json: "projects" must be an array — the whole fleet is ignored' };
+  }
+  const loaded = parseProjectsConfig(raw);
+  const dropped = raw_projects.length - loaded.length;
+  if (dropped > 0) {
+    return {
+      status: 'warn',
+      message: `projects.json: ${dropped} of ${raw_projects.length} project(s) ignored — each needs a non-empty "id", "name" and "path" (and a unique id)`,
+    };
+  }
+  return { status: 'ok', message: `projects.json valid — ${loaded.length} project(s) in the fleet` };
 }
 
 /** Whether the `claude` CLI was found on PATH. Pure. */
@@ -348,7 +407,7 @@ export function defaultDoctorIO(): DoctorIO {
     env: process.env,
     claudeOnPath: () => commandOnPath('claude'),
     settingsRaw: () => readIfPresent(defaultSettingsPath()),
-    projectsRaw: () => readIfPresent(projectsConfigPath()),
+    projectsRaw: () => readIfPresent(resolveProjectsConfigPath()),
     listenerAlive: () => pluginAlive(),
     boardLayout: () => readBoardLayout(),
     latestVersion: () => fetchLatestVersion(),

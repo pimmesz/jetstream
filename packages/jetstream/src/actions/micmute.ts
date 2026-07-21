@@ -2,6 +2,7 @@ import { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyAction, KeyDownEvent, WillAppearEvent } from '@elgato/streamdeck';
 import type { Face } from '../render';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 import { readInputVolume, writeInputVolume } from '../mic-control';
 
 /** The mic-mute key face: red + MUTED when the input is at 0, dark when live; a dim "n/a" when the
@@ -67,6 +68,6 @@ export class MicMuteKey extends SingletonAction {
   private async render(a: KeyAction): Promise<void> {
     const level = await readInputVolume();
     await a.setTitle('');
-    await a.setImage(keyFace(micFace(level === 0, level !== undefined)));
+    await paintKey(a, keyFace(micFace(level === 0, level !== undefined)));
   }
 }

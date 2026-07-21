@@ -7,7 +7,7 @@ import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos 
 import { installHooks, type HookCommands, type InstallResult } from './hooks-install';
 import { defaultOpenFile } from './open-file';
 import { DECK_MODELS, type DeckModel, writeProfileFile } from './profile';
-import { parseProjectsConfig, projectsConfigPath } from './projects-config';
+import { parseProjectsConfig, projectsConfigPath , resolveProjectsConfigPath } from './projects-config';
 import { selectMany } from './select';
 
 /**
@@ -268,7 +268,7 @@ async function collectSettings(io: InitIo): Promise<Partial<JetstreamConfig>> {
 export async function runInit(deps: InitDeps): Promise<number> {
   const io = deps.io;
   const install = deps.install ?? installHooks;
-  const configPath = deps.configPath ?? projectsConfigPath();
+  const configPath = deps.configPath ?? resolveProjectsConfigPath();
   const cwd = deps.cwd ?? process.cwd();
 
   io.say('Jetstream init — define your fleet once; the deck covers all of it.');

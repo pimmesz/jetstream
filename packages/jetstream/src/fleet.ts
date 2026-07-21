@@ -1,7 +1,9 @@
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
+  rmSync,
   realpathSync,
   renameSync,
   writeFileSync,
@@ -18,6 +20,9 @@ import type { JetstreamConfig } from './config';
  * in-app Settings property inspector (via `handleFleetMessage`) share one implementation
  * and can't drift.
  */
+
+/** How many timestamped fleet backups to keep beside projects.json. */
+const BACKUPS_KEPT = 5;
 
 const stripControl = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '');
 
@@ -137,11 +142,70 @@ export function writeFleetFile(
   path: string,
   projects: ProjectConfig[],
   settings: Partial<JetstreamConfig> = {},
+  now: Date = new Date(),
 ): void {
   mkdirSync(dirname(path), { recursive: true });
+  // Keep the PREVIOUS fleet before overwriting it. This is the user's own hand-curated list of
+  // repos, every writer here replaces the file wholesale, and the rename below is atomic — so
+  // without this, one bad write (a chat proposal that omitted repos, a mistaken edit) destroys it
+  // with no way back. Cheap insurance: the file is a few hundred bytes.
+  try {
+    const previous = readFileSync(path, 'utf8');
+    const stamp = now.toISOString().replace(/[:.]/g, '-');
+    writeFileSync(`${path}.${stamp}.bak`, previous);
+    // Keep only the most recent few. The in-app fleet editor writes on every add and remove, so
+    // an unbounded trail would quietly litter the config dir with hundreds of files.
+    const dir = dirname(path);
+    const prefix = `${basename(path)}.`;
+    const old = readdirSync(dir)
+      .filter((f) => f.startsWith(prefix) && f.endsWith('.bak'))
+      .sort()
+      .slice(0, -BACKUPS_KEPT);
+    for (const f of old) rmSync(join(dir, f), { force: true });
+  } catch {
+    // No existing file (first run), an unreadable one, or an unreadable dir — nothing to preserve
+    // and nothing to prune. A backup is insurance, never a reason to fail the write.
+  }
   const tmp = `${path}.jetstream-tmp-${process.pid}`;
   writeFileSync(tmp, renderProjectsJson(projects, settings));
   renameSync(tmp, path);
+}
+
+/**
+ * Union a proposed fleet with the one already on disk, keyed by canonical path.
+ *
+ * `jetstream chat` hands the model the BOARD, not the fleet, and its instructions say to include
+ * only what the user asked for — so "add /repo/new" legitimately comes back as a one-project
+ * proposal. Writing that verbatim replaced a seven-repo fleet with one. Merging makes an ADD an
+ * add. A proposal that repeats an existing path wins (it may rename it); removals are deliberately
+ * NOT inferred from absence, because absence is the model's normal shorthand.
+ */
+export function mergeFleet(
+  existing: ProjectConfig[],
+  proposed: ProjectConfig[],
+): ProjectConfig[] {
+  const byPath = new Map(existing.map((p) => [p.path, p]));
+  for (const p of proposed) {
+    const prior = byPath.get(p.path);
+    // Same repo, re-emitted: KEEP its existing id. Ids are how the board, the roll-up and the
+    // attention list address a project, so silently renumbering one on an unrelated edit would
+    // detach it from its own state.
+    byPath.set(p.path, prior ? { ...p, id: prior.id } : p);
+  }
+
+  // Re-uniquify ids ACROSS the merge. A proposal's ids are only unique within itself — the model
+  // is never shown the existing fleet — so adding `/work/jetstream` next to an existing
+  // `/Personal/jetstream` produced two entries with id "jetstream". parseProjectsConfig dedupes by
+  // id and keeps the FIRST, so the repo the user just asked for silently vanished on the next read:
+  // chat says "Wrote 2 project(s)" and the board shows one.
+  const taken = new Set<string>();
+  return [...byPath.values()].map((p) => {
+    if (!taken.has(p.id)) {
+      taken.add(p.id);
+      return p;
+    }
+    return { ...p, id: slugId(p.name, taken) }; // slugId adds to `taken` itself
+  });
 }
 
 // ── In-app fleet editor: the message contract between the Settings property inspector

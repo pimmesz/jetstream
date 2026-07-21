@@ -11,6 +11,7 @@ import type {
 import { worstStatus, type ProjectStatus } from '@pimmesz/jetstream-status';
 import type { Face } from '../render';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 import { config } from '../config';
 import { board } from '../state';
 import { permissions } from '../permissions';
@@ -19,7 +20,7 @@ import { heldMs } from '../press';
 import { interruptPids, openProject } from '../switchto';
 import { execPlan, runPlan } from '../slot-exec';
 import { parseSlotCommand } from '../slot-command';
-import { imageMime, resolveSlotIcon } from '../slot-icon';
+import { forgetIcon, imageMime, resolveSlotIcon } from '../slot-icon';
 import { buildFace } from './build';
 import { stopFace } from './interrupt-all';
 import { fleetFace, darkReason } from './fleet';
@@ -68,6 +69,10 @@ export type SlotSettings = {
   sub?: string; // small second line override
   glyph?: string; // corner glyph / emoji override
 };
+
+/** How long a transient notice ("run off", "why dark?") owns its key before the live face returns.
+ * Matches the existing repaint timers below. */
+const NOTICE_MS = 2600;
 
 const appName = (app: string | undefined): string =>
   app ? basename(app).replace(/\.app$/i, '') || 'open' : 'open';
@@ -215,7 +220,8 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     // opted in, so a webpage that plants it via the unauthenticated /slot endpoint can't fire it.
     if (settings.kind === 'stopall') {
       if (!config.get().allowStopKeys) {
-        await ev.action.setImage(keyFace({ color: '#b58900', label: 'stop off', sub: 'enable in settings' }));
+        this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
+        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'stop off', sub: 'enable in settings' }));
         setTimeout(() => void this.repaint(ev.action), 2600);
         return;
       }
@@ -229,24 +235,28 @@ export class SlotKey extends SingletonAction<SlotSettings> {
         await ev.action.showOk();
         return;
       }
-      await ev.action.setImage(keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
+      this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
+        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
       setTimeout(() => void this.repaint(ev.action), 2600);
       return;
     }
     // Output-volume keys — benign (they only move the macOS output volume), so no /slot gate needed.
     if (settings.kind === 'volup') {
-      await nudgeOutputVolume(6);
-      await ev.action.showOk();
+      // Alert rather than ✓ when nothing moved — on a volume-fixed interface, or when the helper
+      // failed, an unconditional showOk claimed success for a guaranteed no-op.
+      await ((await nudgeOutputVolume(6)) ? ev.action.showOk() : ev.action.showAlert());
       return;
     }
     if (settings.kind === 'voldown') {
-      await nudgeOutputVolume(-6);
-      await ev.action.showOk();
+      // Alert rather than ✓ when nothing moved — on a volume-fixed interface, or when the helper
+      // failed, an unconditional showOk claimed success for a guaranteed no-op.
+      await ((await nudgeOutputVolume(-6)) ? ev.action.showOk() : ev.action.showAlert());
       return;
     }
     if (settings.kind === 'volmute') {
-      await toggleOutputMute();
-      await ev.action.showOk();
+      // Alert rather than ✓ when nothing moved — on a volume-fixed interface, or when the helper
+      // failed, an unconditional showOk claimed success for a guaranteed no-op.
+      await ((await toggleOutputMute()) ? ev.action.showOk() : ev.action.showAlert());
       return;
     }
     // `chat` opens a TERMINAL running `jetstream chat` — the conversational board builder needs an
@@ -264,7 +274,8 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     // loopback /slot endpoint stays inert until the user enables run keys in Jetstream settings. Don't
     // dead-end silently — say WHY on the face for a beat, then restore the key.
     if (settings.kind === 'run' && !config.get().allowRunKeys) {
-      await ev.action.setImage(keyFace({ color: '#b58900', label: 'run off', sub: 'enable in settings' }));
+      this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
+        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'run off', sub: 'enable in settings' }));
       // Repaint from the slot's LIVE settings when the notice clears: if a chat live-edit retargeted
       // this coordinate within the 2.6s, we must not paint the stale run face back over the new key.
       setTimeout(() => void this.repaint(ev.action), 2600);
@@ -289,6 +300,9 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   // and only after a deliberate hold (the face warns first). Measured key-down → key-up.
   private pressAt = new Map<string, number>();
   private holdWarn = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Key id → epoch ms until which a transient notice ("run off", "why dark?") owns the key and
+   * must not be repainted over by a routine board render. */
+  private noticeUntil = new Map<string, number>();
   /** SIGINT kills the current turn, so interrupt needs a longer, deliberate hold than a generic press. */
   private static readonly INTERRUPT_HOLD_MS = 1500;
   // Per-project done-diff, fetched ONCE per done-episode off the render path and cached; cleared when
@@ -305,7 +319,11 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       a.id,
       setTimeout(() => {
         if (board.byProject()[a.id]?.status !== 'working') return; // Stopped mid-hold → no lying warning
-        void a.setImage(
+        // Through paintKey like every other paint here — a raw upload would leave the cache holding
+        // the pre-warning face, so releasing back onto it would be skipped as identical and strand
+        // the key on this red warning (the same bug this cost us in fleet.ts and project.ts).
+        void paintKey(
+          a,
           keyFace({
             color: '#e5484d', // danger red — this press is about to SIGINT the session
             label: board.project(a.id)?.name ?? 'project',
@@ -373,6 +391,13 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       if (!c || c.column !== cmd.column || c.row !== cmd.row) continue;
       await visible.setSettings(cmd.settings); // full replace
       this.syncProjectRegistry(visible.id, cmd.settings); // setSettings won't re-fire onDidReceiveSettings
+      // Re-resolve this key's icon instead of trusting the cache. A cached MISS is otherwise
+      // permanent for the life of the plugin — an app that wasn't installed yet, or an extraction
+      // that lost a race at startup, would leave the key on its text face with no way to recover
+      // through the UI. Retargeting a key is an explicit user action and the one moment we know
+      // the answer might have changed, so it is exactly where the cache should be dropped.
+      forgetIcon(cmd.settings.app);
+      forgetIcon(cmd.settings.icon);
       await this.render(visible, cmd.settings);
       return { status: 200, body: JSON.stringify({ ok: true, coord: cmd.coord }) };
     }
@@ -416,19 +441,30 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   }
 
   private async render(a: KeyAction, settings: SlotSettings): Promise<void> {
+    // A transient notice OWNS the key for its couple of seconds. Otherwise any board emit (the
+    // 100ms debounce) or the 30s tick repaints the live face straight over it — and stop-all is
+    // pressed exactly when sessions are working, i.e. when emits are densest, so the explanation
+    // for why the press did nothing was routinely erased before it could be read. `holdWarn` gave
+    // project keys this guard already; these three notices had none.
+    if ((this.noticeUntil.get(a.id) ?? 0) > Date.now()) return;
     await a.setTitle('');
     if (settings.kind === 'project') {
       await this.renderProject(a, settings);
       return;
     }
     const face = this.faceFor(settings);
-    // Paint the text/emoji face immediately (also the fallback when there's no image icon)…
-    await a.setImage(keyFace(face));
-    // …then resolve the image icon (app logo / custom image) and swap. A plain logo paints as the raw
-    // image (cleanest); with a glyph override we composite so the corner badge isn't hidden.
+    // Resolve the icon FIRST, then paint ONCE. Painting the text face and swapping to the icon
+    // afterwards uploaded two different images on every render — and since a slot is re-rendered on
+    // every board change (renderKind → getSettings, whose SDK echo re-fires onDidReceiveSettings),
+    // that second image guaranteed a visible flash on every hook event, which no cache can absorb
+    // because the two faces genuinely differ. Icon resolution is cached, so this costs nothing after
+    // the first paint; on a cold cache the key simply holds its previous face a moment longer
+    // instead of flashing text at you.
     const icon = await resolveSlotIcon(settings);
-    if (!icon) return;
-    await a.setImage(face.glyph ? keyFace({ ...face, image: icon }) : icon);
+    // A plain image paints as the raw icon (cleanest); with a glyph override we composite so the
+    // corner badge isn't hidden by the image.
+    const image = icon ? (face.glyph ? keyFace({ ...face, image: icon }) : icon) : keyFace(face);
+    await paintKey(a, image);
   }
 
   /** Paint a 'project' slot as a live repo status light — resolving colour/glyph/sub + the done-diff
@@ -454,6 +490,6 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     });
     // Status drives the DEFAULT colour/glyph/sub, but an explicit override still wins (rename via
     // `label`, `color`, `sub`, `glyph`, an emoji `icon`) — consistent with every other slot kind.
-    await a.setImage(keyFace(withOverrides(base, settings)));
+    await paintKey(a, keyFace(withOverrides(base, settings)));
   }
 }

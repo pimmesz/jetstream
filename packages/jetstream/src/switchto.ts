@@ -1,3 +1,4 @@
+import streamDeck from '@elgato/streamdeck';
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -142,6 +143,11 @@ export function interruptPids(pids: number[], platform: NodeJS.Platform = proces
  * augmented so a CLI opener (code/cursor/xdg-open) resolves under the GUI's stripped PATH.
  * Returns false only when the spawn fails synchronously. */
 export function openProject(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  // A repo that moved or was deleted made this a completely silent dead key: `spawn` succeeds, the
+  // opener fails asynchronously, and every caller alerts only on this return value — so the press
+  // did nothing at all, with no blip and no message. One existence check turns that into the alert
+  // the callers already implement.
+  if (!existsSync(path)) return false;
   const command = buildOpenCommand(path, platform);
   try {
     const child = spawn(command.cmd, command.args, {
@@ -149,8 +155,10 @@ export function openProject(path: string, platform: NodeJS.Platform = process.pl
       stdio: 'ignore',
       env: { ...process.env, PATH: augmentedPath() },
     });
-    child.on('error', () => {
-      /* nothing to surface post-hoc; the key press already gave feedback */
+    // The press already gave feedback, so there is nothing to show now — but log it, or an opener
+    // that fails asynchronously (a missing editor, a TCC denial) leaves no trace anywhere.
+    child.on('error', (error) => {
+      streamDeck.logger.warn(`Jetstream could not open ${path}`, error);
     });
     child.unref();
     return true;

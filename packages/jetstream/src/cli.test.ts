@@ -33,7 +33,14 @@ describe('cli dispatch', () => {
   it('update → points at the npm CLI (the plugin cannot replace its own package)', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(await run(['update'], BIN)).toBe(0);
-    expect(log.mock.calls.join('\n')).toContain('npm i -g @pimmesz/jetstream');
+    const printed = log.mock.calls.join('\n');
+    expect(printed).toContain('@pimmesz/jetstream');
+    // It must NOT hand out a bare `npm i -g`: a `@pimmesz:registry` line in .npmrc overrides a
+    // plain --registry, and a stale mirror then reinstalls the same version while reporting
+    // success — the exact failure `jetstream update` exists to prevent.
+    expect(printed).toContain('--registry=https://registry.npmjs.org/');
+    expect(printed).toContain('--@pimmesz:registry=https://registry.npmjs.org/');
+    expect(printed).not.toMatch(/npm i -g @pimmesz\/jetstream/);
   });
 
   it('unknown hooks subcommand → non-zero exit (does not install)', async () => {

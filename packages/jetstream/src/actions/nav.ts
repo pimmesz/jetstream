@@ -1,7 +1,13 @@
 import streamDeck, { action, SingletonAction } from '@elgato/streamdeck';
-import type { KeyDownEvent } from '@elgato/streamdeck';
+import type {
+  DidReceiveSettingsEvent,
+  KeyAction,
+  KeyDownEvent,
+  WillAppearEvent,
+} from '@elgato/streamdeck';
 import { deckForDeviceType, defaultProfileName, opsProfileName } from '../profile';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 
 /** Per-key setting: which page this nav key jumps to. */
 export type NavSettings = {
@@ -16,12 +22,22 @@ export type NavSettings = {
  */
 @action({ UUID: 'gg.pim.jetstream.nav' })
 export class NavKey extends SingletonAction<NavSettings> {
-  override onWillAppear(): void {
-    void this.renderAll();
+  // Render from the event's OWN payload — never re-fetch with getSettings().
+  //
+  // `getSettings()` is a socket round-trip whose reply is the shared `didReceiveSettings` event,
+  // so calling it from `onDidReceiveSettings` fed itself: settings arrive → render → fetch →
+  // settings arrive → … an unbounded loop of socket traffic and setTitle writes for as long as the
+  // key is visible. (The SDK only suppresses that echo under `useExperimentalMessageIdentifiers`,
+  // which is hardcoded false.) A nav key ships on both bundled pages, so this ran on stock boards.
+  // slot.ts documents and guards the same echo; nav.ts had both halves and no guard.
+  override onWillAppear(ev: WillAppearEvent<NavSettings>): void {
+    if (!ev.action.isKey()) return; // keypad-only; a dial has no nav face
+    void this.renderOne(ev.action, ev.payload.settings);
   }
 
-  override onDidReceiveSettings(): void {
-    void this.renderAll();
+  override onDidReceiveSettings(ev: DidReceiveSettingsEvent<NavSettings>): void {
+    if (!ev.action.isKey()) return;
+    void this.renderOne(ev.action, ev.payload.settings);
   }
 
   override async onKeyDown(ev: KeyDownEvent<NavSettings>): Promise<void> {
@@ -40,18 +56,16 @@ export class NavKey extends SingletonAction<NavSettings> {
     }
   }
 
-  async renderAll(): Promise<void> {
-    for (const visible of this.actions) {
-      if (!visible.isKey()) continue;
-      const target = (await visible.getSettings()).target ?? 'ops';
-      await visible.setTitle('');
-      await visible.setImage(
-        keyFace({
-          color: '#3a3a3a',
-          label: target === 'ops' ? 'ops →' : '← board',
-          sub: target === 'ops' ? 'controls' : 'status',
-        }),
-      );
-    }
+  private async renderOne(a: KeyAction, settings: NavSettings): Promise<void> {
+    const target = settings.target ?? 'ops';
+    await a.setTitle('');
+    await paintKey(
+      a,
+      keyFace({
+        color: '#3a3a3a',
+        label: target === 'ops' ? 'ops →' : '← board',
+        sub: target === 'ops' ? 'controls' : 'status',
+      }),
+    );
   }
 }

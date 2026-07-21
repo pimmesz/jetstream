@@ -14,8 +14,22 @@ const run = promisify(execFile);
 const MAX_ICON_BYTES = 512 * 1024;
 
 /** Resolved-icon cache, keyed by the source (app path or image path). `null` = "we looked and there
- * is none", so a missing icon isn't re-probed on every repaint. */
+ * is none", so a missing icon isn't re-probed on every repaint (which happens on every board change
+ * plus a 30s tick, and each miss costs a `defaults` + `sips` shell-out).
+ *
+ * A negative entry MUST be clearable. It records a moment in time — the app wasn't installed yet,
+ * the extraction lost a race at startup — and without invalidation that moment becomes permanent:
+ * the key can never show its logo again for the life of the plugin, and nothing the user does
+ * through the UI fixes it. `forgetIcon` is called whenever a slot is retargeted, so re-setting the
+ * key through `jetstream chat` re-resolves instead of replaying the old failure. */
 const cache = new Map<string, string | null>();
+
+/** Drop a cached icon so the next render re-resolves it. Pass a source (app path / image path) to
+ * clear one, or nothing to clear all. Call this on any EXPLICIT user edit of a key. */
+export function forgetIcon(source?: string): void {
+  if (source === undefined) cache.clear();
+  else cache.delete(source);
+}
 
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -75,16 +89,32 @@ export async function appIconDataUri(
   return uri;
 }
 
+/** Why the last extraction failed, per app path — surfaced by `iconFailureReason` so a key stuck on
+ * its text face is diagnosable. Every failure here is swallowed (an icon is cosmetic and must never
+ * break a repaint), which previously meant a missing logo left no trace anywhere at all. */
+const failures = new Map<string, string>();
+
+/** The reason an app's icon could not be extracted, if it was tried and failed. */
+export function iconFailureReason(appPath: string): string | undefined {
+  return failures.get(appPath);
+}
+
 async function extractAppIcon(appPath: string): Promise<string | undefined> {
+  failures.delete(appPath);
   let iconName: string;
   try {
     const { stdout } = await run('defaults', ['read', join(appPath, 'Contents', 'Info'), 'CFBundleIconFile']);
     iconName = stdout.trim();
   } catch {
-    return undefined; // no CFBundleIconFile (asset-catalog icon) or unreadable Info.plist
+    // No CFBundleIconFile (the icon lives in an asset catalog) or an unreadable Info.plist.
+    failures.set(appPath, 'no CFBundleIconFile — the icon is in an asset catalog, not a loose .icns');
+    return undefined;
   }
   const icns = resolveIcnsPath(join(appPath, 'Contents', 'Resources'), iconName);
-  if (!icns) return undefined;
+  if (!icns) {
+    failures.set(appPath, `CFBundleIconFile "${iconName}" has no matching .icns under Resources/`);
+    return undefined;
+  }
   // Hash the FULL app path so two apps with the same basename (e.g. two "Notes.app") don't race on a
   // shared temp file and cache each other's icon.
   const out = join(tmpdir(), `jetstream-icon-${createHash('sha1').update(appPath).digest('hex').slice(0, 16)}.png`);
@@ -92,7 +122,8 @@ async function extractAppIcon(appPath: string): Promise<string | undefined> {
     // argv array, never a shell; -Z scales the longest side to 144 for a 144px key.
     await run('sips', ['-s', 'format', 'png', '-Z', '144', icns, '--out', out]);
     return `data:image/png;base64,${readFileSync(out).toString('base64')}`;
-  } catch {
+  } catch (error) {
+    failures.set(appPath, `sips could not convert ${icns}: ${(error as Error).message}`);
     return undefined;
   }
 }

@@ -70,7 +70,15 @@ export class AttentionKey extends SingletonAction {
     const amber = escalate && this.flashOn ? '#ffe08a' : '#ffb224';
     const face = first
       ? keyFace({
-          color: isFailed ? colorFor('failed', config.get().theme) : amber,
+          // A failed head must ESCALATE too. Taking the constant `failed` colour meant `flashOn`
+          // toggled nothing: every escalated frame was byte-identical, paintKey discarded it, and
+          // the 1s flash timer ran forever painting nothing. That kills escalation entirely for
+          // anyone running with permissions bypassed, for whom 'failed' IS the doorbell.
+          color: isFailed
+            ? escalate && this.flashOn
+              ? '#e93da0' // a lighter magenta — the same alternation the amber pair uses
+              : colorFor('failed', config.get().theme)
+            : amber,
           glyph: glyphFor(isFailed ? 'failed' : 'needsInput'),
           label: first.name,
           sub:
@@ -78,10 +86,12 @@ export class AttentionKey extends SingletonAction {
               ? `+${waiting.length - 1} more`
               : snoozed
                 ? 'snoozed'
-                : isFailed
-                  ? 'failed'
-                  : escalate
-                    ? 'still waiting'
+                : escalate
+                  ? isFailed
+                    ? 'still failed'
+                    : 'still waiting'
+                  : isFailed
+                    ? 'failed'
                     : 'needs you',
         })
       : keyFace({ color: '#26262b', label: 'all clear' });

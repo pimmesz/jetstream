@@ -1,6 +1,7 @@
 import { action, SingletonAction } from '@elgato/streamdeck';
 import type { Face } from '../render';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 
 // esbuild replaces `__BUILD_ID__` with the compile-time stamp (scripts/build.mjs `define`).
 // Under vitest there is no define, so `typeof` guards it and we fall back to 'dev'.
@@ -38,7 +39,7 @@ export class BuildKey extends SingletonAction {
     for (const a of this.actions) {
       if (!a.isKey()) continue;
       await a.setTitle('');
-      await a.setImage(face);
+      await paintKey(a, face);
     }
   }
 }

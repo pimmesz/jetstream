@@ -33,40 +33,42 @@ export async function readOutputVolume(): Promise<number | undefined> {
 
 /** Nudge the default output volume by `delta` (clamped 0-100). No-op off-macOS or when the output has no
  * software volume. Best-effort — the key already gave press feedback. */
-export async function nudgeOutputVolume(delta: number): Promise<void> {
+export async function nudgeOutputVolume(delta: number): Promise<boolean> {
   if (haveBgmVol()) {
     try {
       await run(BGM_VOL, ['nudge', String(Math.round(delta))]); // nudge EVERY BGM-routed app at once
+      return true;
     } catch {
-      /* best-effort */
+      return false; // the key shows an alert rather than a ✓ for a no-op
     }
-    return;
   }
   const current = await readOutputVolume();
-  if (current === undefined) return;
+  if (current === undefined) return false; // volume-fixed interface, or the read failed
   const next = Math.max(0, Math.min(100, Math.round(current + delta)));
   try {
     await run('osascript', ['-e', `set volume output volume ${next}`]);
+    return true;
   } catch {
-    /* best-effort */
+    return false;
   }
 }
 
 /** Toggle the default output mute. Prefers the bgm-vol helper (mutes/restores all BGM-routed apps);
  * else the osascript master. No-op off-macOS; best-effort. */
-export async function toggleOutputMute(): Promise<void> {
+export async function toggleOutputMute(): Promise<boolean> {
   if (haveBgmVol()) {
     try {
       await run(BGM_VOL, ['mute']); // toggles all BGM-routed apps between 0 and their saved levels
+      return true;
     } catch {
-      /* best-effort */
+      return false;
     }
-    return;
   }
-  if (process.platform !== 'darwin') return;
+  if (process.platform !== 'darwin') return false;
   try {
     await run('osascript', ['-e', 'set volume output muted (not (output muted of (get volume settings)))']);
+    return true;
   } catch {
-    /* best-effort */
+    return false;
   }
 }

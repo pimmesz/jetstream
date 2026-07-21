@@ -20,8 +20,9 @@ import {
   writeProfileFile,
   type DeckModel,
 } from '../profile';
-import { readConfigFile, projectsConfigPath } from '../projects-config';
+import { readConfigFile, projectsConfigPath , resolveProjectsConfigPath } from '../projects-config';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 
 const errMsg = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -152,7 +153,7 @@ export class SettingsKey extends SingletonAction {
     }
     await handleFleetMessage(ev.payload, {
       read: () => readConfigFile(),
-      write: (projects, settings) => writeFleetFile(projectsConfigPath(), projects, settings),
+      write: (projects, settings) => writeFleetFile(resolveProjectsConfigPath(), projects, settings),
       seed: (projects) => board.seed(projects),
       // Reply to the current property inspector (the one that just sent to us).
       reply: (msg) => this.reply(msg),
@@ -343,7 +344,8 @@ export class SettingsKey extends SingletonAction {
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');
-      await visible.setImage(
+      await paintKey(
+        visible,
         keyFace({ color: warns > 0 ? '#b58900' : '#3a3a3a', label: 'settings', sub }),
       );
     }

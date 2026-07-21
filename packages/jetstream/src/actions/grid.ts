@@ -2,6 +2,7 @@ import streamDeck, { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyDownEvent, WillAppearEvent } from '@elgato/streamdeck';
 import { deckForDeviceType, gridProfileName } from '../profile';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 
 /**
  * The "Grid toggle" key: flips the deck to the bundled coordinate-grid overlay so you can read off
@@ -13,7 +14,7 @@ import { keyFace } from '../render';
 export class GridKey extends SingletonAction {
   override onWillAppear(ev: WillAppearEvent): void {
     if (!ev.action.isKey()) return;
-    void ev.action.setImage(keyFace({ color: '#14181f', label: 'grid', sub: 'a1…hN', glyph: '⊞' }));
+    void paintKey(ev.action, keyFace({ color: '#14181f', label: 'grid', sub: 'a1…hN', glyph: '⊞' }));
   }
 
   override async onKeyDown(ev: KeyDownEvent): Promise<void> {

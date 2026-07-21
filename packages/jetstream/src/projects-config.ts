@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
@@ -23,6 +23,50 @@ export function projectsConfigPath(
   const appData = env.APPDATA?.trim();
   if (appData && process.platform === 'win32') return join(appData, 'jetstream', 'projects.json');
   return join(home, '.config', 'jetstream', 'projects.json');
+}
+
+/**
+ * Every path the fleet file could be at, most-specific first.
+ *
+ * The plugin runs under the Stream Deck app (launchd/GUI env) while `jetstream chat` and the CLI
+ * run from the user's shell — they do NOT share an environment. `XDG_CONFIG_HOME` set in a shell
+ * profile but absent from the GUI env is an ordinary setup, and it made the CLI write one file
+ * while the plugin read another: chat reported writing the fleet successfully, and the board never
+ * showed it, not even after a restart, with nothing anywhere saying why.
+ */
+export function projectsConfigPaths(
+  env: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): string[] {
+  const primary = projectsConfigPath(env, home);
+  const fallback = join(home, '.config', 'jetstream', 'projects.json');
+  return primary === fallback ? [primary] : [primary, fallback];
+}
+
+/**
+ * The fleet file to USE: the first candidate that exists, else the primary path.
+ *
+ * Readers AND writers must both go through this, or the split simply moves — read the fallback,
+ * write the primary, and the user's edit vanishes into a file nothing loads. Resolving once means
+ * whichever file already exists stays the file everyone touches.
+ */
+export function resolveProjectsConfigPath(
+  exists: (path: string) => boolean = existsSync,
+  env: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): string {
+  const candidates = projectsConfigPaths(env, home);
+  const found = candidates.find(exists);
+  if (found) return found;
+  // NOTHING exists yet, so this call decides where the file is CREATED — and the two sides must
+  // agree or the fleet is written where the board will never look. `XDG_CONFIG_HOME` is typically
+  // set in a shell profile only, so the CLI would create it there while the launchd-launched plugin
+  // resolves `~/.config` and finds nothing, forever. Create at the environment-independent path so
+  // both processes converge. (An XDG file that ALREADY exists still wins, above — this only picks
+  // where a brand-new one goes.) `%APPDATA%` is genuinely present for GUI processes on Windows, so
+  // it stays the primary there.
+  const xdgOnly = env.XDG_CONFIG_HOME?.trim() && process.platform !== 'win32';
+  return xdgOnly ? candidates[candidates.length - 1]! : candidates[0]!;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -98,7 +142,7 @@ export interface ConfigFile {
  * A missing file yields empty projects + empty preset. A present-but-unreadable/unparseable
  * file also yields empty, but flagged `corrupt` so callers that WRITE won't clobber it.
  * Never throws. `path` is injectable for tests. */
-export function readConfigFile(path = projectsConfigPath()): ConfigFile {
+export function readConfigFile(path = resolveProjectsConfigPath()): ConfigFile {
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');

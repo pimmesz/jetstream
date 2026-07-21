@@ -1,7 +1,7 @@
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import type { JetstreamConfig } from './config';
-import { addToFleet, writeFleetFile } from './fleet';
-import { projectsConfigPath } from './projects-config';
+import { addToFleet, mergeFleet, writeFleetFile } from './fleet';
+import { projectsConfigPath, readConfigFile , resolveProjectsConfigPath } from './projects-config';
 import { DECK_MODELS, type DeckModel } from './profile';
 import { NO_SETTINGS_TYPE_NAMES, resolvePlacements, type Placement } from './layout';
 import { boardContext, renderBoardMap, type BoardLayout } from './board-layout';
@@ -139,9 +139,13 @@ export function parseProposal(reply: string, defaultDeck?: DeckModel): Proposal 
     }
   }
   const layout = extractLayout(raw.layout, defaultDeck);
-  // Nothing usable — neither a fleet nor a key layout — so it isn't a proposal.
-  if (projects.length === 0 && !layout) return null;
-  return { projects, settings: extractSettings(raw.settings), ...(layout ? { layout } : {}) };
+  const settings = extractSettings(raw.settings);
+  // Nothing usable — no fleet, no layout, no settings — so it isn't a proposal. SETTINGS COUNT:
+  // "turn on high contrast" is a flow SETUP_SYSTEM explicitly advertises, and it legitimately comes
+  // back as {"projects":[],"settings":{…}}. Ignoring that told the user their correct request was
+  // unreadable input.
+  if (projects.length === 0 && !layout && Object.keys(settings).length === 0) return null;
+  return { projects, settings, ...(layout ? { layout } : {}) };
 }
 
 /** Pull a JSON object out of a model reply — the whole trimmed string when it's clean JSON, else the
@@ -210,7 +214,7 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
     );
     return 1;
   }
-  const configPath = deps.configPath ?? projectsConfigPath();
+  const configPath = deps.configPath ?? resolveProjectsConfigPath();
   const write = deps.write ?? ((p, s) => writeFleetFile(configPath, p, s));
 
   io.say('Jetstream chat setup — describe your repos to build your fleet, or arrange your deck by coordinate.');
@@ -256,7 +260,12 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
     }
 
     const proposal = parseProposal(reply, deps.board?.deck);
-    if (!proposal || (proposal.projects.length === 0 && !proposal.layout)) {
+    if (
+      !proposal ||
+      (proposal.projects.length === 0 &&
+        !proposal.layout &&
+        Object.keys(proposal.settings).length === 0)
+    ) {
       io.say("\n(couldn't read a fleet or layout from that — give me repo paths, or which keys go where.)");
       continue;
     }
@@ -295,17 +304,48 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
       return 0;
     }
     if (decision === 'apply') {
+      let applied = 0;
+      let wroteSettings = false;
+      let fleet = proposal.projects;
       try {
-        if (proposal.projects.length > 0) write(proposal.projects, proposal.settings);
+        // MERGE with what is already on disk. The model is shown the board, not the fleet, and is
+        // told to include only what the user asked for — so "add /repo/new" arrives as a
+        // one-project proposal. Writing it verbatim replaced the whole fleet, silently turning an
+        // add into a wipe. Absence is the model's shorthand, never a removal.
+        const current = readConfigFile(configPath);
+        // NEVER write over a fleet we failed to read. `corrupt` means the file EXISTS but could not
+        // be parsed, so `current.projects` is [] — not because the fleet is empty, but because we
+        // could not see it. Merging into that and writing would replace a populated projects.json
+        // with whatever the proposal held (for a settings-only proposal: nothing at all).
+        if (current.corrupt) {
+          io.say(
+            `\n${configPath} exists but could not be parsed, so nothing was written — fix or remove it first.`,
+          );
+          return 1;
+        }
+        if (proposal.projects.length > 0 || Object.keys(proposal.settings).length > 0) {
+          const merged = mergeFleet(current.projects, proposal.projects);
+          // Settings MERGE over what's on disk. renderProjectsJson writes the settings block
+          // wholesale, so passing only the proposal's keys erased every setting the model didn't
+          // happen to re-emit — and gating the write on `projects.length > 0` meant settings the
+          // user had just approved were shown, confirmed, and silently dropped.
+          write(merged, { ...current.settings, ...proposal.settings });
+          applied = merged.length;
+          fleet = merged;
+          wroteSettings = Object.keys(proposal.settings).length > 0;
+        }
       } catch (error) {
         io.say(`Couldn't write the config: ${error instanceof Error ? error.message : String(error)}`);
         return 1;
       }
-      if (proposal.projects.length > 0) io.say(`\nWrote ${proposal.projects.length} project(s) to ${configPath}.`);
+      if (applied > 0) io.say(`\nWrote ${applied} project(s) to ${configPath}.`);
+      else if (wroteSettings) io.say(`\nUpdated settings in ${configPath}.`);
       // A designed layout → generate the importable profile; otherwise the fleet path offers the
       // ready-made board layout, falling back to the drag-keys hint.
       if (proposal.layout && deps.onLayout) await deps.onLayout(proposal.layout);
-      else if (deps.onWritten) await deps.onWritten(proposal.projects);
+      // The MERGED fleet, not just the proposal — otherwise the generated profile carries keys for
+      // only the repo that was added and silently omits the seven already there.
+      else if (deps.onWritten) await deps.onWritten(fleet);
       else io.say('Next: drag a Fleet + Attention key onto your deck.');
       return 0;
     }

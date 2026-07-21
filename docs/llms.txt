@@ -89,7 +89,7 @@ The **Fleet** roll-up and **Attention** doorbell then cover every repo in the fi
 **Project** keys become optional focused jump-to buttons rather than the only way the plugin learns
 your repos. An optional `"settings"` block (`theme`, `longPressMs`, `usageRefreshSec`,
 `escalateAfterSec`) presets the plugin config on a fresh install — the Settings key still wins at
-runtime. Run `jetstream.js doctor` to check the file is parseable.
+runtime. Run `jetstream doctor` to check the file is parseable.
 
 ## Optional: show the active tool
 

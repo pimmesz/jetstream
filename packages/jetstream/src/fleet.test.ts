@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +12,8 @@ import {
   writeFleetFile,
   type FleetDeps,
   type FleetOutbound,
+  mergeFleet,
+  renderProjectsJson,
 } from './fleet';
 import { parseProjectsConfig, parseSettingsPreset } from './projects-config';
 
@@ -271,5 +273,67 @@ describe('handleFleetMessage', () => {
       await expect(handleFleetMessage(bad, deps)).resolves.toBeUndefined();
     }
     expect(deps.write).not.toHaveBeenCalled();
+  });
+});
+
+// The bug: `jetstream chat` shows the model your BOARD, never your FLEET, and its instructions say
+// to include only what the user asked for — so "add /repo/new" arrives as a ONE-project proposal.
+// The apply path wrote that verbatim over projects.json, turning an add into a wipe of every other
+// repo, atomically and with no backup.
+describe('mergeFleet', () => {
+  const p = (id: string, path: string): ProjectConfig => ({ id, name: id, path });
+
+  it('an add is an ADD — it never drops repos the proposal omitted', () => {
+    const existing = [p('falcon', '/r/falcon'), p('api', '/r/api'), p('web', '/r/web')];
+    const merged = mergeFleet(existing, [p('new', '/r/new')]);
+    expect(merged.map((x) => x.path)).toEqual(['/r/falcon', '/r/api', '/r/web', '/r/new']);
+  });
+
+  it('a repeated path is updated in place, not duplicated', () => {
+    const merged = mergeFleet([p('old', '/r/falcon')], [{ id: 'falcon', name: 'Falcon', path: '/r/falcon' }]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.name).toBe('Falcon'); // the proposal wins — this is how a rename works
+  });
+
+  // Both reviewers found this independently. The model is never shown the existing fleet, so its
+  // ids are unique only within its own proposal — and parseProjectsConfig dedupes by id keeping the
+  // FIRST, so a collision silently deletes the repo the user just asked for.
+  it('re-uniquifies ids across the merge so an added repo cannot be swallowed', () => {
+    const existing = [p('jetstream', '/Personal/jetstream')];
+    const proposed = [{ id: 'jetstream', name: 'jetstream', path: '/work/jetstream' }];
+    const merged = mergeFleet(existing, proposed);
+    expect(merged).toHaveLength(2);
+    expect(new Set(merged.map((x) => x.id)).size).toBe(2); // no collision
+    // …and it survives a real write/read round-trip, which is where the loss actually happened.
+    const roundTripped = parseProjectsConfig(renderProjectsJson(merged, {}));
+    expect(roundTripped.map((x) => x.path)).toEqual(['/Personal/jetstream', '/work/jetstream']);
+  });
+
+  it('keeps an existing id when the SAME repo is re-emitted (ids address board state)', () => {
+    const merged = mergeFleet([p('falcon', '/r/falcon')], [{ id: 'renamed', name: 'Falcon', path: '/r/falcon' }]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.id).toBe('falcon'); // id stable
+    expect(merged[0]!.name).toBe('Falcon'); // rename still applies
+  });
+
+  it('never infers a removal from absence', () => {
+    const existing = [p('a', '/r/a'), p('b', '/r/b')];
+    expect(mergeFleet(existing, [])).toHaveLength(2);
+  });
+});
+
+describe('writeFleetFile backup', () => {
+  it('keeps the previous fleet before overwriting it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-fleet-'));
+    const file = join(dir, 'projects.json');
+    writeFleetFile(file, [{ id: 'a', name: 'A', path: '/r/a' }], {}, new Date('2026-07-21T10:00:00Z'));
+    writeFleetFile(file, [{ id: 'b', name: 'B', path: '/r/b' }], {}, new Date('2026-07-21T11:00:00Z'));
+
+    const backups = readdirSync(dir).filter((f) => f.endsWith('.bak'));
+    expect(backups).toHaveLength(1); // the first write had nothing to preserve
+    // The backup holds the PRE-overwrite fleet, so a bad write is recoverable.
+    expect(JSON.parse(readFileSync(join(dir, backups[0]!), 'utf8')).projects[0].path).toBe('/r/a');
+    expect(JSON.parse(readFileSync(file, 'utf8')).projects[0].path).toBe('/r/b');
+    rmSync(dir, { recursive: true, force: true });
   });
 });
