@@ -81,10 +81,6 @@
     --st-needs: #ffb224;
     --st-done: #30a46c;
     --st-idle: #8e8e93;
-    --paper: #f4f3ef;        /* the one light band, for a dark → light → dark rhythm */
-    --paper-ink: #14161d;
-    --paper-line: #dcdad2;
-    --paper-dim: #6b6f7a;
     --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --display: "Archivo", var(--sans);
@@ -223,6 +219,10 @@
   /* figures: plain captions, not spec plates */
   figure { margin: 36px 0 0; }
   figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; }
+  /* A letterbox crop of the real deck photo, framed on the lit keys so the labels read large.
+     Deliberately a tighter, wider frame than the hero so it works as a detail shot, not a repeat. */
+  .shot { aspect-ratio: 16 / 7; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; }
+  .shot img { width: 100%; height: 100%; border: 0; border-radius: 0; object-fit: cover; object-position: 50% 32%; transform: scale(1.24); }
   figcaption { font-family: var(--sans); font-size: 0.85rem; color: var(--dim); margin-top: 12px; }
 
   /* code block + example inputs */
@@ -232,9 +232,6 @@
   .term { font-size: 0.88rem; line-height: 1.75; }
   .term .in { color: var(--ink); } .term .in::before { content: "> "; color: var(--dim); }
 
-  /* keychip: the small key used for the mechanism step markers */
-  .keychip { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px;
-    background: #343945; color: var(--ink); font-family: var(--mono); font-weight: 600; font-size: 0.74rem; flex: none; }
   /* CH.03 chat capabilities — same moulded surface as the feature keys */
   h3.sub { font-family: var(--display); font-size: 1.06rem; font-weight: 700; margin: 30px 0 14px; }
   .chatgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -245,22 +242,6 @@
   }
   .chatcard h4 { font-family: var(--display); font-size: 0.95rem; font-weight: 700; margin: 0 0 6px; }
   .chatcard p { margin: 0; font-size: 0.9rem; color: var(--muted); }
-
-  .steps { display: grid; gap: 18px; margin: 28px 0 0; }
-  .step { display: flex; gap: 14px; align-items: flex-start; }
-  .step h3 { font-family: var(--display); font-size: 1rem; font-weight: 700; margin: 0 0 3px; }
-  .step p { margin: 0; font-size: 0.94rem; }
-
-  /* the light band, the page's one bright section */
-  #how { background: var(--paper); color: var(--paper-ink); border-top: 1px solid var(--paper-line); }
-  #how h2, #how h3 { color: var(--paper-ink); }
-  #how .lead, #how .step p { color: var(--paper-dim); }
-  #how .kicker, #how figcaption { color: var(--paper-dim); }
-  #how code.inline { background: #eceae4; border-color: var(--paper-line); color: #454a55; }
-  #how .keychip { background: var(--paper-ink); color: var(--paper); }
-  /* A crop of deck-hero.jpg framing the amber Approve key. */
-  .macro { aspect-ratio: 3 / 2; max-width: 380px; border-radius: 10px; border: 1px solid var(--paper-line);
-    background-image: url("./deck-hero.jpg"); background-size: 330%; background-position: 40% 42%; }
 
   /* closing + README fold */
   #get .install { margin-top: 20px; }
@@ -360,7 +341,7 @@
         <div class="keycap feat"><h3>Stop all</h3><p>Interrupts every session at once, showing how many are running. Off until you opt in.</p></div>
       </div>
       <figure>
-        <img src="./gallery-board.png" alt="A Stream Deck board running Jetstream: one key per project, each lit with its live Claude Code status" loading="lazy" />
+        <div class="shot"><img src="./deck-hero.jpg" alt="Close-up of a lit Stream Deck: falcon and docs orange, api amber and asking to approve, web green and done, infra grey and idle" loading="lazy" /></div>
         <figcaption>falcon working, api waiting on you, web done, infra idle.</figcaption>
       </figure>
     </div>
@@ -410,26 +391,6 @@ jetstream doctor             <span class="c"># read-only health check if keys do
         <figcaption>App, URL and command shortcuts: telegram, grafana, deploy, tail logs. Recoloured and renamed.</figcaption>
       </figure>
       <p class="lead" style="margin-top:22px;margin-bottom:0;">Every state also carries a glyph (<span class="glyph g-work">⋯</span> <span class="glyph g-need">!</span> <span class="glyph g-done">✓</span>), so the board reads without colour. A high-contrast theme swaps red/green for orange/blue.</p>
-    </div>
-  </div>
-</section>
-
-<section id="how">
-  <div class="wrap chapter">
-    <div class="body">
-      <p class="kicker">How it works</p>
-      <h2>Local hooks. Nothing phones home.</h2>
-      <p class="lead">Everything talks over 127.0.0.1. Watching status costs no quota.</p>
-      <div class="steps">
-        <div class="step"><span class="keychip">1</span><div><h3>Hooks report locally</h3><p>Claude Code's hooks report each session's state over <code class="inline">127.0.0.1</code>. The permission hook also holds a pending prompt briefly, so a deck key can answer it.</p></div></div>
-        <div class="step"><span class="keychip">2</span><div><h3>Keys light up</h3><p>Each project key holds its own name and path, so everyone's board is their own. Place as many as your device has, from a 6-key Mini to a 32-key XL.</p></div></div>
-        <div class="step"><span class="keychip">3</span><div><h3>You press back</h3><p>Open a project, interrupt a run, approve a prompt, or stop everything at once. Not a read-only dashboard.</p></div></div>
-        <div class="step"><span class="keychip">4</span><div><h3>One config, whole fleet</h3><p><code class="inline">projects.json</code> lists every repo once. The fleet roll-up and doorbell watch them all, so placed keys are just optional shortcuts.</p></div></div>
-      </div>
-      <figure>
-        <div class="macro" role="img" aria-label="Close-up of the amber Approve key on the Stream Deck"></div>
-        <figcaption>The amber key is a permission prompt you answer with one press.</figcaption>
-      </figure>
     </div>
   </div>
 </section>
