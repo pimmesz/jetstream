@@ -260,7 +260,10 @@ async function confirmPluginLive(
   }
   say(
     "Still not detecting Jetstream on your deck. Approve the Stream Deck install prompt if you haven't,\n" +
-      'then run `jetstream doctor` to check the connection.',
+      'then run `jetstream doctor` to check the connection.\n' +
+      'If Stream Deck said "already installed", it kept the plugin it had: it only upgrades when the\n' +
+      "manifest Version increases, so a build carrying the installed version is refused. Releases bump\n" +
+      'that automatically — a hand-built plugin does not.',
   );
 }
 

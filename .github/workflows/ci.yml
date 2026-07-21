@@ -180,6 +180,32 @@ jobs:
 
           pkg.version = next;
           await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+
+          // The sdPlugin manifest Version must move IN LOCKSTEP, because it is not cosmetic:
+          // Stream Deck only upgrades an installed plugin when this number is strictly higher.
+          // Leave it behind and the release reaches nobody's deck — the npm package publishes
+          // fine, users run `jetstream install`, Stream Deck answers "already installed", and
+          // they keep running the old plugin. That is exactly how v2.0.0 shipped to npm and
+          // to no hardware. Elgato wants four parts, npm gives three, so append `.0`.
+          const manifestPath = 'packages/jetstream/gg.pim.jetstream.sdPlugin/manifest.json';
+          const manifestRaw = await readFile(manifestPath, 'utf8');
+          // Replace ONLY the version string, rather than round-tripping through
+          // JSON.parse/stringify: this is Elgato's schema, edited by their tooling, and a
+          // reserialise would silently restructure ~30 lines of it (stringify expands every short
+          // array and adds a trailing newline this file does not have). A one-field edit keeps the
+          // release diff to the single line that actually changed.
+          //
+          // The 4-part pattern is load-bearing: the manifest also carries a `"Version": "20"`
+          // (an OS minimum), and this must never touch it. Non-global, so only the first match.
+          const VERSION_FIELD = /("Version":\s*")\d+\.\d+\.\d+\.\d+(")/;
+          if (!VERSION_FIELD.test(manifestRaw)) {
+            // Never continue silently: a manifest whose Version does not move is a release that
+            // reaches nobody's deck, and the publish looks completely successful.
+            console.error(`could not find a 4-part "Version" field in ${manifestPath}`);
+            process.exit(1);
+          }
+          await writeFile(manifestPath, manifestRaw.replace(VERSION_FIELD, `$1${next}.0$2`));
+
           await writeFile(process.env.GITHUB_OUTPUT, `version=${next}\n`, { flag: 'a' });
           EOF
 
@@ -196,7 +222,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages/jetstream/package.json docs/index.html docs/llms.txt
+          git add packages/jetstream/package.json \
+                  packages/jetstream/gg.pim.jetstream.sdPlugin/manifest.json \
+                  docs/index.html docs/llms.txt
           git commit -m "chore(release): bump version to ${VERSION} [skip ci]"
           # Belt and braces against pushes that landed since checkout; only the
           # version line can conflict, and only this bot edits it.
