@@ -338,7 +338,14 @@ export function checkLatestVersion(installed: string, latest: string | null): Ch
     return { status: 'ok', message: `version ${installed}` }; // no definite comparison → just report it
   }
   return isNewerVersion(latest, installed)
-    ? { status: 'warn', message: `${installed} installed — ${latest} is available; run \`jetstream update\`` }
+    ? {
+        status: 'warn',
+        // Name the registry. This check asks npmjs.org directly, so if the machine's npm points at
+        // a stale mirror, plain `npm i -g` can "succeed" without moving the version and this
+        // warning would repeat forever with no explanation. `jetstream update` pins the same
+        // registry, which is why it is the command to run.
+        message: `${installed} installed — ${latest} is available on npmjs.org; run \`jetstream update\` (it pins the public registry; a bare \`npm i -g\` may hit a stale mirror)`,
+      }
     : { status: 'ok', message: `on the latest version (${installed})` };
 }
 

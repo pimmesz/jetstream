@@ -20,6 +20,53 @@ import { fileURLToPath } from 'node:url';
  * the .sdPlugin bundle at build time, so this installer only uses node builtins.
  */
 
+/** Where this package is published, and therefore the only registry an update can be found at.
+ * `jetstream doctor` asks the same host, so its "an update is available" and this command's
+ * "here it is" can never disagree because of a machine-local mirror. */
+export const PUBLIC_REGISTRY = 'https://registry.npmjs.org/';
+
+/** A registry URL conservative enough to be safe as a command-line argument.
+ *
+ * `--registry=<value>` reaches a SHELL on the Windows `npm.cmd` fallback (spawn with
+ * `shell: true`), where cmd.exe re-parses the joined command string. A URL is otherwise free to
+ * contain `&`, so validating merely that it parses would still let
+ * `https://host/& calc.exe &` execute. This pattern allows every character a real registry URL
+ * needs — host, port, path, userinfo, percent-encoding — and no cmd.exe metacharacter. */
+const SAFE_REGISTRY = /^https?:\/\/[A-Za-z0-9._~:/@%+-]+$/;
+
+/** Hide `user:password@` before a registry URL is printed — npm redacts these in its own output
+ * and a terminal log or a pasted bug report must not be where they leak. */
+export function redactRegistry(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = '';
+    parsed.password = '';
+    return `${parsed.toString()} (credentials hidden)`;
+  } catch {
+    return url;
+  }
+}
+
+/** The registry to install from: `JETSTREAM_REGISTRY` when it is a well-formed http(s) URL, else
+ * the public one. A malformed value is REPORTED rather than silently ignored or passed through —
+ * quietly falling back would look like the override worked, and passing it through would put an
+ * unvalidated string on a command line. */
+export function resolveRegistry(
+  env: NodeJS.ProcessEnv = process.env,
+  onInvalid: (message: string) => void = () => {},
+): string {
+  const raw = env.JETSTREAM_REGISTRY?.trim();
+  if (!raw) return PUBLIC_REGISTRY;
+  if (!SAFE_REGISTRY.test(raw)) {
+    onInvalid(
+      `Ignoring JETSTREAM_REGISTRY — it must be a plain http(s) URL (got ${redactRegistry(raw)}). Using ${PUBLIC_REGISTRY}`,
+    );
+    return PUBLIC_REGISTRY;
+  }
+  return raw;
+}
+
 /** The plugin dir Elgato installs into, per OS, and where the CLI sits inside it. */
 const PLUGIN_REL = join('gg.pim.jetstream.sdPlugin', 'bin', 'jetstream.js');
 
@@ -137,6 +184,8 @@ export interface RunJetstreamDeps {
   artifactPath?: string;
   /** Platform for choosing the open command (defaults to process.platform). */
   platform?: NodeJS.Platform;
+  /** Environment (defaults to process.env), injected for tests. Read for JETSTREAM_REGISTRY. */
+  env?: NodeJS.ProcessEnv;
   /** Info sink (defaults to console.log), injected for tests. */
   say?: (message: string) => void;
   /** Plugin liveness probe for the post-install confirmation (defaults to a GET /health), injected for tests. */
@@ -285,7 +334,27 @@ export function updatePackage(deps: RunJetstreamDeps = {}): void {
   const platform = deps.platform ?? process.platform;
 
   say('Updating @pimmesz/jetstream via npm…');
-  const npmArgs = ['i', '-g', '@pimmesz/jetstream'];
+  // Pin the registry this package is actually published to, matching package.json's
+  // `publishConfig`. Without it npm uses whatever the machine's ~/.npmrc points at — on a
+  // corporate laptop that is often a caching mirror whose index of this package is months stale.
+  // npm then installs "the newest it knows", exits 0, and leaves you on the old version, while
+  // `jetstream doctor` (which asks npmjs.org directly) insists an update is available. The two
+  // commands must consult the same registry or they disagree forever.
+  //
+  // BOTH forms are needed: for a scoped package a `@pimmesz:registry` line in .npmrc takes
+  // PRECEDENCE over plain `--registry`, so pinning only the latter is silently defeated.
+  // `JETSTREAM_REGISTRY` is the escape hatch for a machine that legitimately cannot reach
+  // npmjs.org and updates through an authorized mirror instead — validated, because it ends up
+  // on a command line that the Windows fallback hands to a shell.
+  const registry = resolveRegistry(deps.env ?? process.env, (m) => error(errRed(m)));
+  const npmArgs = [
+    'i',
+    '-g',
+    `--registry=${registry}`,
+    `--@pimmesz:registry=${registry}`,
+    '@pimmesz/jetstream',
+  ];
+  const before = packageVersion();
   // Prefer npm's own JS entry next to THIS node binary, spawned with NO shell: on Windows a
   // shell resolves a bare `npm.cmd` from the CURRENT DIRECTORY before PATH, so a planted
   // npm.cmd in e.g. a cloned repo would run instead of npm (binary planting). node ships npm
@@ -311,7 +380,16 @@ export function updatePackage(deps: RunJetstreamDeps = {}): void {
     }
     // packageVersion() reads package.json from disk, so this reports the FRESH version even
     // though this process still runs the old code; the bundled artifact on disk is new too.
-    say(`Updated to ${packageVersion()} — handing the plugin to Stream Deck…`);
+    const after = packageVersion();
+    if (after === before) {
+      // npm exited 0 but nothing moved. Say so rather than claiming an update: a silent no-op is
+      // exactly how a stale mirror wastes an afternoon. Already-latest is the benign case, so
+      // name both possibilities instead of guessing which one this is.
+      say(`Already on ${after} — npm had nothing newer to install.`);
+      say(`  (checked ${redactRegistry(registry)})`);
+    } else {
+      say(`Updated ${before} → ${after} — handing the plugin to Stream Deck…`);
+    }
     (deps.install ?? installPlugin)(deps);
   });
   child.on('error', (err: Error) => {

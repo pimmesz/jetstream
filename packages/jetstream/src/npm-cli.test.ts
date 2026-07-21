@@ -13,8 +13,12 @@ import {
   installPlugin,
   packageVersion,
   pluginReportsVersion,
+  PUBLIC_REGISTRY,
+  redactRegistry,
   resolveJetstreamCli,
+  resolveRegistry,
   runJetstream,
+  updatePackage,
 } from './npm-cli';
 
 const tmpDirs: string[] = [];
@@ -262,7 +266,12 @@ describe('runJetstream', () => {
       platform: 'darwin',
       exists: () => false, // no npm-cli.js next to node → PATH fallback
     });
-    expect(spawn).toHaveBeenCalledWith('npm', ['i', '-g', '@pimmesz/jetstream'], { stdio: 'inherit' });
+    // The registry is pinned so a machine-local mirror cannot serve a stale "latest".
+    expect(spawn).toHaveBeenCalledWith(
+      'npm',
+      ['i', '-g', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      { stdio: 'inherit' },
+    );
     expect(install).not.toHaveBeenCalled(); // not before npm finishes
     child.fire('exit', 0);
     expect(install).toHaveBeenCalledOnce();
@@ -303,11 +312,11 @@ describe('runJetstream', () => {
       exists: () => false, // no npm-cli.js next to node → guarded .cmd fallback
     });
     // cwd pinned to HOME so cmd.exe's CWD-first resolution can't run a planted npm.cmd.
-    expect(spawn).toHaveBeenCalledWith('npm.cmd', ['i', '-g', '@pimmesz/jetstream'], {
-      stdio: 'inherit',
-      shell: true,
-      cwd: homedir(),
-    });
+    expect(spawn).toHaveBeenCalledWith(
+      'npm.cmd',
+      ['i', '-g', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      { stdio: 'inherit', shell: true, cwd: homedir() },
+    );
   });
 
   it('update: prefers npm-cli.js next to node, spawned with NO shell (no binary planting)', () => {
@@ -326,7 +335,7 @@ describe('runJetstream', () => {
     const expected = join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
     expect(spawn).toHaveBeenCalledWith(
       process.execPath,
-      [expected, 'i', '-g', '@pimmesz/jetstream'],
+      [expected, 'i', '-g', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
       { stdio: 'inherit' },
     );
   });
@@ -551,4 +560,128 @@ describe('bundledPluginPath', () => {
       join(root, 'assets', 'gg.pim.jetstream.streamDeckPlugin'),
     );
   });
+});
+
+describe('updatePackage', () => {
+  const fakeChild = () => {
+    const handlers: Record<string, (arg?: unknown) => void> = {};
+    return {
+      on(event: string, cb: (arg?: unknown) => void) {
+        handlers[event] = cb;
+        return this;
+      },
+      fire(event: string, arg?: unknown) {
+        handlers[event]?.(arg);
+      },
+    };
+  };
+
+  /** Run updatePackage with a stubbed npm child, and return what it said. */
+  const run = (
+    exitCode = 0,
+    env: NodeJS.ProcessEnv = {},
+  ): { said: string[]; args: string[]; installed: boolean } => {
+    const said: string[] = [];
+    let installed = false;
+    const child = fakeChild();
+    const calls: unknown[][] = [];
+    const spawn = vi.fn((...call: unknown[]) => {
+      calls.push(call);
+      return child;
+    });
+    updatePackage({
+      spawn: spawn as unknown as typeof spawnType,
+      env,
+      say: (m) => said.push(m),
+      error: (m) => said.push(m),
+      setExitCode: () => {},
+      install: () => (installed = true),
+    });
+    child.fire('exit', exitCode);
+    // argv is either [npmCliJs, ...npmArgs] (node path) or the npm args alone (shim fallback).
+    const args = (calls[0]?.[1] ?? []) as string[];
+    return { said, args, installed };
+  };
+
+  // The bug this exists for: a corporate ~/.npmrc points npm at a caching mirror whose index of
+  // this package is stale, so `npm i -g` exits 0 having installed the same old version. Meanwhile
+  // `jetstream doctor` asks npmjs.org directly and keeps insisting an update is available — the
+  // two commands consult different registries and disagree forever.
+  it('pins the public registry so a machine-local mirror cannot serve a stale version', () => {
+    expect(run().args).toContain(`--registry=${PUBLIC_REGISTRY}`);
+    expect(PUBLIC_REGISTRY).toBe('https://registry.npmjs.org/'); // must match package.json publishConfig
+  });
+
+  it('ALSO pins the scoped registry, which otherwise silently wins', () => {
+    // Verified against real npm: with `@pimmesz:registry=<mirror>` in .npmrc, a plain
+    // `--registry=https://registry.npmjs.org` is ignored for this scope — npm returned the
+    // mirror's 1.6.0 instead of the public 2.0.0. Pinning only the unscoped form is defeated.
+    expect(run().args).toContain(`--@pimmesz:registry=${PUBLIC_REGISTRY}`);
+  });
+
+  it('JETSTREAM_REGISTRY overrides both, for a machine that can only reach a mirror', () => {
+    const args = run(0, { JETSTREAM_REGISTRY: 'https://nexus.internal/npm/' }).args;
+    expect(args).toContain('--registry=https://nexus.internal/npm/');
+    expect(args).toContain('--@pimmesz:registry=https://nexus.internal/npm/');
+    expect(args).not.toContain(`--registry=${PUBLIC_REGISTRY}`);
+  });
+
+  it('says nothing moved when the version is unchanged, instead of claiming an update', () => {
+    // packageVersion() reads this repo's real package.json both times, so before === after here —
+    // exactly the no-op case. It must NOT print "Updated to X".
+    const { said, installed } = run();
+    const out = said.join('\n');
+    expect(out).toMatch(/Already on \d+\.\d+\.\d+/);
+    expect(out).toContain(PUBLIC_REGISTRY); // and names WHICH registry it asked
+    expect(out).not.toMatch(/Updated \d/);
+    expect(installed).toBe(true); // still re-hands the plugin to Stream Deck
+  });
+
+  it('a failed npm exit reports the failure and never installs the plugin', () => {
+    const { said, installed } = run(1);
+    expect(said.join('\n')).toMatch(/npm install failed/);
+    expect(installed).toBe(false);
+  });
+
+  it('refuses a JETSTREAM_REGISTRY carrying shell metacharacters', () => {
+    // The Windows npm.cmd fallback spawns with shell:true, so this value would otherwise be
+    // re-parsed by cmd.exe and run calc.exe. `new URL()` accepts it — `&` is legal in a path —
+    // so parsing alone is NOT sufficient validation.
+    const evil = 'https://nexus.invalid/& calc.exe &';
+    const { args, said } = run(0, { JETSTREAM_REGISTRY: evil });
+    expect(args).toContain(`--registry=${PUBLIC_REGISTRY}`); // fell back
+    expect(args.join(' ')).not.toContain('calc.exe');
+    expect(said.join('\n')).toMatch(/Ignoring JETSTREAM_REGISTRY/); // and said so, not silently
+  });
+});
+
+describe('resolveRegistry / redactRegistry', () => {
+  it('defaults to the public registry when unset or blank', () => {
+    expect(resolveRegistry({})).toBe(PUBLIC_REGISTRY);
+    expect(resolveRegistry({ JETSTREAM_REGISTRY: '   ' })).toBe(PUBLIC_REGISTRY);
+  });
+
+  it('accepts a normal mirror URL, with a port, a path, or credentials', () => {
+    expect(resolveRegistry({ JETSTREAM_REGISTRY: 'http://nexus:8081/repository/npm-all/' })).toBe(
+      'http://nexus:8081/repository/npm-all/',
+    );
+    expect(resolveRegistry({ JETSTREAM_REGISTRY: 'https://u:p@nexus.internal/npm/' })).toBe(
+      'https://u:p@nexus.internal/npm/',
+    );
+  });
+
+  it('rejects non-http schemes and shell metacharacters, reporting why', () => {
+    const seen: string[] = [];
+    for (const bad of ['file:///etc/passwd', 'https://h/;id', 'https://h/`id`', 'https://h/$(id)', 'not a url']) {
+      expect(resolveRegistry({ JETSTREAM_REGISTRY: bad }, (m) => seen.push(m))).toBe(PUBLIC_REGISTRY);
+    }
+    expect(seen).toHaveLength(5); // every rejection is reported, never silent
+  });
+
+  it('hides credentials when a registry URL is printed', () => {
+    expect(redactRegistry('https://u:secret@nexus.internal/npm/')).not.toContain('secret');
+    expect(redactRegistry('https://u:secret@nexus.internal/npm/')).toContain('credentials hidden');
+    expect(redactRegistry(PUBLIC_REGISTRY)).toBe(PUBLIC_REGISTRY); // untouched when there are none
+  });
+
 });
