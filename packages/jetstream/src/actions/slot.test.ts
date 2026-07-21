@@ -8,6 +8,19 @@ vi.mock('../switchto'); // spy interruptPids — a stopall press must SIGINT the
 import { interruptPids } from '../switchto';
 vi.mock('../output-volume'); // spy the volume-key presses
 import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
+// Keep execPlan real (it builds the plan we assert on) but spy runPlan so no real process spawns.
+vi.mock('../slot-exec', async (orig) => ({
+  ...(await orig<typeof import('../slot-exec')>()),
+  runPlan: vi.fn(() => true),
+}));
+import { runPlan } from '../slot-exec';
+// Keep icon resolution real, but spy forgetIcon so we can prove assign INVALIDATES the cache on a
+// retarget — the wiring, not just the cache lifecycle the slot-icon unit test covers.
+vi.mock('../slot-icon', async (orig) => ({
+  ...(await orig<typeof import('../slot-icon')>()),
+  forgetIcon: vi.fn(),
+}));
+import { forgetIcon } from '../slot-icon';
 
 describe('slotFace', () => {
   it('empty → a blank dark key (absent kind = empty)', () => {
@@ -85,6 +98,15 @@ describe('SlotKey.assign', () => {
     expect(key.setSettings).toHaveBeenCalledWith({ kind: 'app', app: '/Applications/Telegram.app' });
   });
 
+  // Retargeting must INVALIDATE the icon cache for the new source — otherwise an app whose icon
+  // failed to extract once stays blank forever (defect #10). Dropping the forgetIcon calls from
+  // assign leaves this red; the slot-icon unit test alone would not catch removing the wiring.
+  it('invalidates the icon cache for the retargeted app on assign', async () => {
+    vi.mocked(forgetIcon).mockClear();
+    await slotWith([fakeKey(7, 0)]).assign({ coord: 'a8', kind: 'app', app: '/Applications/Telegram.app' });
+    expect(forgetIcon).toHaveBeenCalledWith('/Applications/Telegram.app');
+  });
+
   it('404s when no visible slot sits at the coordinate', async () => {
     const res = await slotWith([fakeKey(0, 0)]).assign({ coord: 'a8', kind: 'empty' });
     expect(res.status).toBe(404);
@@ -127,7 +149,7 @@ describe('SlotKey project kind — registration loop guard', () => {
 
 describe('SlotKey.onKeyDown run gate', () => {
   it('does NOT execute a run slot while run keys are disabled — paints a reason instead', async () => {
-    const setImage = vi.fn(async () => {});
+    const setImage = vi.fn(async (_img: string) => {});
     const showOk = vi.fn(async () => {});
     const action = {
       setImage,
@@ -139,8 +161,40 @@ describe('SlotKey.onKeyDown run gate', () => {
     };
     const ev = { payload: { settings: { kind: 'run', command: 'echo' } }, action };
     await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
-    expect(setImage).toHaveBeenCalled(); // the "run off — enable in settings" face, not execution
+    // Assert WHAT it painted, not just that it painted — a blank or a live-run face would satisfy
+    // toHaveBeenCalled while the gate silently failed. The notice must name the reason.
+    const svg = decodeURIComponent(setImage.mock.calls.at(-1)?.[0] ?? '');
+    expect(svg).toContain('run off');
     expect(showOk).not.toHaveBeenCalled(); // never reaches execPlan/runPlan
+  });
+
+  it('EXECUTES a run slot once allowRunKeys is enabled — the gate is the only thing that was off', async () => {
+    config.set({ allowRunKeys: true });
+    // Spy runPlan rather than spawn a real command: `echo` is a shell builtin on Windows (spawn
+    // ENOENTs asynchronously → a false green), and asserting the dispatched PLAN is a stronger
+    // check than "a process started". This is what proves dropping the allowRunKeys conjunct
+    // (making run keys permanently inert) would be caught — the OFF-only test cannot.
+    vi.mocked(runPlan).mockReturnValue(true);
+    try {
+      const showOk = vi.fn(async () => {});
+      const action = {
+        setImage: vi.fn(async () => {}),
+        setTitle: vi.fn(async () => {}),
+        showOk,
+        showAlert: vi.fn(async () => {}),
+        isKey: () => true,
+        coordinates: { column: 0, row: 0 },
+        getSettings: vi.fn(async () => ({ kind: 'run', command: 'echo' })),
+      };
+      const ev = { payload: { settings: { kind: 'run', command: 'echo', args: ['hi'] } }, action };
+      await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+      // The gate opened, execPlan built a plan for the command, and runPlan was dispatched with it.
+      expect(runPlan).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'echo', args: ['hi'] }));
+      expect(showOk).toHaveBeenCalled();
+    } finally {
+      config.set(undefined); // restore so sibling tests see allowRunKeys=false
+      vi.mocked(runPlan).mockReset();
+    }
   });
 });
 
@@ -202,7 +256,7 @@ describe('folded slot kinds: build + stopall', () => {
   });
 
   it('stopall is INERT until allowStopKeys — a planted fleet-SIGINT can never fire from /slot', async () => {
-    const setImage = vi.fn(async () => {});
+    const setImage = vi.fn(async (_img: string) => {});
     const showOk = vi.fn(async () => {});
     const action = {
       setImage,
@@ -214,7 +268,7 @@ describe('folded slot kinds: build + stopall', () => {
     };
     const ev = { payload: { settings: { kind: 'stopall' } }, action };
     await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
-    expect(setImage).toHaveBeenCalled(); // the "stop off — enable in settings" notice
+    expect(decodeURIComponent(setImage.mock.calls.at(-1)?.[0] ?? '')).toContain('stop off'); // the gated-off notice, by content
     expect(interruptPids).not.toHaveBeenCalled(); // never SIGINTs the fleet while disabled
     expect(showOk).not.toHaveBeenCalled();
   });

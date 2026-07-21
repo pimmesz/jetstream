@@ -369,13 +369,40 @@ describe('colorFor', () => {
   it('highContrast still distinguishes done from the default theme', () => {
     expect(colorFor('done', 'highContrast')).not.toBe(colorFor('done'));
   });
+
+  // Pin the SEMANTIC mapping, not just format/reserved. Format-only assertions let a swap through —
+  // e.g. needsInput→green would read a "needs you" key as finished. The board's whole meaning is
+  // this table, so the table is what the test must pin.
+  it('maps each status to its meaning in the default theme', () => {
+    expect(colorFor('working')).toBe('#f76808'); // orange
+    expect(colorFor('needsInput')).toBe('#ffb224'); // amber
+    expect(colorFor('done')).toBe('#30a46c'); // green
+    expect(colorFor('failed')).toBe('#d6409f'); // magenta
+    expect(colorFor('idle')).toBe('#8e8e93'); // slate
+  });
+
+  it('gives the five active statuses five DISTINCT colours (a swap collapses the set)', () => {
+    const active: ProjectStatus[] = ['working', 'needsInput', 'done', 'failed', 'idle'];
+    for (const theme of ['default', 'highContrast'] as const) {
+      expect(new Set(active.map((s) => colorFor(s, theme))).size).toBe(5);
+    }
+  });
 });
 
 describe('glyphFor', () => {
   it('gives a distinct non-colour glyph per active status', () => {
-    const glyphs = (['working', 'needsInput', 'done', 'idle'] as ProjectStatus[]).map(glyphFor);
+    // 'failed' MUST be in this set — it was omitted, so swapping done↔failed passed the old check.
+    const glyphs = (['working', 'needsInput', 'done', 'failed', 'idle'] as ProjectStatus[]).map(glyphFor);
     expect(new Set(glyphs).size).toBe(glyphs.length); // all distinct
     expect(glyphFor('none')).toBe('');
+  });
+
+  it('pins each glyph — the colour-blind channel must not be swappable', () => {
+    expect(glyphFor('working')).toBe('⋯');
+    expect(glyphFor('needsInput')).toBe('!');
+    expect(glyphFor('done')).toBe('✓');
+    expect(glyphFor('failed')).toBe('✕');
+    expect(glyphFor('idle')).toBe('·');
   });
 });
 

@@ -68,4 +68,34 @@ describe('AttentionKey press routing', () => {
     await up(att, a);
     expect(openProject).not.toHaveBeenCalled();
   });
+
+  // A jump whose editor-open FAILS must shake the key — silence reads as "nothing happened" on a
+  // repo whose folder moved. openProject was hard-pinned to true, so this branch never ran.
+  it('shows an alert when the jump-to-project open fails', async () => {
+    h.longPressMs = 999_999; // short tap → jump
+    h.waiting = [{ id: 'p1', name: 'proj', path: '/gone' }];
+    vi.mocked(openProject).mockReturnValueOnce(false); // the repo moved / opener failed
+    const att = new AttentionKey();
+    const a = fakeKey();
+    down(att, a);
+    await up(att, a);
+    expect(openProject).toHaveBeenCalledWith('/gone');
+    expect(a.showAlert).toHaveBeenCalled(); // feedback, not silence
+  });
+
+  // With several waiting, the tap must jump to the HEAD (needsAttention is ranked upstream), not
+  // whichever the mock happened to return.
+  it('jumps to the head of the waiting list when several are waiting', async () => {
+    h.longPressMs = 999_999;
+    h.waiting = [
+      { id: 'p1', name: 'first', path: '/first' },
+      { id: 'p2', name: 'second', path: '/second' },
+    ];
+    vi.mocked(openProject).mockClear().mockReturnValue(true);
+    const att = new AttentionKey();
+    const a = fakeKey();
+    down(att, a);
+    await up(att, a);
+    expect(openProject).toHaveBeenCalledWith('/first');
+  });
 });

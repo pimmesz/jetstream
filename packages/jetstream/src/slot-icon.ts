@@ -80,11 +80,14 @@ function fileToDataUri(path: string): string | undefined {
 export async function appIconDataUri(
   appPath: string,
   platform: NodeJS.Platform = process.platform,
+  // Injected so a test can drive the negative-cache lifecycle without shelling out to defaults/sips.
+  // Same default-parameter DI as `platform` above; production always uses the real extractor.
+  extract: (p: string) => Promise<string | undefined> = extractAppIcon,
 ): Promise<string | undefined> {
   if (platform !== 'darwin' || !appPath.endsWith('.app') || !existsSync(appPath)) return undefined;
   const hit = cache.get(appPath);
   if (hit !== undefined) return hit ?? undefined;
-  const uri = await extractAppIcon(appPath);
+  const uri = await extract(appPath);
   cache.set(appPath, uri ?? null);
   return uri;
 }

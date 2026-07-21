@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { clarifyingQuestion, parseProposal, runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { KEY_TYPE_NAMES } from './layout';
@@ -226,5 +229,58 @@ describe('runChatSetup', () => {
       configPath: '/x',
     });
     expect(code).toBe(1);
+  });
+
+  // These drive the REAL write path (no injected `write`), against a REAL projects.json on disk —
+  // the seam every test above skips by pointing configPath at a nonexistent file, which makes
+  // readConfigFile return an empty non-corrupt fleet so the merge collapses to a passthrough. That
+  // is exactly why the fleet-wipe regression (write the proposal wholesale) would stay green.
+  it('MERGES an added repo into an existing fleet on disk — never replaces it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-chat-'));
+    const configPath = join(dir, 'projects.json');
+    // A populated fleet, exactly what a real user has.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        projects: [
+          { id: 'falcon', name: 'Falcon', path: '/dev/falcon' },
+          { id: 'api', name: 'Api', path: '/dev/api' },
+          { id: 'web', name: 'Web', path: '/dev/web' },
+        ],
+      }),
+    );
+    const { io } = makeIo(['add a repo', 'y']);
+    // The model proposes ONLY the new repo — the shape the prompt asks for and the shape that
+    // wiped fleets before the merge fix.
+    const code = await runChatSetup({
+      io,
+      ask: async () => '{"projects":[{"name":"New","path":"/dev/new"}]}',
+      configPath,
+    });
+    expect(code).toBe(0);
+    const written = JSON.parse(readFileSync(configPath, 'utf8')) as { projects: ProjectConfig[] };
+    expect(written.projects.map((p) => p.path)).toEqual([
+      '/dev/falcon',
+      '/dev/api',
+      '/dev/web',
+      '/dev/new',
+    ]); // all four — the three existing PLUS the new one, never the lone proposal
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('REFUSES to write over a corrupt projects.json, leaving it untouched', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-chat-'));
+    const configPath = join(dir, 'projects.json');
+    const corrupt = '{ "projects": [ truncated';
+    writeFileSync(configPath, corrupt);
+    const { io } = makeIo(['add a repo', 'y']);
+    const code = await runChatSetup({
+      io,
+      ask: async () => '{"projects":[{"name":"New","path":"/dev/new"}]}',
+      configPath,
+    });
+    expect(code).toBe(1); // refused
+    expect(readFileSync(configPath, 'utf8')).toBe(corrupt); // and did not clobber the file
+    rmSync(dir, { recursive: true, force: true });
   });
 });

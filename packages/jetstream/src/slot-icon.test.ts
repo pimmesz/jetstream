@@ -1,8 +1,16 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { appIconDataUri, imageMime, logoDataUri, resolveIcnsPath, resolveSlotIcon } from './slot-icon';
+import {
+  appIconDataUri,
+  forgetIcon,
+  iconFailureReason,
+  imageMime,
+  logoDataUri,
+  resolveIcnsPath,
+  resolveSlotIcon,
+} from './slot-icon';
 
 describe('imageMime', () => {
   it('maps supported image extensions, undefined otherwise', () => {
@@ -90,5 +98,57 @@ describe('appIconDataUri (guards)', () => {
   it('is undefined off macOS or for a non-app path', async () => {
     expect(await appIconDataUri('/Applications/X.app', 'win32')).toBeUndefined();
     expect(await appIconDataUri('/Applications/notanapp', 'darwin')).toBeUndefined();
+  });
+});
+
+// The defect-#10 fix: a FAILED extraction is cached as `null`, and that negative entry MUST be
+// invalidable — otherwise an app whose icon failed once (not yet installed, a startup race) shows a
+// blank key for the whole plugin session with no way to recover. Dropping the forgetIcon call on a
+// retarget would strand it, and nothing exercised that before.
+describe('appIconDataUri negative-cache invalidation', () => {
+  // A real .app dir so existsSync passes; extraction is injected so we control fail-then-succeed.
+  // Registered in tmpDirs so an assertion failure mid-test still cleans up (the shared afterEach).
+  const madeApps: string[] = [];
+  afterEach(() => {
+    for (const app of madeApps.splice(0)) forgetIcon(app); // drop module-cache entries too
+  });
+  const makeApp = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-icon-'));
+    tmpDirs.push(dir);
+    const app = join(dir, 'Probe.app');
+    mkdirSync(app, { recursive: true });
+    madeApps.push(app);
+    return app;
+  };
+
+  it('caches a failure, does not re-probe, and forgetIcon() lets the next call re-resolve', async () => {
+    const app = makeApp();
+    forgetIcon(app); // clean slate across test runs (the cache is module-level)
+    let calls = 0;
+    const failThenSucceed = async (): Promise<string | undefined> => {
+      calls += 1;
+      return calls === 1 ? undefined : 'data:image/png;base64,OK';
+    };
+
+    // First call: extraction fails → undefined, and the null is remembered.
+    expect(await appIconDataUri(app, 'darwin', failThenSucceed)).toBeUndefined();
+    expect(calls).toBe(1);
+
+    // Second call WITHOUT invalidating: served from the negative cache, extractor NOT re-run.
+    expect(await appIconDataUri(app, 'darwin', failThenSucceed)).toBeUndefined();
+    expect(calls).toBe(1); // no re-probe — this is the cache working
+
+    // Invalidate, then the next call re-resolves and now succeeds.
+    forgetIcon(app);
+    expect(await appIconDataUri(app, 'darwin', failThenSucceed)).toBe('data:image/png;base64,OK');
+    expect(calls).toBe(2);
+
+  });
+
+  it('records a diagnosable reason when the real extractor fails (no CFBundleIconFile)', async () => {
+    const app = makeApp(); // an empty .app: `defaults read …/Info CFBundleIconFile` fails
+    forgetIcon(app);
+    expect(await appIconDataUri(app, 'darwin')).toBeUndefined();
+    expect(iconFailureReason(app)).toMatch(/CFBundleIconFile/);
   });
 });

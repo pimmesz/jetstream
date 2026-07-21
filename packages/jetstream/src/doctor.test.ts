@@ -15,6 +15,7 @@ import {
   usageStatuslineWired,
   commandOnPath,
   hasJetstreamHooks,
+  hasStatusHook,
   runDoctor,
   type DoctorIO,
 } from './doctor';
@@ -88,6 +89,24 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
     expect(corrupt.fixId).toBeUndefined(); // corrupt → NOT auto-fixable (install would re-fail the parse)
     expect(corrupt.message).toContain('not valid JSON');
     expect(corrupt.message).not.toEqual(absent.message); // don't send the user to a fix that also fails
+  });
+
+  // The middle branch (#8): SOME Jetstream hook is wired, but not the STATUS hook that lights the
+  // board — e.g. only the usage statusline. That reported "hooks present" while every key stayed
+  // dark. Reverting the ok-gate from hasStatusHook back to hasJetstreamHooks makes this go red.
+  it('warns when only the usage statusline is wired but the board-lighting status hook is missing', () => {
+    const raw = JSON.stringify({
+      statusLine: { type: 'command', command: '"/n" "/x/bin/usage-hook.js"' },
+    });
+    const r = checkHooksPresent(raw);
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/board cannot light up/);
+    expect(r.fixId).toBe('hooks');
+    // Pin the two functions' disagreement directly: this shape is "some jetstream hook" but not
+    // "the status hook", which is the whole reason the middle branch exists.
+    const parsed = JSON.parse(raw);
+    expect(hasJetstreamHooks(parsed)).toBe(true);
+    expect(hasStatusHook(parsed)).toBe(false);
   });
 });
 
@@ -354,5 +373,33 @@ describe('checkProjectsConfig', () => {
 
   it('warns for invalid JSON', () => {
     expect(checkProjectsConfig('{bad').status).toBe('warn');
+  });
+
+  // Parses-but-unusable is the dark-board bug (#9): a file that is valid JSON yet yields no fleet
+  // was reported "valid JSON" while the board sat dark behind an all-green checklist. These pin the
+  // structural branches the fix added — a bare parse-then-ok revert makes them all go red.
+  it('warns when "projects" is present but not an array (object, not a string)', () => {
+    // The object form specifically — a string would fail JSON.parse. This kills the Array.isArray
+    // mutation that a `"projects":"nope"` case would not (that one still parses to a string).
+    const r = checkProjectsConfig('{"projects":{}}');
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/must be an array/);
+  });
+
+  it('warns when entries are dropped for a missing id/name/path, naming the count', () => {
+    const r = checkProjectsConfig(
+      '{"projects":[{"id":"a","name":"A","path":"/a"},{"name":"no-id-no-path"}]}',
+    );
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/1 of 2/);
+    expect(r.message).toMatch(/ignored/);
+  });
+
+  it('ok with the loaded count when every entry is usable', () => {
+    const r = checkProjectsConfig(
+      '{"projects":[{"id":"a","name":"A","path":"/a"},{"id":"b","name":"B","path":"/b"}]}',
+    );
+    expect(r.status).toBe('ok');
+    expect(r.message).toMatch(/2 project/);
   });
 });

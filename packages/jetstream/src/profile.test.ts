@@ -341,9 +341,18 @@ describe('buildOpsProfile (the shipped controls page)', () => {
       readFileSync(new URL('../gg.pim.jetstream.sdPlugin/manifest.json', import.meta.url), 'utf8'),
     ) as { Actions: Array<{ UUID: string }> };
     const actionsDir = new URL('./actions/', import.meta.url);
+    // Strip line + block comments before scraping so a UUID mentioned in a comment (or a
+    // commented-out @action) does NOT count as implemented — that false-green ships a key the SDK
+    // never answers. Quote-agnostic ('…' or "…") so a prettier reflow can't false-red the build.
+    const stripComments = (src: string): string =>
+      src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     const implemented = readdirSync(actionsDir)
       .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-      .flatMap((f) => [...readFileSync(new URL(f, actionsDir), 'utf8').matchAll(/@action\(\{\s*UUID:\s*'([^']+)'/g)])
+      .flatMap((f) => [
+        ...stripComments(readFileSync(new URL(f, actionsDir), 'utf8')).matchAll(
+          /@action\(\{\s*UUID:\s*['"]([^'"]+)['"]/g,
+        ),
+      ])
       .map((m) => m[1]!);
     expect(new Set(manifest.Actions.map((a) => a.UUID))).toEqual(new Set(implemented));
   });
@@ -368,7 +377,7 @@ describe('zip writer', () => {
     expect(digest).toBe('0ac2c2d5e28bde31bf2ee44b61b343f65f69bb23e5529947c6cc5fcb48a514da');
   });
 
-  it.skipIf(!hasUnzip && !process.env.CI)('a real unzip extracts the archive and the manifest round-trips', () => {
+  it.skipIf(!hasUnzip)('a real unzip extracts the archive and the manifest round-trips', () => {
     const dir = mkdtempSync(join(tmpdir(), 'jetstream-profile-'));
     tmpDirs.push(dir);
     const built = buildProfile(XL, projects(2));
@@ -382,12 +391,53 @@ describe('zip writer', () => {
     expect(extracted).toEqual(built.manifest);
   });
 
-  it.skipIf(!hasUnzip && !process.env.CI)('unzip -t verifies archive integrity (CRCs are real, not padding)', () => {
+  it.skipIf(!hasUnzip)('unzip -t verifies archive integrity (CRCs are real, not padding)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'jetstream-profile-'));
     tmpDirs.push(dir);
     const file = join(dir, 'p.streamDeckProfile');
     writeFileSync(file, buildZip([{ name: 'a/', data: Buffer.alloc(0) }, { name: 'a/x.json', data: Buffer.from('{"k":1}') }]));
     // unzip -t exits non-zero on any CRC/structure error; execFileSync throws then.
     expect(() => execFileSync('unzip', ['-t', file], { stdio: 'ignore' })).not.toThrow();
+  });
+
+  // Structural validity WITHOUT the `unzip` binary — this runs everywhere, so a byte-deterministic
+  // but CORRUPT archive (which the pinned-digest test would happily re-pin) is caught. The writer is
+  // STORE-only, so each entry's stored bytes are its raw bytes: recompute the CRC and compare, and
+  // verify the End-Of-Central-Directory record. A byte-flip in the data must break it.
+  const walkStoredEntries = (zip: Buffer): Array<{ name: string; crc: number; data: Buffer }> => {
+    const entries: Array<{ name: string; crc: number; data: Buffer }> = [];
+    let p = 0;
+    while (p + 4 <= zip.length && zip.readUInt32LE(p) === 0x04034b50) {
+      const crc = zip.readUInt32LE(p + 14);
+      const size = zip.readUInt32LE(p + 18); // compressed == uncompressed for STORE
+      const nameLen = zip.readUInt16LE(p + 26);
+      const extraLen = zip.readUInt16LE(p + 28);
+      const name = zip.subarray(p + 30, p + 30 + nameLen).toString('utf8');
+      const dataStart = p + 30 + nameLen + extraLen;
+      entries.push({ name, crc, data: zip.subarray(dataStart, dataStart + size) });
+      p = dataStart + size;
+    }
+    return entries;
+  };
+
+  it('every stored entry carries a REAL crc32 of its bytes, and the EOCD is present', () => {
+    const zip = renderProfileArchive(buildProfile(XL, projects(1)), 'fixed-id');
+    const entries = walkStoredEntries(zip);
+    expect(entries.map((e) => e.name)).toContain('FIXED-ID.sdProfile/manifest.json');
+    for (const e of entries) {
+      const expected = e.data.length ? crc32(e.data) : 0;
+      expect(e.crc, `crc for ${e.name}`).toBe(expected); // genuine, not padding
+    }
+    // End-Of-Central-Directory signature must exist (a truncated archive would lack it).
+    expect(zip.indexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]))).toBeGreaterThan(-1);
+  });
+
+  it('a byte-flip in an entry breaks the CRC check (the check has teeth)', () => {
+    const zip = Buffer.from(renderProfileArchive(buildProfile(XL, projects(1)), 'fixed-id'));
+    const manifest = walkStoredEntries(zip).find((e) => e.name.endsWith('manifest.json'))!;
+    const flipAt = zip.indexOf(manifest.data) + 1;
+    zip.writeUInt8(zip.readUInt8(flipAt) ^ 0xff, flipAt); // corrupt one byte of the manifest payload
+    const reparsed = walkStoredEntries(zip).find((e) => e.name.endsWith('manifest.json'))!;
+    expect(crc32(reparsed.data)).not.toBe(reparsed.crc); // recomputed CRC no longer matches the stored one
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { paintCoordByRow, spinner } from './term';
 
 const origIsTTY = process.stdout.isTTY;
@@ -32,8 +32,17 @@ describe('paintCoordByRow', () => {
 describe('spinner', () => {
   it('off a colour TTY prints the label once and returns a no-op stop fn', () => {
     Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
-    const stop = spinner('thinking…');
-    expect(typeof stop).toBe('function');
-    expect(() => stop()).not.toThrow();
+    // Assert the label actually reaches stdout — the test's own name promised "prints the label
+    // once", but nothing checked it, so deleting the write left piped-output progress silent.
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const stop = spinner('thinking…');
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(String(write.mock.calls[0]![0])).toContain('thinking…');
+      expect(typeof stop).toBe('function');
+      expect(() => stop()).not.toThrow();
+    } finally {
+      write.mockRestore();
+    }
   });
 });
