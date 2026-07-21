@@ -425,7 +425,6 @@
       <div><dt>Network</dt><dd>127.0.0.1 only</dd></div>
       <div><dt>Auth</dt><dd>subscription, no API key</dd></div>
       <div><dt>License</dt><dd>Apache-2.0</dd></div>
-      <div><dt>Price</dt><dd>$0</dd></div>
     </dl>
   </div>
 </section>
@@ -544,7 +543,7 @@ jetstream doctor             <span class="c"># read-only health check when the b
         <div class="step"><span class="keychip">4</span><div><h3>One config, whole fleet</h3><p><code class="inline">projects.json</code> defines every repo in one place, so the Fleet roll-up and Attention doorbell cover projects you never gave a key.</p></div></div>
       </div>
       <div class="stat-row">
-        <div class="stat"><div class="n accent">$0</div><div class="cap">quota to watch</div></div>
+        <div class="stat"><div class="n accent">zero</div><div class="cap">quota to watch</div></div>
         <div class="stat"><div class="n">127.0.0.1</div><div class="cap">only, never the network</div></div>
         <div class="stat"><div class="n">5h · 7d</div><div class="cap">real usage windows</div></div>
         <div class="stat"><div class="n">~90s</div><div class="cap">prompt fallback</div></div>
@@ -653,9 +652,17 @@ builds this file for you, or write it by hand. Jetstream reads
 </code></pre>
 <p>The <strong>Fleet</strong> roll-up and <strong>Attention</strong> doorbell then cover every repo in the file, so placed
 <strong>Project</strong> keys become optional focused jump-to buttons rather than the only way the plugin learns
-your repos. An optional <code>&quot;settings&quot;</code> block (<code>theme</code>, <code>longPressMs</code>, <code>usageRefreshSec</code>,
-<code>escalateAfterSec</code>) presets the plugin config on a fresh install — the Settings key still wins at
-runtime. Run <code>jetstream doctor</code> to check the file is parseable.</p>
+your repos. An optional <code>&quot;settings&quot;</code> block presets the plugin config: <code>theme</code>, <code>longPressMs</code>,
+<code>usageRefreshSec</code>, <code>escalateAfterSec</code>, plus the two destructive-key opt-ins <code>allowRunKeys</code> and
+<code>allowStopKeys</code>. Run <code>jetstream doctor</code> to check the file is parseable.</p>
+<p><strong>Stop-all and Run keys are OFF by default</strong> and do nothing until you opt in — the plugin&#39;s
+loopback endpoint is unauthenticated during the upgrade grace period, so a key planted through it
+must not be able to SIGINT your whole fleet or run a command. Turn them on deliberately:</p>
+<pre><code class="language-json">{
+  &quot;projects&quot;: [{ &quot;id&quot;: &quot;falcon&quot;, &quot;name&quot;: &quot;Falcon&quot;, &quot;path&quot;: &quot;/Users/you/falcon&quot; }],
+  &quot;settings&quot;: { &quot;allowStopKeys&quot;: true, &quot;allowRunKeys&quot;: true }
+}
+</code></pre>
 <h2 id="optional-show-the-active-tool">Optional: show the active tool</h2>
 <p>Working keys can show the current tool (<code>Bash · 12m</code>) instead of just <code>working 12m</code>. It needs the
 higher-overhead <code>PreToolUse</code>/<code>PostToolUse</code> hooks (a hook process per tool call), so it&#39;s opt-in:</p>

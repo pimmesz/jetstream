@@ -221,7 +221,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     if (settings.kind === 'stopall') {
       if (!config.get().allowStopKeys) {
         this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
-        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'stop off', sub: 'enable in settings' }));
+        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'stop off', sub: 'allow in projects.json', subMax: 22 }));
         setTimeout(() => void this.repaint(ev.action), 2600);
         return;
       }
@@ -271,11 +271,12 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     if (settings.kind === 'build') return; // a static "which build am I?" key — no press action
     if (settings.kind === 'logo') return; // decorative brand key — no press action
     // `run` executes an arbitrary command; keep it OPT-IN so a command planted via the unauthenticated
-    // loopback /slot endpoint stays inert until the user enables run keys in Jetstream settings. Don't
+    // loopback /slot endpoint stays inert until the user opts in via the projects.json settings
+    // preset (`"allowRunKeys": true`) — deliberately a different channel from /slot itself. Don't
     // dead-end silently — say WHY on the face for a beat, then restore the key.
     if (settings.kind === 'run' && !config.get().allowRunKeys) {
       this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
-        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'run off', sub: 'enable in settings' }));
+        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'run off', sub: 'allow in projects.json', subMax: 22 }));
       // Repaint from the slot's LIVE settings when the notice clears: if a chat live-edit retargeted
       // this coordinate within the 2.6s, we must not paint the stale run face back over the new key.
       setTimeout(() => void this.repaint(ev.action), 2600);

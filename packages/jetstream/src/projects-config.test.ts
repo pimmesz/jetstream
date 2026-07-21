@@ -122,3 +122,22 @@ describe('readConfigFile', () => {
     expect(readConfigFile('/no/such/jetstream/projects.json').corrupt).toBeUndefined();
   });
 });
+
+// The stop-all and run keys are gated behind these flags, and NOTHING used to write them: not the
+// property inspector, not this preset parser. So both keys were permanently inert while the key
+// face told you to "enable in settings" — a setting that existed nowhere. This is the route in.
+describe('destructive-key opt-ins', () => {
+  it('reads allowRunKeys / allowStopKeys from the settings block', () => {
+    expect(parseSettingsPreset('{"settings":{"allowStopKeys":true,"allowRunKeys":true}}')).toEqual({
+      allowStopKeys: true,
+      allowRunKeys: true,
+    });
+  });
+
+  it('stays OFF unless explicitly true — a non-boolean is ignored, not coerced', () => {
+    expect(parseSettingsPreset('{"settings":{"allowStopKeys":"yes"}}')).toEqual({});
+    expect(parseSettingsPreset('{"settings":{"allowStopKeys":1}}')).toEqual({});
+    // false is a real, honoured value (an explicit opt-OUT over a preset that enabled it).
+    expect(parseSettingsPreset('{"settings":{"allowStopKeys":false}}')).toEqual({ allowStopKeys: false });
+  });
+});

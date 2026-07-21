@@ -276,7 +276,8 @@ export async function run(argv: string[], binDir: string): Promise<number> {
             const structural = layout.placements.filter((p) => p.uuid !== 'gg.pim.jetstream.slot');
             // Run keys are opt-in — flag it at creation so a new one isn't a silent no-op on press.
             const runNote = layout.placements.some((p) => (p.settings as { kind?: string } | null)?.kind === 'run')
-              ? '\n(Run keys only fire once you enable "allow run keys" in Jetstream settings.)'
+              ? '\n(Run keys are off by default. Enable them with "allowRunKeys": true in the\n' +
+                '"settings" block of your projects.json, then restart the Stream Deck app.)'
               : '';
             const alive = structural.length === 0 && slotEdits.length > 0 ? await pluginAlive() : false;
             // The plugin being down is a DIFFERENT problem from a coordinate having no key, and it

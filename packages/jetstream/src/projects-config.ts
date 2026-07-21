@@ -124,6 +124,12 @@ export function parseSettingsPreset(raw: string): Partial<JetstreamConfig> {
   if (typeof s.longPressMs === 'number') out.longPressMs = s.longPressMs;
   if (typeof s.usageRefreshSec === 'number') out.usageRefreshSec = s.usageRefreshSec;
   if (typeof s.escalateAfterSec === 'number') out.escalateAfterSec = s.escalateAfterSec;
+  // The two destructive-key opt-ins. Without these the gates were unreachable: nothing in the
+  // property inspector sets them and nothing else parsed them, so a `stopall` or `run` key was
+  // permanently inert while its own face told you to "enable in settings" — a setting that did
+  // not exist anywhere. Opt-in stays the default; this is simply the route that turns it on.
+  if (typeof s.allowRunKeys === 'boolean') out.allowRunKeys = s.allowRunKeys;
+  if (typeof s.allowStopKeys === 'boolean') out.allowStopKeys = s.allowStopKeys;
   return out;
 }
 

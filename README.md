@@ -85,9 +85,20 @@ builds this file for you, or write it by hand. Jetstream reads
 
 The **Fleet** roll-up and **Attention** doorbell then cover every repo in the file, so placed
 **Project** keys become optional focused jump-to buttons rather than the only way the plugin learns
-your repos. An optional `"settings"` block (`theme`, `longPressMs`, `usageRefreshSec`,
-`escalateAfterSec`) presets the plugin config on a fresh install — the Settings key still wins at
-runtime. Run `jetstream doctor` to check the file is parseable.
+your repos. An optional `"settings"` block presets the plugin config: `theme`, `longPressMs`,
+`usageRefreshSec`, `escalateAfterSec`, plus the two destructive-key opt-ins `allowRunKeys` and
+`allowStopKeys`. Run `jetstream doctor` to check the file is parseable.
+
+**Stop-all and Run keys are OFF by default** and do nothing until you opt in — the plugin's
+loopback endpoint is unauthenticated during the upgrade grace period, so a key planted through it
+must not be able to SIGINT your whole fleet or run a command. Turn them on deliberately:
+
+```json
+{
+  "projects": [{ "id": "falcon", "name": "Falcon", "path": "/Users/you/falcon" }],
+  "settings": { "allowStopKeys": true, "allowRunKeys": true }
+}
+```
 
 ## Optional: show the active tool
 
