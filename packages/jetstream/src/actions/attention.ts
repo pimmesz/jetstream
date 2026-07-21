@@ -1,10 +1,11 @@
 import { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyDownEvent, KeyUpEvent } from '@elgato/streamdeck';
-import { glyphFor, shouldEscalate } from '@pimmesz/jetstream-status';
+import { colorFor, glyphFor, shouldEscalate } from '@pimmesz/jetstream-status';
 import { board } from '../state';
 import { config } from '../config';
 import { heldMs } from '../press';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 import { openProject } from '../switchto';
 
 /**
@@ -61,27 +62,34 @@ export class AttentionKey extends SingletonAction {
     const escalate = shouldFlash(oldest, now, config.get().escalateAfterSec * 1000, this.snoozedUntil);
     this.manageFlash(escalate);
 
+    // The doorbell rings for two different things now: a turn WAITING on you, and a turn that DIED.
+    // They need opposite actions (answer it vs. re-run it), so the key must not paint both amber
+    // "needs you" — read the head project's real status and dress the key to match.
+    const headStatus = first ? byProject[first.id]?.status : undefined;
+    const isFailed = headStatus === 'failed';
     const amber = escalate && this.flashOn ? '#ffe08a' : '#ffb224';
     const face = first
       ? keyFace({
-          color: amber,
-          glyph: glyphFor('needsInput'),
+          color: isFailed ? colorFor('failed', config.get().theme) : amber,
+          glyph: glyphFor(isFailed ? 'failed' : 'needsInput'),
           label: first.name,
           sub:
             waiting.length > 1
               ? `+${waiting.length - 1} more`
               : snoozed
                 ? 'snoozed'
-                : escalate
-                  ? 'still waiting'
-                  : 'needs you',
+                : isFailed
+                  ? 'failed'
+                  : escalate
+                    ? 'still waiting'
+                    : 'needs you',
         })
       : keyFace({ color: '#26262b', label: 'all clear' });
 
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');
-      await visible.setImage(face);
+      await paintKey(visible, face);
     }
   }
 

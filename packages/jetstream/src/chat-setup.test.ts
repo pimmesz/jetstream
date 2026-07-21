@@ -82,6 +82,25 @@ describe('SETUP_SYSTEM ↔ KEY_TYPES coverage', () => {
     );
     expect(undocumented).toEqual([]);
   });
+
+  // The inverse, and the one that actually bit: when a key type is DELETED from the plugin, the
+  // prompt keeps advertising it, so the model confidently proposes a key resolvePlacements will
+  // then reject — the user sees their request silently dropped. (This is how the removed `launch`
+  // type survived its own deletion.)
+  it('advertises no key type the plugin cannot actually place', () => {
+    const lines = SETUP_SYSTEM.split('\n');
+    const start = lines.findIndex((l) => l.includes('"type" is one of:'));
+    const end = lines.findIndex((l, i) => i > start && l.includes('"icon" is'));
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const advertised = lines
+      .slice(start + 1, end)
+      .flatMap((l) => l.split('·'))
+      .map((entry) => /^[a-z][a-z-]*/.exec(entry.trim())?.[0])
+      .filter((name): name is string => Boolean(name));
+    expect(advertised.length).toBeGreaterThan(5); // the parse found a real catalogue, not nothing
+    expect(advertised.filter((name) => !KEY_TYPE_NAMES.includes(name))).toEqual([]);
+  });
 });
 
 /** Scripted IO: queued answers to `ask`, captured `say` lines. */

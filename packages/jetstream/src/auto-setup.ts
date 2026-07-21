@@ -8,8 +8,9 @@ import { projectsConfigPath } from './projects-config';
  * version it last wired; a mismatch re-runs installHooks (idempotent) so existing installs pick up
  * the change on the update that introduces it — without re-wiring on every launch, and without
  * fighting a user who removed hooks WITHIN the same version. v1 was the pre-versioned timestamp
- * marker; v2 added the SubagentStart/SubagentStop hooks; v3 hardened the command quoting. */
-const WIRE_VERSION = 3;
+ * marker; v2 added the SubagentStart/SubagentStop hooks; v3 hardened the command quoting; v4 added
+ * StopFailure, without which a turn the API kills stays pinned 'working' instead of going red. */
+export const WIRE_VERSION = 4;
 
 /** The hook-set version the marker last recorded. A missing/unreadable marker, or the old
  * timestamp-format marker (non-numeric), reads as 0 → older than any real version → forces a

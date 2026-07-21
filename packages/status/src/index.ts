@@ -8,10 +8,11 @@
  */
 
 /** The rendered state of a project key. */
-export type ProjectStatus = 'none' | 'idle' | 'working' | 'needsInput' | 'done';
+export type ProjectStatus = 'none' | 'idle' | 'working' | 'needsInput' | 'done' | 'failed';
 
 export type HookEventName =
   | 'SessionStart'
+  | 'StopFailure'
   | 'UserPromptSubmit'
   | 'PreToolUse'
   | 'PostToolUse'
@@ -23,6 +24,7 @@ export type HookEventName =
 
 const HOOK_EVENTS: readonly HookEventName[] = [
   'SessionStart',
+  'StopFailure',
   'UserPromptSubmit',
   'PreToolUse',
   'PostToolUse',
@@ -74,6 +76,10 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
   const sessionId = r?.session_id;
   if (typeof event !== 'string' || !isHookEvent(event)) return null;
   if (typeof cwd !== 'string' || typeof sessionId !== 'string') return null;
+  // The /hook endpoint is unauthenticated, so these two are untrusted and become MAP KEYS +
+  // persisted state. Anything past a sane path/uuid length is not a real payload — reject it here
+  // rather than let it pin memory and disk (see SESSION_CAP below for the count bound).
+  if (cwd.length > MAX_CWD_LEN || sessionId.length > MAX_SESSION_ID_LEN) return null;
   const toolName = typeof r?.tool_name === 'string' ? r.tool_name : undefined;
   const agentId = typeof r?.agent_id === 'string' ? r.agent_id : undefined;
   return { event, cwd, sessionId, at, ...(toolName ? { toolName } : {}), ...(agentId ? { agentId } : {}) };
@@ -160,6 +166,11 @@ function statusForEvent(event: LifecycleEvent): ProjectStatus | 'remove' {
       return 'needsInput';
     case 'Stop':
       return 'done';
+    // A turn killed by the API (overloaded / rate_limit / billing_error / authentication_failed)
+    // fires StopFailure and NOT Stop — without this the session stays pinned 'working' until the
+    // stall glyph or the PID reaper gives up, i.e. the board cannot tell finished from died.
+    case 'StopFailure':
+      return 'failed';
     case 'SessionEnd':
       return 'remove';
   }
@@ -168,6 +179,23 @@ function statusForEvent(event: LifecycleEvent): ProjectStatus | 'remove' {
 /** Apply one hook event. `SessionEnd` forgets the session; a subagent event only updates the
  * in-flight set (a workflow/Task's background agents fire Start/Stop in the PARENT session);
  * every other event stamps the session's base status. Pure — returns a new state. */
+/** Bounds on the untrusted `/hook` payload. A real cwd is a filesystem path and a real session id
+ * is a uuid; these are generous ceilings, not format checks. */
+const MAX_CWD_LEN = 4096;
+const MAX_SESSION_ID_LEN = 128;
+/** Max concurrent sessions kept. `sessions` is keyed by an attacker-suppliable session_id and is
+ * serialized to disk, so — like its `ended`/`stopped`/`inflight` siblings — it must be bounded.
+ * Far above any real fleet; on overflow the oldest-started session is evicted. */
+const SESSION_CAP = 256;
+
+/** Drop the oldest-started sessions until the map is within SESSION_CAP. Mutates `sessions`. */
+function capSessions(sessions: Record<string, ProjectState>): void {
+  const ids = Object.keys(sessions);
+  if (ids.length <= SESSION_CAP) return;
+  const oldestFirst = ids.sort((a, b) => (sessions[a]?.since ?? 0) - (sessions[b]?.since ?? 0));
+  for (const id of oldestFirst.slice(0, ids.length - SESSION_CAP)) delete sessions[id];
+}
+
 export function reduce(state: StatusState, event: HookEvent): StatusState {
   const next: Record<string, SessionState> = { ...state.sessions };
   const prev = next[event.sessionId];
@@ -243,11 +271,13 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   if (prev?.inflight?.length) session.inflight = prev.inflight;
   if (prev?.stopped?.length) session.stopped = prev.stopped;
   next[event.sessionId] = session;
+  capSessions(next); // untrusted key → bound the map (and therefore the persisted state)
   return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
 }
 
 const RANK: Record<ProjectStatus, number> = {
-  needsInput: 4,
+  needsInput: 5,
+  failed: 4, // a died turn outranks a running/finished one — it needs you, but isn't blocking a prompt
   working: 3,
   done: 2,
   idle: 1,
@@ -307,7 +337,14 @@ export function statusByProject(
 /** Project ids currently waiting on you (for a single "attention" key / doorbell). */
 export function needsAttention(state: StatusState, projects: ProjectConfig[]): string[] {
   return Object.entries(statusByProject(state, projects))
-    .filter(([, value]) => value.status === 'needsInput')
+    // 'failed' rings too: a turn the API killed needs you just as much as one waiting at a
+    // prompt — and unlike needsInput, nothing else will ever surface it.
+    .filter(([, value]) => value.status === 'needsInput' || value.status === 'failed')
+    // RANKED, not config order. The doorbell shows and jumps to the HEAD of this list, so with a
+    // mixed set the order decides which project you are sent to — and a blocking prompt outranks a
+    // died turn (RANK: needsInput 5 > failed 4). Ties break on age, oldest first: whoever has been
+    // waiting longest. Before 'failed' existed the set was homogeneous and any order was correct.
+    .sort(([, a], [, b]) => RANK[b.status] - RANK[a.status] || (a.since ?? 0) - (b.since ?? 0))
     .map(([id]) => id);
 }
 
@@ -324,7 +361,9 @@ export function summarize(byProject: Record<string, ProjectState>): FleetSummary
   const out: FleetSummary = { working: 0, waiting: 0, done: 0, idle: 0 };
   for (const { status } of Object.values(byProject)) {
     if (status === 'working') out.working += 1;
-    else if (status === 'needsInput') out.waiting += 1;
+    // A failed turn counts as waiting-on-you: it must not vanish from the roll-up, and the
+    // fleet key's colour already distinguishes it (worstStatus ranks 'failed' above 'working').
+    else if (status === 'needsInput' || status === 'failed') out.waiting += 1;
     else if (status === 'done') out.done += 1;
     else if (status === 'idle') out.idle += 1;
   }
@@ -332,7 +371,7 @@ export function summarize(byProject: Record<string, ProjectState>): FleetSummary
 }
 
 /** The worst (highest-priority) status present across projects, for the roll-up key's
- * colour: needsInput > working > done > idle > none. Empty → 'none'. Pure. */
+ * colour: needsInput > failed > working > done > idle > none. Empty → 'none'. Pure. */
 export function worstStatus(byProject: Record<string, ProjectState>): ProjectStatus {
   let worst: ProjectStatus = 'none';
   for (const { status } of Object.values(byProject)) {
@@ -358,6 +397,8 @@ export function colorFor(status: ProjectStatus, theme: Theme = 'default'): strin
         return '#0091ff'; // blue — finished (orange/blue is colour-blind-safe)
       case 'idle':
         return '#8e8e93'; // slate — session open
+      case 'failed':
+        return '#d6409f'; // magenta — distinct from the amber/orange pair under colour-blindness
       case 'none':
         return '#3a3a3a'; // grey — no session
     }
@@ -369,6 +410,9 @@ export function colorFor(status: ProjectStatus, theme: Theme = 'default'): strin
       return '#ffb224'; // amber — waiting on you
     case 'done':
       return '#30a46c'; // green — finished, ready to review
+    case 'failed':
+      return '#d6409f'; // magenta — a turn that DIED, deliberately not the working orange or the
+    // danger red reserved for deny/stop; distinguishable from both under colour-blindness
     case 'idle':
       return '#8e8e93'; // slate — session open, no active turn
     case 'none':
@@ -388,6 +432,8 @@ export function glyphFor(status: ProjectStatus): string {
       return '✓';
     case 'idle':
       return '·';
+    case 'failed':
+      return '✕';
     case 'none':
       return '';
   }

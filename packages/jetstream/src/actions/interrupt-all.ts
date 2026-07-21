@@ -4,6 +4,7 @@ import { board } from '../state';
 import { interruptPids } from '../switchto';
 import type { Face } from '../render';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 
 /** The stop-all face: danger red with a live working-count when sessions run, dim "idle" otherwise.
  * Pure. Shared by the standalone InterruptAll key and the slot `stopall` kind. */
@@ -37,7 +38,7 @@ export class InterruptAllKey extends SingletonAction {
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');
-      await visible.setImage(face);
+      await paintKey(visible, face);
     }
   }
 }

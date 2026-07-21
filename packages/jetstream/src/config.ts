@@ -10,12 +10,6 @@ export type JetstreamConfig = {
   longPressMs: number;
   usageRefreshSec: number;
   escalateAfterSec: number;
-  /** Branch-name prefix whose open PRs the CI key watches. Empty (the default) watches ALL your
-   * open PRs; set a prefix (e.g. `feature/`) to scope the key to a subset. */
-  ciBranchPrefix: string;
-  /** Global model override the Launch keys fall back to when their own `model` is unset,
-   * cycled by the Model key. Plain string (a `claude -p` alias); '' = no override. */
-  launchModel: string;
   /** Whether a slot's `run` kind may EXECUTE its command on press. OFF by default: the loopback
    * `/slot` endpoint is unauthenticated, so a local process could plant a `run` command; keeping
    * execution opt-in means a planted command is inert until the user deliberately enables this. */
@@ -31,8 +25,6 @@ export const DEFAULTS: JetstreamConfig = {
   longPressMs: 1000,
   usageRefreshSec: 60,
   escalateAfterSec: 300,
-  ciBranchPrefix: '',
-  launchModel: '',
   allowRunKeys: false,
   allowStopKeys: false,
 };
@@ -62,11 +54,6 @@ export function mergeConfig(raw: unknown, base: JetstreamConfig = DEFAULTS): Jet
     longPressMs: clampInt(r.longPressMs, base.longPressMs, LIMITS.longPressMs.min, LIMITS.longPressMs.max),
     usageRefreshSec: clampInt(r.usageRefreshSec, base.usageRefreshSec, LIMITS.usageRefreshSec.min, LIMITS.usageRefreshSec.max),
     escalateAfterSec: clampInt(r.escalateAfterSec, base.escalateAfterSec, LIMITS.escalateAfterSec.min, LIMITS.escalateAfterSec.max),
-    ciBranchPrefix:
-      typeof r.ciBranchPrefix === 'string' && r.ciBranchPrefix.trim() !== ''
-        ? r.ciBranchPrefix.trim()
-        : base.ciBranchPrefix,
-    launchModel: typeof r.launchModel === 'string' ? r.launchModel.trim() : base.launchModel,
     allowRunKeys: typeof r.allowRunKeys === 'boolean' ? r.allowRunKeys : base.allowRunKeys,
     allowStopKeys: typeof r.allowStopKeys === 'boolean' ? r.allowStopKeys : base.allowStopKeys,
   };

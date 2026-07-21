@@ -89,19 +89,25 @@ describe('resolvePlacements', () => {
     expect(placements[0]).toMatchObject({ column: 1, row: 3, uuid: 'gg.pim.jetstream.micmute', settings: null });
   });
 
-  it('folds build + stop-all + model + fleet into LIVE slot kinds (uuid slot → sendSlot, no import)', () => {
+  it('folds build + stop-all + fleet into LIVE slot kinds (uuid slot → sendSlot, no import)', () => {
     const { placements } = resolvePlacements(xl, [
       { coord: 'd1', type: 'stop-all' },
       { coord: 'd2', type: 'build' },
-      { coord: 'd3', type: 'model' },
-      { coord: 'd4', type: 'fleet' },
+      { coord: 'd3', type: 'fleet' },
     ]);
     // uuid === gg.pim.jetstream.slot is exactly what puts them in cli.ts onLayout's LIVE bucket
     // (structural.length === 0) instead of forcing a .streamDeckProfile re-import.
     expect(placements[0]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'stopall' } });
     expect(placements[1]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'build' } });
-    expect(placements[2]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'model' } });
-    expect(placements[3]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'fleet' } });
+    expect(placements[2]).toMatchObject({ uuid: 'gg.pim.jetstream.slot', settings: { kind: 'fleet' } });
+  });
+
+  it('rejects a removed key type instead of silently placing an empty slot', () => {
+    // model / launch / ci were deleted, not folded into a slot kind — an old layout that still
+    // names one must warn, never quietly hand back a blank key.
+    const { placements, warnings } = resolvePlacements(xl, [{ coord: 'd1', type: 'model' }]);
+    expect(placements).toHaveLength(0);
+    expect(warnings.join(' ')).toMatch(/model/);
   });
 
   it('places volume keys as live slot kinds (volup/voldown/volmute)', () => {

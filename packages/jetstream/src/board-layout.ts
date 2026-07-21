@@ -23,21 +23,26 @@ const JETSTREAM_LABELS: Record<string, string> = {
   fleet: 'fleet',
   attention: 'attn',
   usage: 'usage',
-  ci: 'ci',
   settings: 'cfg',
   build: 'build',
   nav: 'nav',
-  launch: 'launch',
   coord: 'coord',
   grid: 'grid',
   interruptall: 'stop',
-  model: 'model',
   dial: 'dial',
   slot: 'slot',
 };
 
-const asStr = (v: unknown): string | undefined =>
-  typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+/** Strip control characters (mirrors fleet.ts / init.ts): every string here is destined for the
+ * terminal via `jetstream board` / `jetstream chat`, and slot labels are attacker-settable through
+ * the unauthenticated /slot endpoint — ANSI escapes in one would let a planted key overprint rows
+ * and forge the board map the user is reading. Also keeps the column-width maths honest, since
+ * escape bytes count toward .length. */
+const asStr = (v: unknown): string | undefined => {
+  if (typeof v !== 'string') return undefined;
+  const clean = v.replace(/[\x00-\x1f\x7f]/g, '').trim();
+  return clean === '' ? undefined : clean;
+};
 
 /** A short human label for a placed action (project name, launched app, "fleet", …). Pure. */
 export function labelForAction(uuid: string, settings: unknown): string {
@@ -91,7 +96,6 @@ export function labelForAction(uuid: string, settings: unknown): string {
     const kindLabel: Record<string, string> = {
       build: 'build',
       stopall: 'stop',
-      model: 'model',
       fleet: 'fleet',
       volup: 'vol+',
       voldown: 'vol−',
@@ -393,7 +397,6 @@ export function describeKeyForModel(k: BoardKey): string {
     const foldedType: Record<string, string> = {
       build: 'build',
       stopall: 'stop-all',
-      model: 'model',
       fleet: 'fleet',
       volup: 'volup',
       voldown: 'voldown',

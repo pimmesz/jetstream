@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Jetstream — full Claude Code control on your Elgato Stream Deck</title>
-<meta name="description" content="One key per project, glowing with that project's live Claude Code status — working, needs-you, done. An attention doorbell, usage gauges, deck-answerable permission prompts, and preset headless launches. Build your whole board by talking to it." />
+<meta name="description" content="One key per project, glowing with that project's live Claude Code status — working, needs-you, done. An attention doorbell, usage gauges, deck-answerable permission prompts, and a board you build by talking to it." />
 <link rel="canonical" href="https://getjetstream.dev/" />
 <link rel="icon" type="image/png" href="./jetstream-logo.png" />
 
@@ -41,7 +41,7 @@
       "url": "https://getjetstream.dev/",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "macOS, Windows",
-      "description": "An Elgato Stream Deck plugin for Claude Code. One key per project, lit with that project's live status — working, needs-you, done — plus a fleet roll-up, an attention doorbell, 5h/7d usage gauges, deck-answerable permission prompts, and preset headless launches.",
+      "description": "An Elgato Stream Deck plugin for Claude Code. One key per project, lit with that project's live status — working, needs-you, done — plus a fleet roll-up, an attention doorbell, 5h/7d usage gauges, deck-answerable permission prompts, and a board you build by talking to it.",
       "softwareVersion": "1.6.1",
       "license": "https://www.apache.org/licenses/LICENSE-2.0",
       "downloadUrl": "https://www.npmjs.com/package/@pimmesz/jetstream",
@@ -283,6 +283,18 @@
   /* keychip: the small keycap used for step markers + list bullets + the README summary */
   .keychip { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px;
     background: var(--jet); color: #16130f; font-family: var(--mono); font-weight: 600; font-size: 0.74rem; flex: none; }
+  /* CH.03 — the "what you can say" grid. Same moulded-key surface as .keycap so the chat
+     capabilities read as part of the board rather than a generic marketing card row. */
+  h3.sub { font-family: var(--display); font-size: 1.06rem; font-weight: 700; margin: 30px 0 14px; }
+  .chatgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .chatcard {
+    padding: 16px 18px; border-radius: 12px;
+    background: linear-gradient(150deg, #1b1e26, #0f1116);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 2px 0 #05060a, 0 8px 16px rgba(0, 0, 0, 0.38);
+  }
+  .chatcard h4 { font-family: var(--display); font-size: 0.95rem; font-weight: 700; margin: 0 0 6px; }
+  .chatcard p { margin: 0; font-size: 0.9rem; color: var(--dim); }
+
   .steps { display: grid; gap: 12px; margin: 22px 0 0; }
   .step { display: flex; gap: 14px; align-items: flex-start; }
   .step h3 { font-family: var(--display); font-size: 1rem; font-weight: 700; margin: 0 0 3px; }
@@ -355,7 +367,7 @@
   }
 
   @media (max-width: 900px) {
-    .hero-grid, .what-split { grid-template-columns: 1fr; }
+    .hero-grid, .what-split, .chatgrid { grid-template-columns: 1fr; }
     .deck-stage { margin-right: 0; order: 2; }
     .chapter { grid-template-columns: 1fr; gap: 6px; padding: 56px 0; }
     .chnum { position: static; }
@@ -447,7 +459,7 @@
         <div class="keycap feat"><span class="coord">A3</span><span class="glyph g-need">!</span><h3>Approve / Deny</h3><p>Answer the oldest pending Claude permission request straight from the deck. No press within ~90s and Claude falls back to its own dialog.</p></div>
         <div class="keycap feat"><span class="coord">A4</span><span class="glyph">▤</span><h3>Usage gauge</h3><p>Your real 5h and 7d subscription windows, plus the sooner reset — <code class="inline">resets 3h33m</code>.</p></div>
         <div class="keycap feat"><span class="coord">A5</span><span class="glyph g-need">!</span><h3>Attention</h3><p>A doorbell key that flashes when a request goes unanswered, covering every repo in your config.</p></div>
-        <div class="keycap feat"><span class="coord">A6</span><span class="glyph">▸</span><h3>Launch preset</h3><p>Preset headless <code class="inline">claude -p</code> launches, usable inside Stream Deck multi-actions.</p></div>
+        <div class="keycap feat"><span class="coord">A6</span><span class="glyph">■</span><h3>Stop all</h3><p>One press interrupts every running session at once, with a live count of how many are working.</p></div>
       </div>
       <figure>
         <img src="./gallery-board.png" alt="A Stream Deck board running Jetstream: one key per project, each lit with its live Claude Code status" loading="lazy" />
@@ -490,16 +502,28 @@ jetstream doctor             <span class="c"># read-only health check when the b
     <div class="body">
       <p class="kicker">Control</p>
       <h2>Then build the board by talking to it</h2>
-      <p class="lead"><code class="inline">jetstream chat</code> takes plain English and applies it live — no re-import, no dragging:</p>
+      <p class="lead">Laying out a Stream Deck normally means dragging keys, filling in forms, exporting a profile, re-importing it. <code class="inline">jetstream chat</code> replaces all of that with a sentence. It reads the board you already have, takes plain English, and the change lands on the deck <strong>while you watch</strong> — no export, no re-import, no dragging.</p>
       <pre class="term"><span class="cmd">$ jetstream chat</span>
 <span class="in">add falcon and api from ~/dev, put the usage gauge at a3</span>
 <span class="ok">✓ 2 project keys placed · usage gauge at a3</span>
 <span class="in">make docs purple, give the telegram key its real logo</span>
-<span class="ok">✓ board updated — live, no re-import</span></pre>
-      <p class="lead" style="margin-top:22px;"><code class="inline">jetstream init</code> is the guided version: it scans a folder for repos, writes your config, wires the hooks, and can prebuild a ready-made layout for a Mini, MK.2, or XL.</p>
+<span class="ok">✓ board updated — live, no re-import</span>
+<span class="in">put a grafana shortcut next to it and move stop-all to the bottom right</span>
+<span class="ok">✓ grafana → b2 · stop all → d8</span></pre>
+
+      <h3 class="sub">What you can say</h3>
+      <div class="chatgrid">
+        <div class="chatcard"><h4>Build the fleet</h4><p>"three repos in <code class="inline">~/dev</code>: falcon, api, web" — it writes a validated <code class="inline">projects.json</code>, so the Fleet roll-up and Attention doorbell cover repos you never gave a key.</p></div>
+        <div class="chatcard"><h4>Place any key</h4><p>Project status, usage gauge, fleet, attention, approve/deny, page nav, stop-all — plus app, URL and command shortcuts. Addressed by coordinate: <code class="inline">a8</code> is top row, eighth column.</p></div>
+        <div class="chatcard"><h4>Restyle it</h4><p>"make docs purple", "call it prod", "use a 🔥 emoji", "add a little bell badge", "give telegram its real logo". Colour by name or hex, icons from an emoji or an image file.</p></div>
+        <div class="chatcard"><h4>Rearrange it</h4><p>It sees your current board, so "move stop-all to the bottom right" or "swap those two" works on the keys already there — no need to describe the whole layout again.</p></div>
+      </div>
+
+      <p class="lead" style="margin-top:26px;">It is deliberately <strong>not</strong> an open agent let loose on your machine. The model only ever returns a structured proposal; Jetstream validates it through the same tested rules the <code class="inline">init</code> wizard uses and writes the file itself — the model never touches disk, never runs a command, and asks a clarifying question instead of guessing when your request is genuinely ambiguous. It runs on your Claude subscription, with <code class="inline">ANTHROPIC_API_KEY</code> stripped from the spawn.</p>
+      <p class="lead" style="margin-top:22px;">Prefer forms? <code class="inline">jetstream init</code> is the guided version: it scans a folder for repos, writes your config, wires the hooks, and can prebuild a ready-made layout for a Mini, MK.2, or XL.</p>
       <figure>
-        <img src="./gallery-controls.png" alt="Jetstream control keys on a Stream Deck — model switch, PR review, launch presets, and stop-all" loading="lazy" />
-        <figcaption><b>Fig. 02 ·</b> control the whole loop — switch models, review PRs, fire saved launches, or stop every running agent.</figcaption>
+        <img src="./gallery-controls.png" alt="A second Stream Deck page built by jetstream chat — app, URL and command shortcut keys, each recoloured and renamed, alongside page-nav, stop-all and settings keys" loading="lazy" />
+        <figcaption><b>Fig. 02 ·</b> a second page built entirely by talking to it — app, URL and command shortcuts, recoloured and renamed, next to the fixed nav / stop-all / settings keys.</figcaption>
       </figure>
       <p class="lead" style="margin-top:22px;margin-bottom:0;">Every state also carries a glyph (<span class="glyph g-work">⋯</span> <span class="glyph g-need">!</span> <span class="glyph g-done">✓</span>), so the board reads without relying on colour — and the settings key's high-contrast theme swaps the red/green pair for orange/blue.</p>
     </div>
@@ -516,7 +540,7 @@ jetstream doctor             <span class="c"># read-only health check when the b
       <div class="steps">
         <div class="step"><span class="keychip">1</span><div><h3>Hooks report locally</h3><p>Claude Code's own hooks tell the plugin what each session is doing over <code class="inline">127.0.0.1</code> — never the network. The status hook reports lifecycle events; the permission hook additionally holds a pending prompt briefly so a deck key can answer it.</p></div></div>
         <div class="step"><span class="keychip">2</span><div><h3>Keys light up</h3><p>Each Project key holds its own name and path, so everyone's board is their own. Drag as many as your device has — Mini 6, MK.2 15, XL 32, Neo — or let <code class="inline">init</code> prebuild a starting layout.</p></div></div>
-        <div class="step"><span class="keychip">3</span><div><h3>You press back</h3><p>Open the project, interrupt a run, approve or deny a permission prompt, or fire a preset headless launch. The deck stops being a read-only dashboard.</p></div></div>
+        <div class="step"><span class="keychip">3</span><div><h3>You press back</h3><p>Open the project, interrupt a run, approve or deny a permission prompt, or stop every session at once. The deck stops being a read-only dashboard.</p></div></div>
         <div class="step"><span class="keychip">4</span><div><h3>One config, whole fleet</h3><p><code class="inline">projects.json</code> defines every repo in one place, so the Fleet roll-up and Attention doorbell cover projects you never gave a key.</p></div></div>
       </div>
       <div class="stat-row">
@@ -527,7 +551,7 @@ jetstream doctor             <span class="c"># read-only health check when the b
       </div>
       <figure>
         <div class="macro" role="img" aria-label="Close-up of the amber Approve key on the Stream Deck"></div>
-        <figcaption><b>Fig. 03 ·</b> the amber key — a Claude permission prompt, answered with one press. Launch presets run headless <code class="inline">claude -p</code> on a separate allotment; the 5h/7d gauge doesn't move, and <code class="inline">ANTHROPIC_API_KEY</code> is stripped from every spawn.</figcaption>
+        <figcaption><b>Fig. 03 ·</b> the amber key — a Claude permission prompt, answered with one press. <code class="inline">ANTHROPIC_API_KEY</code> is stripped from every process Jetstream spawns, so a keypress can never silently bill the metered API.</figcaption>
       </figure>
     </div>
   </div>
@@ -604,10 +628,8 @@ folder opener), <strong>long-press interrupts</strong> the session; done keys sh
 change size, <code>+120/-40 · done 4m</code>), <strong>Fleet roll-up</strong> (one always-visible key counting the whole
 fleet — <code>3w 1! 2✓</code> — coloured by the worst state present, so &quot;is anything waiting on me?&quot; is
 answerable even when projects outnumber keys), <strong>Attention</strong> (flashes if a request goes
-unanswered), <strong>Usage gauge</strong> (5h/7d used + the sooner reset, <code>resets 3h33m</code>), <strong>CI / PR status</strong> (one
-always-visible key: the worst CI state across your open PRs — green / red /
-running — flashing when CI newly fails; needs the <code>gh</code> CLI logged in), <strong>Launch preset</strong>
-(now usable inside Stream Deck multi-actions), <strong>Approve / Deny</strong> (place one of each — they answer
+unanswered), <strong>Usage gauge</strong> (5h/7d used + the sooner reset, <code>resets 3h33m</code>),
+<strong>Approve / Deny</strong> (place one of each — they answer
 the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude
 falls back to its normal dialog), and <strong>Jetstream settings</strong> (press to toggle colour-blind mode;
 its inspector sets escalation/long-press/refresh). Amber keys distinguish a deck-answerable prompt
@@ -642,8 +664,6 @@ higher-overhead <code>PreToolUse</code>/<code>PostToolUse</code> hooks (a hook p
 <h2 id="which-meter-does-what">Which meter does what</h2>
 <ul>
 <li>The <strong>usage gauge</strong> shows your interactive 5h/7d subscription windows.</li>
-<li><strong>Launch preset</strong> runs headless <code>claude -p</code>, which draws the separate Agent-SDK
-allotment — it does <strong>not</strong> move the 5h/7d gauge.</li>
 <li>Watching status costs nothing; the hooks only talk to the plugin locally
 (<code>127.0.0.1</code>, never the network). The status hook reports lifecycle events; the
 permission hook additionally holds a pending prompt briefly so a deck key can answer

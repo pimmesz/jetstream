@@ -4,6 +4,7 @@ import { resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
 import { usageStatuslineWired } from '../doctor';
 import { defaultSettingsPath } from '../hooks-install';
 import { formatNextReset, keyFace } from '../render';
+import { paintKey } from '../paint';
 
 /** Sub-label for a BLANK gauge: "install hook" when our statusline isn't wired — running claude
  * would change nothing, so saying "run claude" sends you the wrong way — else "run claude" (wired,
@@ -58,7 +59,7 @@ export class UsageKey extends SingletonAction {
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       await visible.setTitle('');
-      await visible.setImage(face);
+      await paintKey(visible, face);
     }
   }
 }

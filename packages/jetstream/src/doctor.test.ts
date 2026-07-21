@@ -8,7 +8,7 @@ import {
   checkHooksPresent,
   checkLatestVersion,
   checkProjectsConfig,
-  checkGhForCi,
+  checkListenerToken,
   checkUsageStatusline,
   usageStatuslineWired,
   commandOnPath,
@@ -16,6 +16,7 @@ import {
   runDoctor,
   type DoctorIO,
 } from './doctor';
+import { ENFORCE_TOKEN } from './listener-token';
 import type { BoardLayout } from './board-layout';
 import { DECK_MODELS } from './profile';
 
@@ -23,12 +24,12 @@ describe('runDoctor listener check', () => {
   const io = (listenerAlive: boolean): DoctorIO => ({
     env: {},
     claudeOnPath: () => true,
-    ghOnPath: () => true,
     settingsRaw: () => undefined,
     projectsRaw: () => undefined,
     listenerAlive: async () => listenerAlive,
     boardLayout: () => null,
     latestVersion: async () => null,
+    listenerToken: () => ({ present: true, private: true }),
   });
   it('warns when the hook listener is not responding (the silent dark-board case)', async () => {
     const listener = (await runDoctor(io(false))).find((r) => /listener/i.test(r.message));
@@ -230,10 +231,26 @@ describe('commandOnPath', () => {
   });
 });
 
-describe('checkGhForCi', () => {
-  it('ok when gh is found, warn otherwise', () => {
-    expect(checkGhForCi(true).status).toBe('ok');
-    expect(checkGhForCi(false).status).toBe('warn');
+describe('checkListenerToken', () => {
+  it('warns loudly when there is no token at all — the listener is wide open', () => {
+    const r = checkListenerToken({ present: false, private: false });
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/any local process/);
+  });
+
+  it('warns when the token is readable by other users, which is the whole threat it addresses', () => {
+    const r = checkListenerToken({ present: true, private: false });
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/chmod 600/);
+  });
+
+  it('keeps warning for the whole grace period — an accepted untokened request is the open door', () => {
+    // While ENFORCE_TOKEN is false the token is a speed bump, not a gate, and doctor must say so.
+    // When the flag flips, this same input becomes the ok case; both arms are asserted here so the
+    // flip is a one-line change with a test that already covers it.
+    const r = checkListenerToken({ present: true, private: true });
+    expect(r.status).toBe(ENFORCE_TOKEN ? 'ok' : 'warn');
+    if (!ENFORCE_TOKEN) expect(r.message).toMatch(/grace period/);
   });
 });
 

@@ -381,7 +381,7 @@ export async function runInit(deps: InitDeps): Promise<number> {
   } else {
     io.say('  • Drag a Fleet key and an Attention key onto your deck — they cover every');
     io.say('    repo in projects.json.');
-    io.say('  • Optionally add a Usage gauge, a CI/PR key, and per-project keys.');
+    io.say('  • Optionally add a Usage gauge, Approve/Deny keys, and per-project keys.');
   }
   io.say('  • Restart any running `claude` sessions so the hooks report in.');
   io.say('  • `jetstream doctor` checks the wiring if the board stays dark.');

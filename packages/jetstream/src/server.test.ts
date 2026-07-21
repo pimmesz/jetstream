@@ -121,4 +121,47 @@ describe('startHookServer', () => {
     expect(status).toBe(403);
     expect(seen).toEqual([]); // never reached the handler
   });
+
+  // The listener answers hook events, permission decisions and live board edits, so an unauthorized
+  // caller must not reach ANY of them. /health is deliberately exempt: the npm installer polls it to
+  // confirm the new build is up, before a token can possibly have been exchanged.
+  describe('token gate', () => {
+    const gated = { onPayload: () => {}, authorize: (h: Record<string, unknown>) => h['x-jetstream-token'] === 'secret' };
+
+    it('401s every state-changing endpoint without the token', async () => {
+      const seen: unknown[] = [];
+      server = await startHookServer(0, {
+        ...gated,
+        onPayload: (raw) => seen.push(raw),
+        onPermission: async () => '{"decision":"allow"}',
+        onSlot: async () => ({ status: 200, body: '{}' }),
+      });
+      for (const path of ['/hook', '/permission', '/slot']) {
+        const res = await fetch(`http://127.0.0.1:${port(server)}${path}`, { method: 'POST', body: '{}' });
+        expect(res.status, path).toBe(401);
+      }
+      expect(seen).toEqual([]); // no handler ran
+    });
+
+    it('serves the same endpoints with the token, and leaves /health open without it', async () => {
+      const seen: unknown[] = [];
+      server = await startHookServer(0, { ...gated, onPayload: (raw) => seen.push(raw) });
+      const res = await fetch(`http://127.0.0.1:${port(server)}/hook`, {
+        method: 'POST',
+        headers: { 'x-jetstream-token': 'secret' },
+        body: JSON.stringify({ hook_event_name: 'Stop', cwd: '/p', session_id: 's' }),
+      });
+      expect(res.status).toBe(204);
+      expect(seen).toHaveLength(1);
+      expect((await fetch(`http://127.0.0.1:${port(server)}/health`)).status).toBe(200);
+    });
+
+    it('answers 401 as a real HTTP response, not a socket reset', async () => {
+      // A hook that gets ECONNRESET cannot tell "rejected" from "plugin not running", so the
+      // rejection must arrive as a status the client can actually read.
+      server = await startHookServer(0, gated);
+      const status = await rawPost(port(server), '/hook', { 'content-type': 'application/json' }, '{"a":1}');
+      expect(status).toBe(401);
+    });
+  });
 });

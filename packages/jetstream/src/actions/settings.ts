@@ -83,7 +83,6 @@ function pluginDoctorIO(): ReturnType<typeof defaultDoctorIO> {
     ...base,
     env,
     claudeOnPath: () => commandOnPath('claude', env),
-    ghOnPath: () => commandOnPath('gh', env),
     // In-plugin we know THIS instance's bind state directly. A port probe would report OK when an
     // orphaned prior plugin still holds the port while this instance failed to bind — a green board
     // that never updates. isListenerBound() is the same truth the Fleet key uses, so they agree.

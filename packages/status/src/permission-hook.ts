@@ -1,10 +1,14 @@
 import { request } from 'node:http';
+import { parsePermissionDecision } from './permission';
+import { tokenHeader } from './listener-token';
 
 /**
  * Claude Code `PermissionRequest` hook entry (blocking). POSTs the request to the
  * Jetstream plugin's local server and holds until the plugin answers — an
- * Approve/Deny key press resolves it. The plugin's body (the hookSpecificOutput
- * decision JSON) is printed verbatim on exit 0; an empty answer (timeout / no key
+ * Approve/Deny key press resolves it. The plugin's answer is VALIDATED and re-built from
+ * our own canonical writer before it reaches stdout (never echoed verbatim: Claude treats
+ * this stdout as the authoritative decision, so a process holding the port must not be able
+ * to inject arbitrary hook output). An empty or unrecognised answer (timeout / no key
  * pressed / plugin down) prints nothing, so Claude falls back to its own dialog and
  * you decide at the keyboard as usual. Never blocks longer than the request timeout.
  */
@@ -28,7 +32,11 @@ function requestDecision(body: string): Promise<string> {
         port: PORT,
         path: '/permission',
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body),
+          ...tokenHeader(),
+        },
         timeout: 110_000, // under Claude's 600s hook timeout; the plugin also times out sooner
       },
       (res) => {
@@ -51,7 +59,11 @@ async function main(): Promise<void> {
   const body = await readStdin();
   if (!body.trim()) return;
   const decision = await requestDecision(body);
-  if (decision.trim()) process.stdout.write(decision);
+  // NEVER write the socket's bytes through: Claude treats this stdout as the authoritative
+  // decision, so we validate the shape and re-emit from our own canonical writer. An
+  // unrecognised answer prints nothing and falls back to Claude's dialog.
+  const safe = parsePermissionDecision(decision);
+  if (safe) process.stdout.write(safe);
 }
 
 void main();

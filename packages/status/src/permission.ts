@@ -58,3 +58,28 @@ export function permissionDecisionJson(behavior: PermissionBehavior): string {
     hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior } },
   });
 }
+
+/**
+ * Validate a decision that came back over the loopback socket and RE-BUILD it from our own
+ * canonical writer — never re-emit the received bytes.
+ *
+ * Claude treats the PermissionRequest hook's stdout as the AUTHORITATIVE answer, so echoing the
+ * response verbatim would make whoever holds the port the decision oracle for every session on the
+ * machine (a process that binds it before Stream Deck starts could auto-approve every tool call).
+ * Passing only `behavior` through this funnel means an attacker can at most choose allow/deny for a
+ * prompt the user is already looking at, never inject arbitrary hook output. Anything unrecognised
+ * returns undefined → the hook prints nothing → Claude falls back to its own dialog. Pure.
+ */
+export function parsePermissionDecision(raw: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  const output = asRecord(asRecord(parsed)?.hookSpecificOutput);
+  if (output?.hookEventName !== 'PermissionRequest') return undefined;
+  const behavior = asRecord(output.decision)?.behavior;
+  if (behavior !== 'allow' && behavior !== 'deny') return undefined;
+  return permissionDecisionJson(behavior);
+}

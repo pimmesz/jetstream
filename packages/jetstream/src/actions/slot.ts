@@ -22,15 +22,15 @@ import { parseSlotCommand } from '../slot-command';
 import { imageMime, resolveSlotIcon } from '../slot-icon';
 import { buildFace } from './build';
 import { stopFace } from './interrupt-all';
-import { modelFace, cycleModel } from './model';
 import { fleetFace, darkReason } from './fleet';
 import { projectFace } from './project-face';
 import { shouldInterrupt } from './project';
 import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
+import { openInTerminal } from '../exec-terminal';
 
 // FOLDED structural keys + volume keys: rendered + handled here so `jetstream chat` retargets them LIVE
 // (POST /slot) instead of re-importing a profile. 'build' is a static stamp; 'stopall' (gated) SIGINTs
-// the fleet; 'model' cycles the global model override; 'fleet' is the live roll-up; 'volup'/'voldown'/
+// the fleet; 'fleet' is the live roll-up; 'volup'/'voldown'/
 // 'volmute' adjust the macOS OUTPUT volume; 'project' is a live per-repo status light (colour/glyph/
 // diff/long-press-interrupt) — the standalone ProjectKey action folded in so a repo add/move applies
 // live with no profile re-import. Only 'project' carries per-key settings (path/name). See
@@ -42,12 +42,12 @@ export type SlotKind =
   | 'run'
   | 'build'
   | 'stopall'
-  | 'model'
   | 'fleet'
   | 'project'
   | 'volup'
   | 'voldown'
   | 'volmute'
+  | 'chat' // opens `jetstream chat` in a terminal — the board builder needs a real interactive TTY
   | 'logo'; // a decorative key painting the bundled Jetstream mark; ships on the default board, removable
 
 /** A generic, plugin-owned board key. Empty slots self-label with their coordinate; a configured
@@ -98,6 +98,8 @@ function baseFace(s: SlotSettings): Face {
       return { color: '#1f6feb', label: 'vol −', sub: 'output' };
     case 'volmute':
       return { color: '#26262b', label: 'mute', sub: 'output', glyph: '🔇' };
+    case 'chat':
+      return { color: '#38bdf8', label: 'chat', sub: 'build the board', subMax: 20, glyph: '💬' };
     case 'logo':
       // Fallback only — the render path paints the bundled mark over this. Shown if the asset
       // can't be read (e.g. running outside the plugin bundle).
@@ -221,10 +223,6 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
       return;
     }
-    if (settings.kind === 'model') {
-      await cycleModel(); // benign — cycles the global model override; face repaints on the round-trip
-      return;
-    }
     if (settings.kind === 'fleet') {
       // Board lit → ack blip; dark → press-to-doctor: paint the reason for a beat, then repaint live.
       if (worstStatus(board.byProject()) !== 'none') {
@@ -249,6 +247,15 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     if (settings.kind === 'volmute') {
       await toggleOutputMute();
       await ev.action.showOk();
+      return;
+    }
+    // `chat` opens a TERMINAL running `jetstream chat` — the conversational board builder needs an
+    // interactive TTY, so the plugin can only launch it, not host it. Safe to leave ungated: the
+    // command is a compile-time constant (no user input reaches the launcher) and it only starts an
+    // interactive session the user then drives by hand.
+    if (settings.kind === 'chat') {
+      const opened = await openInTerminal('chat');
+      await (opened ? ev.action.showOk() : ev.action.showAlert());
       return;
     }
     if (settings.kind === 'build') return; // a static "which build am I?" key — no press action
@@ -404,7 +411,6 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       const working = Object.values(board.byProject()).filter((s) => s.status === 'working').length;
       return withOverrides(stopFace(working), settings);
     }
-    if (settings.kind === 'model') return withOverrides(modelFace(config.get().launchModel), settings);
     if (settings.kind === 'fleet') return withOverrides(fleetFace(), settings);
     return slotFace(settings);
   }

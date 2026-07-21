@@ -13,6 +13,21 @@ import {
 import { existsSync } from 'node:fs';
 
 describe('labelForAction', () => {
+  // Slot labels are settable through the unauthenticated /slot endpoint and land in the terminal
+  // via `jetstream board` / `jetstream chat` — ANSI escapes there could overprint rows and forge
+  // the board map the user is reading (and would break the column-width maths).
+  it('strips control characters from an attacker-settable label', () => {
+    const label = labelForAction('gg.pim.jetstream.slot', { label: 'fleet\x1b[2K\x1b[Afake' });
+    expect(label).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(label).toBe('fleet[2K[Afake');
+  });
+
+  it('falls back rather than returning a label that was only control characters', () => {
+    expect(labelForAction('gg.pim.jetstream.slot', { label: '\x1b\x07', kind: 'project', name: 'Falcon' })).toBe(
+      'Falcon',
+    );
+  });
+
   it('labels a project by name, else its path basename', () => {
     expect(labelForAction('gg.pim.jetstream.project', { name: 'Falcon', path: '/dev/x' })).toBe('Falcon');
     expect(labelForAction('gg.pim.jetstream.project', { path: '/Users/me/afterburner' })).toBe('afterburner');

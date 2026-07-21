@@ -18,7 +18,7 @@ import { boardContext, renderBoardMap, type BoardLayout } from './board-layout';
 
 export const SETUP_SYSTEM = [
   'You are the Jetstream setup assistant. Jetstream is an Elgato Stream Deck plugin that shows',
-  'live Claude Code status per project (working / needs you / done), plus usage and launch keys.',
+  'live Claude Code status per project (working / needs you / done), plus usage and approval keys.',
   'Help the user build their fleet AND, when they ask, lay out their Stream Deck keys.',
   '',
   'Reply with EXACTLY ONE of:',
@@ -34,7 +34,7 @@ export const SETUP_SYSTEM = [
   '  columns are numbers 1..N left→right. XL is 8 cols × 4 rows, standard 5×3, mini 3×2.',
   '  Each key needs "coord" + "type". "type" is one of:',
   '    open-app {app:"/Applications/X.app"} · open-url {url:"https://…"} · run {command, args?} · slot (clear/empty)',
-  '    text {text:"…"} · project {path, name?} · launch {prompt, path, model?} · approve · deny · nav {target:"board"|"ops"}',
+  '    text {text:"…"} · project {path, name?} · approve · deny · nav {target:"board"|"ops"}',
   `    ${NO_SETTINGS_TYPE_NAMES.join(' · ')}`,
   '  "icon" is the key\'s MAIN picture. An open-app key already auto-shows the app\'s own logo — do NOT set',
   '  "icon" to match it. Set "icon" only to REPLACE the picture: an image path ("icon":"/path/x.png") OR an',

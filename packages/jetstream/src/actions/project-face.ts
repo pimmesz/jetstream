@@ -6,12 +6,15 @@ import { formatDiffStat, type DiffStat } from '../diffstat';
 /** The theme argument `colorFor` takes — derived so this module needs no config import. */
 type Theme = Parameters<typeof colorFor>[1];
 
-const STATUS_LABEL: Record<string, string> = {
+// Keyed by ProjectStatus, not `string`, so a new status can't silently fall through to a blank
+// sub-line — which is exactly how 'failed' would have shipped as a coloured key with no words on it.
+const STATUS_LABEL: Record<ProjectStatus, string> = {
   none: '',
   idle: 'idle',
   working: 'working',
   needsInput: 'NEEDS YOU',
   done: 'done',
+  failed: 'FAILED',
 };
 
 /** A key that's shown 'working' this long with no hook update is likely a hung or abandoned turn
@@ -82,6 +85,9 @@ function projectSub(i: ProjectFaceInput, stalled: boolean): { sub: string } | Re
     const badge = formatDiffStat(i.diffStat);
     return { sub: badge ? `${badge} · done ${elapsed}` : `done ${elapsed}` };
   }
+  // A died turn carries WHEN it died, like the other timed states — "failed 4m" tells you whether
+  // to retry now or that you missed it an hour ago.
+  if (i.status === 'failed' && elapsed) return { sub: `failed ${elapsed}` };
   const label = STATUS_LABEL[i.status] ?? '';
   return label ? { sub: label } : {};
 }

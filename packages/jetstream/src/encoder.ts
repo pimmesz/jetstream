@@ -54,6 +54,8 @@ function statusLine(state: DialState, now: number): string {
       return state.tool ? `${state.tool} · ${elapsed}` : elapsed ? `working ${elapsed}` : 'working';
     case 'done':
       return elapsed ? `done ${elapsed}` : 'done';
+    case 'failed':
+      return elapsed ? `failed ${elapsed}` : 'failed';
     case 'idle':
       return 'idle';
     default:

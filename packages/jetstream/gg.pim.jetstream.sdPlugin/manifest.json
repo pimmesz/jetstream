@@ -125,36 +125,6 @@
       ]
     },
     {
-      "UUID": "gg.pim.jetstream.ci",
-      "Name": "CI / PR status",
-      "Icon": "imgs/ci",
-      "Tooltip": "One always-visible key: the worst CI state across your open PRs (green / red / running), flashing when CI newly fails. Needs the `gh` CLI, logged in.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "States": [
-        {
-          "Image": "imgs/ci"
-        }
-      ]
-    },
-    {
-      "UUID": "gg.pim.jetstream.launch",
-      "Name": "Launch preset",
-      "Icon": "imgs/launch",
-      "Tooltip": "Fire a preset headless `claude -p` prompt in a project. Subscription auth; the API key is stripped.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "States": [
-        {
-          "Image": "imgs/launch"
-        }
-      ],
-      "PropertyInspectorPath": "ui/launch.html",
-      "SupportedInMultiActions": true
-    },
-    {
       "UUID": "gg.pim.jetstream.permission",
       "Name": "Approve / Deny",
       "Icon": "imgs/permission",
@@ -279,20 +249,6 @@
       "States": [
         {
           "Image": "imgs/attention"
-        }
-      ]
-    },
-    {
-      "UUID": "gg.pim.jetstream.model",
-      "Name": "Model toggle",
-      "Icon": "imgs/launch",
-      "Tooltip": "Cycle the model your Launch keys use (default → opus → sonnet → haiku). A Launch key's own model still wins.",
-      "Controllers": [
-        "Keypad"
-      ],
-      "States": [
-        {
-          "Image": "imgs/launch"
         }
       ]
     },

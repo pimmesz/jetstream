@@ -13,6 +13,10 @@ export const HOOK_EVENTS = [
   'UserPromptSubmit',
   'Notification',
   'Stop',
+  // A turn the API kills (overloaded / rate_limit / billing_error / authentication_failed) fires
+  // StopFailure INSTEAD of Stop — without this hook the session stays pinned 'working' and the
+  // board can't tell "finished" from "died", the one distinction it exists to make.
+  'StopFailure',
   'SessionEnd',
   'SubagentStart',
   'SubagentStop',

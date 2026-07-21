@@ -19,9 +19,33 @@ drives an SD+ dial cockpit). AgentDeck is also a scope cautionary tale (16 surfa
 1. **Make the one proven interaction informed + sticky** — permission preview (#1) + Always-Allow
    (#2) + elicitation split (#7) turn a blind doorbell into a real triage-and-decide surface no
    competitor fully has.
-2. **Own the loop past "done"** — diff badge (#4) → CI/PR status (#8) → ship-as-`afterburner/`-PR
-   (#12), riding this repo's PR-only model so Jetstream covers **status → approve → ship**, not just
-   monitoring.
+2. ~~**Own the loop past "done"** — diff badge (#4) → CI/PR status (#8) → ship-as-`afterburner/`-PR
+   (#12).~~ **Retired 2026-07-20.** The middle leg shipped and was then removed (see the status note
+   below), and the `afterburner/` integration the last leg chained into came out in v1.5.0. The diff
+   badge (#4) still stands on its own; #12 is unbuilt and would now need its own branch-naming design
+   rather than inheriting one. Jetstream's differentiation rests on bet 1.
+
+## Status note — 2026-07-20: built, then removed
+
+_Three keys on this roadmap shipped and have since been taken back out of the plugin. They are kept
+in the tables below for the record — do not read them as open work and do not re-propose them._
+
+- **CI/PR status (#8)** — shipped as a `gh`-polling key (`actions/ci.ts`, `ci-status.ts`, config key
+  `ciBranchPrefix`); removed. It was the only thing that made an external CLI Jetstream doesn't own a
+  runtime dependency, for a signal GitHub already pushes elsewhere. `gh` is now a dependency of
+  nothing.
+- **Launch presets** — shipped as `actions/launch.ts` firing headless `claude -p`, plus the
+  `launchModel` config key; removed. Consequence for the Opus tier: #11 (prompt recipes), #15
+  (resume/fork) and #17 (fan-out) all assumed a launch primitive that no longer exists — each would
+  have to rebuild it before it can be built.
+- **Model toggle** — shipped as `actions/model.ts` (default/opus/sonnet/haiku) and its own slot kind;
+  removed alongside Launch, the only key it fed.
+- Earlier, v1.5.0 removed the **afterburner** integration and the **heartbeat** and **review** keys.
+
+Still shipping: Project status · Fleet roll-up · Attention doorbell · Usage gauge · Approve/Deny ·
+Jetstream settings · Build version · Stop all · page Nav · Coordinate · Grid · Fleet dial · the
+generic Slot key. The CLI is `install`, `setup`, `init`, `chat`, `hooks install`, `doctor`, `update`
+— with **`jetstream chat`**, the conversational board builder, as the headline surface.
 
 ## Next Fable batch (v1.3) — SHIPPED
 
@@ -46,7 +70,7 @@ The fable tier is exhausted; the genuinely-remaining work is all Opus-tier below
 | --- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2   | **Always-Allow** `opus/M`                           | Third key: approve + record a **session-scoped** allow rule so repeat-safe prompts auto-answer. A deliberate, bounded relaxation of "every grant is a keypress" — needs scope design. |
 | 5   | **Ack/snooze/re-escalate** `opus/M`                 | PagerDuty semantics for the doorbell: tap=ack, auto re-flash if still blocked, snooze. The keystone the other attention wins build on.                                                |
-| 8   | **CI/PR status key** `opus/M`                       | **(built)** Poll `gh` for the opened PR's checks → spinner/green/red + flash on failure. Closes "done" → "actually green".                             |
+| 8   | **CI/PR status key** `opus/M`                       | **(built, then removed 2026-07-20 — see status note)** Poll `gh` for the opened PR's checks → spinner/green/red + flash on failure. Closes "done" → "actually green".                             |
 | 9   | **Attention profile auto-switch** `opus/M`          | On a permission request, `switchToProfile` flips the deck to a big APPROVE/DENY/context page, auto-revert after. Opt-in.                                                              |
 | 11  | **Prompt recipe library** `opus/M`                  | Per-key saved headless launches (prompt+model+tools+mode) — "write tests", "triage CI" — one press each.                                                                              |
 | 12  | **Ship-as-PR** `opus/M`                             | Long-press a done key → commit & push the worktree as an `afterburner/` PR (never a protected branch). Completes status→approve→**ship**.                                             |

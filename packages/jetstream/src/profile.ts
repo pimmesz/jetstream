@@ -199,7 +199,6 @@ function fixedLayout(deck: DeckModel): Map<string, ProfileAction> {
   at(0, 2, action('Fleet roll-up', 'gg.pim.jetstream.fleet'));
   at(1, 2, action('Attention', 'gg.pim.jetstream.attention'));
   at(2, 2, action('Usage gauge', 'gg.pim.jetstream.usage'));
-  at(3, 2, action('CI / PR status', 'gg.pim.jetstream.ci'));
   at(4, 2, action('Jetstream settings', 'gg.pim.jetstream.settings'));
   at(2, 1, action('Page: Ops', 'gg.pim.jetstream.nav', ops));
   at(3, 1, action('Approve', 'gg.pim.jetstream.permission', allow));
@@ -373,21 +372,16 @@ function fixedOpsLayout(deck: DeckModel): Map<string, ProfileAction> {
     slots.set(`${col},${row}`, entry);
   };
   at(0, 0, action('Page: Board', 'gg.pim.jetstream.nav', { target: 'board' } satisfies NavSettings));
-  at(1, 0, action('Model toggle', 'gg.pim.jetstream.model'));
   at(deck.cols - 1, 0, action('Stop all', 'gg.pim.jetstream.interruptall'));
   at(deck.cols - 1, deck.rows - 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
-  // A row of Launch invitation keys (render "set prompt" until the user configures them).
-  const launchCount = deck.key === 'xl' ? 4 : 3;
-  for (let col = 0; col < launchCount; col++) {
-    at(col, 1, action('Launch preset', 'gg.pim.jetstream.launch'));
-  }
   return slots;
 }
 
 /**
  * The bundled OPS profile (manifest `Profiles` array): the controls page of the two-page
- * deck. Baked at publish time, so it carries no user data — the Launch keys are unconfigured
- * invitations, everything else is zero-config. Standard + XL only.
+ * deck. Baked at publish time, so it carries no user data — every key on it is zero-config
+ * (page nav, stop-all, settings); the rest of the page is left empty for `jetstream chat` to
+ * fill with your own shortcuts. Standard + XL only.
  */
 export function buildOpsProfile(deck: DeckModel): BuiltProfile {
   const name = opsProfileName(deck);

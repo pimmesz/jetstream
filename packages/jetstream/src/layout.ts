@@ -39,17 +39,16 @@ const NO_SETTINGS: Record<string, string> = {
   fleet: 'gg.pim.jetstream.fleet',
   attention: 'gg.pim.jetstream.attention',
   usage: 'gg.pim.jetstream.usage',
-  ci: 'gg.pim.jetstream.ci',
   settings: 'gg.pim.jetstream.settings',
   build: 'gg.pim.jetstream.build',
   'stop-all': 'gg.pim.jetstream.interruptall',
-  model: 'gg.pim.jetstream.model',
   micmute: 'gg.pim.jetstream.micmute',
   // Volume keys are slot-kind ONLY (no standalone action); the uuid here is a placeholder for the
   // prompt-name derivation and is overridden by the slot-kind KEY_TYPES entries below.
   volup: 'gg.pim.jetstream.slot',
   voldown: 'gg.pim.jetstream.slot',
   volmute: 'gg.pim.jetstream.slot',
+  chat: 'gg.pim.jetstream.slot',
 };
 
 /** The no-settings placeable type names, in prompt order. Exported so the chat prompt's key
@@ -61,15 +60,14 @@ const NO_SETTINGS_NAMES: Record<string, string> = {
   fleet: 'Fleet roll-up',
   attention: 'Attention',
   usage: 'Usage gauge',
-  ci: 'CI / PR status',
   settings: 'Jetstream settings',
   build: 'Build version',
   'stop-all': 'Stop all',
-  model: 'Model toggle',
   micmute: 'Mic mute',
   volup: 'Volume up',
   voldown: 'Volume down',
   volmute: 'Mute output',
+  chat: 'Build by chat',
 };
 
 export const KEY_TYPES: Record<string, KeyType> = {
@@ -137,18 +135,6 @@ export const KEY_TYPES: Record<string, KeyType> = {
       return { settings: { kind: 'project', path, ...(str(f.name) ? { name: str(f.name) } : {}), ...slotCosmetics(f) } };
     },
   },
-  launch: {
-    uuid: 'gg.pim.jetstream.launch',
-    name: 'Launch preset',
-    build: (f) => {
-      const prompt = str(f.prompt);
-      const path = str(f.path);
-      if (!prompt || !path) return { error: 'launch needs "prompt" and "path"' };
-      return {
-        settings: { prompt, path, ...(str(f.model) ? { model: str(f.model) } : {}) },
-      };
-    },
-  },
   approve: { uuid: 'gg.pim.jetstream.permission', name: 'Approve', build: () => ({ settings: { decision: 'allow' } }) },
   deny: { uuid: 'gg.pim.jetstream.permission', name: 'Deny', build: () => ({ settings: { decision: 'deny' } }) },
   nav: {
@@ -174,11 +160,6 @@ export const KEY_TYPES: Record<string, KeyType> = {
     name: 'Stop all',
     build: (f) => ({ settings: { kind: 'stopall', ...slotCosmetics(f) } }),
   },
-  model: {
-    uuid: 'gg.pim.jetstream.slot',
-    name: 'Model toggle',
-    build: (f) => ({ settings: { kind: 'model', ...slotCosmetics(f) } }),
-  },
   fleet: {
     uuid: 'gg.pim.jetstream.slot',
     name: 'Fleet roll-up',
@@ -189,6 +170,8 @@ export const KEY_TYPES: Record<string, KeyType> = {
   volup: { uuid: 'gg.pim.jetstream.slot', name: 'Volume up', build: (f) => ({ settings: { kind: 'volup', ...slotCosmetics(f) } }) },
   voldown: { uuid: 'gg.pim.jetstream.slot', name: 'Volume down', build: (f) => ({ settings: { kind: 'voldown', ...slotCosmetics(f) } }) },
   volmute: { uuid: 'gg.pim.jetstream.slot', name: 'Mute output', build: (f) => ({ settings: { kind: 'volmute', ...slotCosmetics(f) } }) },
+  // Opens `jetstream chat` in a terminal — the board builder needs an interactive TTY.
+  chat: { uuid: 'gg.pim.jetstream.slot', name: 'Build by chat', build: (f) => ({ settings: { kind: 'chat', ...slotCosmetics(f) } }) },
 };
 
 /** The placeable type names, for the model prompt + "unknown type" messages. */

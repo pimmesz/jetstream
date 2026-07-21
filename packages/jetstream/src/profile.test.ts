@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -180,10 +180,10 @@ describe('buildProfile', () => {
   });
 
   it('caps project keys at the free slots and reports the overflow', () => {
-    // Standard 5x3 = 15 keys, 8 controls (watch strip + settings + nav/approve/deny) → 7 free.
+    // Standard 5x3 = 15 keys, 7 controls (watch strip + settings + nav/approve/deny) → 8 free.
     const { placedProjects, skippedProjects } = buildProfile(STANDARD, projects(12));
-    expect(placedProjects).toBe(7);
-    expect(skippedProjects).toBe(5);
+    expect(placedProjects).toBe(8);
+    expect(skippedProjects).toBe(4);
   });
 
   it('Mini: essentials only, never project keys — with each slot decision pinned', () => {
@@ -293,16 +293,20 @@ describe('buildOpsProfile (the shipped controls page)', () => {
       const actions = manifest.Actions as Record<string, { UUID: string; Settings: unknown }>;
       const uuids = Object.values(actions).map((a) => a.UUID);
       expect(actions['0,0']).toMatchObject({ UUID: 'gg.pim.jetstream.nav', Settings: { target: 'board' } });
-      for (const u of [
-        'gg.pim.jetstream.model',
-        'gg.pim.jetstream.interruptall',
-        'gg.pim.jetstream.settings',
-      ]) {
+      for (const u of ['gg.pim.jetstream.interruptall', 'gg.pim.jetstream.settings']) {
         expect(uuids).toContain(u);
       }
-      // The afterburner-driving keys are gone from the ops page.
-      expect(uuids).not.toContain('gg.pim.jetstream.heartbeat');
-      expect(uuids).not.toContain('gg.pim.jetstream.review');
+      // The afterburner-driving keys are gone from the ops page, and so are the deleted
+      // CI / Launch / Model keys — a profile naming one would place a key with no code behind it.
+      for (const u of [
+        'gg.pim.jetstream.heartbeat',
+        'gg.pim.jetstream.review',
+        'gg.pim.jetstream.ci',
+        'gg.pim.jetstream.launch',
+        'gg.pim.jetstream.model',
+      ]) {
+        expect(uuids).not.toContain(u);
+      }
       expect(JSON.stringify(manifest)).not.toMatch(/"path"|"name"/); // baked — no user data
     }
     expect(opsProfileName(STANDARD)).toBe('Jetstream Ops');
@@ -324,6 +328,21 @@ describe('buildOpsProfile (the shipped controls page)', () => {
     const profileNames = new Set(manifest.Profiles.map((p) => p.Name));
     expect(profileNames).toContain('profiles/Jetstream Ops');
     expect(profileNames).toContain('profiles/Jetstream Ops XL');
+  });
+
+  it('the manifest declares exactly the actions that have an implementation', () => {
+    // Deleting an action's source file but leaving its manifest entry ships a key the user can
+    // place and that then does nothing — Stream Deck lists it, no code ever answers. The reverse
+    // (implemented but undeclared) is just as dead. Compare both sets so neither can drift.
+    const manifest = JSON.parse(
+      readFileSync(new URL('../gg.pim.jetstream.sdPlugin/manifest.json', import.meta.url), 'utf8'),
+    ) as { Actions: Array<{ UUID: string }> };
+    const actionsDir = new URL('./actions/', import.meta.url);
+    const implemented = readdirSync(actionsDir)
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .flatMap((f) => [...readFileSync(new URL(f, actionsDir), 'utf8').matchAll(/@action\(\{\s*UUID:\s*'([^']+)'/g)])
+      .map((m) => m[1]!);
+    expect(new Set(manifest.Actions.map((a) => a.UUID))).toEqual(new Set(implemented));
   });
 });
 

@@ -25,6 +25,12 @@ export interface HookServerHandlers {
   /** Live board edits (`/slot`): retarget the slot key at a coordinate and resolve with
    * `{status, body}`. Omit (old build) → the endpoint 404s so the CLI can say "update the plugin". */
   onSlot?: (raw: unknown) => Promise<{ status: number; body: string }>;
+  /** Gate for the state-changing endpoints: return false to answer 401. `endpoint` says what is at
+   * stake — `/hook` only colours keys, while `/permission` and `/slot` answer permission prompts and
+   * plant keys — so the policy can treat them differently. `/health` stays open: it is a liveness
+   * probe the installer needs before a token can exist, and it discloses only the version.
+   * Omit to leave everything open (tests). */
+  authorize?: (headers: IncomingMessage['headers'], endpoint: 'status' | 'sensitive') => boolean;
 }
 
 function readBody(req: IncomingMessage, onDone: (body: string | undefined) => void): void {
@@ -69,6 +75,16 @@ export function startHookServer(port: number, handlers: HookServerHandlers): Pro
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'content-type': 'text/plain' });
         res.end(PLUGIN_VERSION); // the built-in version, so the installer can confirm the NEW build is up
+        return;
+      }
+      // Everything below CHANGES state (board status, a permission answer, a key's target), so it
+      // needs the shared token. Drain the body before answering 401 — a bare socket teardown would
+      // surface to the hook as a connection error it cannot tell apart from "plugin not running".
+      const endpoint = req.url === '/hook' ? 'status' : 'sensitive';
+      if (handlers.authorize && !handlers.authorize(req.headers, endpoint)) {
+        req.resume();
+        res.writeHead(401);
+        res.end();
         return;
       }
       if (req.method === 'POST' && req.url === '/hook') {

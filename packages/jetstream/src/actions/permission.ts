@@ -5,6 +5,7 @@ import { permissions } from '../permissions';
 import { config } from '../config';
 import { heldMs } from '../press';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 
 /** Which decision this key issues. Place one Approve key and one Deny key; each acts
  * on the oldest pending Claude permission request. */
@@ -72,7 +73,7 @@ export class PermissionKey extends SingletonAction<PermissionSettings> {
             sub: !deny && permissions.allowRuleCount() > 0 ? `auto-allow: ${permissions.allowRuleCount()}` : 'no request',
           });
       await visible.setTitle('');
-      await visible.setImage(face);
+      await paintKey(visible, face);
     }
     // Set AFTER the paint lands, not before: a press answers the id actually ON the face. If we
     // set it up front, a press during the awaited paint could settle a request not yet shown;

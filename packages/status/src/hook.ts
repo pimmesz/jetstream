@@ -1,4 +1,5 @@
 import { request } from 'node:http';
+import { tokenHeader } from './listener-token';
 
 /**
  * Claude Code lifecycle-hook entry (install for SessionStart / UserPromptSubmit /
@@ -29,7 +30,11 @@ function post(body: string): Promise<void> {
         port: PORT,
         path: '/hook',
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body),
+          ...tokenHeader(),
+        },
         timeout: 1500,
       },
       (res) => {

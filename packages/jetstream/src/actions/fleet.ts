@@ -9,6 +9,7 @@ import { checkHooksPresent } from '../doctor';
 import { defaultSettingsPath } from '../hooks-install';
 import type { Face } from '../render';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 
 /** The fleet roll-up face from LIVE board state: worst-status colour + compact `Nw N! N✓` counts, or
  * a dark "add repos / idle · press?" invite. Shared by the standalone Fleet key and the slot `fleet`
@@ -62,7 +63,10 @@ export class FleetKey extends SingletonAction {
       await ev.action.showOk();
       return;
     }
-    await ev.action.setImage(keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
+    // Through paintKey, NOT a raw setImage: a raw upload leaves the cache still remembering the
+    // previous fleet face, so the revert below would paint an "identical" face, be skipped, and
+    // strand the key on this diagnostic forever.
+    await paintKey(ev.action, keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
     setTimeout(() => void this.renderOne(ev.action), 2600);
   }
 
@@ -74,6 +78,6 @@ export class FleetKey extends SingletonAction {
 
   private async renderOne(a: KeyAction): Promise<void> {
     await a.setTitle('');
-    await a.setImage(keyFace(fleetFace()));
+    await paintKey(a, keyFace(fleetFace()));
   }
 }

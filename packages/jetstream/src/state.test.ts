@@ -34,6 +34,18 @@ describe('Board', () => {
     expect(board.attention()).toEqual([]);
   });
 
+  it('attention keeps the RANKED order, not the order keys were registered in', () => {
+    // The doorbell shows and jumps to attention()[0]. needsAttention ranks a blocking prompt above
+    // a died turn, but that ranking is easy to throw away here by filtering the projects list
+    // instead of mapping the ordered ids — which is exactly what this once did.
+    const board = makeBoard();
+    board.setProject('key-1', { name: 'falcon', path: '/Users/me/falcon' }); // registered FIRST
+    board.setProject('key-2', { name: 'osprey', path: '/Users/me/osprey' });
+    board.dispatch({ event: 'StopFailure', cwd: '/Users/me/falcon', sessionId: 'f1', at: 1 });
+    board.dispatch({ event: 'Notification', cwd: '/Users/me/osprey', sessionId: 'o1', at: 2 });
+    expect(board.attention().map((p) => p.name)).toEqual(['osprey', 'falcon']);
+  });
+
   it('notifies subscribers on dispatch and settings changes', () => {
     const board = makeBoard();
     let calls = 0;
@@ -128,6 +140,23 @@ describe('Board', () => {
       // interrupt targets the LIVE pid, never the stale/recycled 4242
       expect(after.pidsForProject('falcon')).toEqual([9999]);
       expect(after.pidsForProject('osprey')).toEqual([]);
+    });
+
+    it('restores a failed session instead of silently dropping it', async () => {
+      // The restore validator whitelists statuses, so a status missing from it is discarded on the
+      // way back in — which would erase exactly the sessions that died and still need attention.
+      const file = tmpFile();
+      const before = new Board(file);
+      before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      before.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 });
+      before.dispatch({ event: 'StopFailure', cwd: '/Users/me/falcon', sessionId: 's1', at: 2 });
+      expect(before.byProject()['falcon']?.status).toBe('failed');
+
+      before.flush();
+      const after = new Board(file);
+      after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      await after.restore(async () => [{ pid: 9, cwd: '/Users/me/falcon', active: true }]);
+      expect(after.byProject()['falcon']).toEqual({ status: 'failed', since: 2 });
     });
 
     it('merges under live hook events that arrived during the scan (never clobbers them)', async () => {

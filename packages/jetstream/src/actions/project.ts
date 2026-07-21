@@ -14,6 +14,7 @@ import { permissions } from '../permissions';
 import { readDiffStat, type DiffStat } from '../diffstat';
 import { heldMs } from '../press';
 import { keyFace } from '../render';
+import { paintKey } from '../paint';
 import { openProject, interruptPids } from '../switchto';
 import { projectFace } from './project-face';
 
@@ -65,7 +66,11 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
         // A session that Stopped during the hold must not show a lying warning — keyUp already
         // declines to interrupt a non-working session, so keep the face honest too.
         if (board.byProject()[ev.action.id]?.status !== 'working') return;
-        void ev.action.setImage(
+        // Through paintKey, NOT a raw setImage: a raw upload leaves the cache remembering the
+        // pre-warning face, so releasing onto that same face would be skipped as "identical" and
+        // leave the key stuck on this red warning.
+        void paintKey(
+          ev.action,
           keyFace({
             color: '#e5484d', // danger red — this press is about to SIGINT the session
             label: board.project(ev.action.id)?.name ?? 'project',
@@ -132,7 +137,8 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
       const state = byProject[visible.id] ?? { status: 'none' as const };
       this.trackDiff(visible.id, state.status, project?.path);
       await visible.setTitle('');
-      await visible.setImage(
+      await paintKey(
+        visible,
         keyFace(
           projectFace({
             name: project?.name ?? 'project',

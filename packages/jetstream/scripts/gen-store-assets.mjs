@@ -89,15 +89,19 @@ const boardCells = [
   K({ color: C.idle, glyph: G.idle, label: 'infra', sub: 'idle' }),
   BLANK, BLANK, BLANK, BLANK, BLANK,
 ];
+// The second page: the three fixed ops keys (profile.ts fixedOpsLayout) plus the custom keys
+// `jetstream chat` plants on request — an app, a URL, a command, recoloured and renamed. Keep this
+// honest: every key here must be one the plugin can actually place today.
 const opsCells = [
   K({ color: C.none, label: '← board', sub: 'status' }),
-  K({ color: C.done, label: 'engine', subMax: 22, sub: 'armed · 1 benched' }),
-  K({ color: C.done, label: 'review', sub: '3 PRs · 2 ✓' }),
-  K({ color: '#7c5cff', label: 'model', sub: 'opus' }),
+  K({ color: '#0091ff', label: 'telegram', sub: 'app' }),
+  K({ color: '#7c5cff', label: 'grafana', sub: 'url' }),
+  K({ color: '#1f6f43', label: 'deploy', sub: 'run · staging' }),
   K({ color: C.working, label: 'stop all', sub: '2 working' }),
-  K({ color: '#0091ff', label: 'ship tests', sub: 'set prompt' }),
-  K({ color: '#0091ff', label: 'fix lint', sub: 'set prompt' }),
-  K({ color: '#0091ff', label: 'launch', sub: 'set prompt' }),
+  K({ color: '#0091ff', glyph: '🔔', label: 'standup', sub: 'url · 09:30' }),
+  K({ color: C.done, label: 'notes', sub: 'app' }),
+  // Teal, not the #e5484d this file reserves for danger — a benign shortcut must not read as "stop".
+  K({ color: '#0e7490', label: 'tail logs', sub: 'run' }),
   BLANK, K({ color: C.none, label: 'settings', sub: 'contrast: off' }),
   BLANK, BLANK, BLANK, BLANK, BLANK,
 ];
@@ -126,11 +130,11 @@ const BRAND = `<div class="brand"><img class="jet" src="${LOGO}" alt=""/><h1>Jet
 const assets = [
   { name: 'thumbnail.png', w: 640, h: 640, html: PAGE(`${BRAND}<p class="tag">Claude Code, live on your Stream Deck.</p>${deck(boardCells.slice(0, 5), 5)}`, 640, 640) },
   { name: 'gallery-1-board.png', w: 960, h: 540, html: PAGE(`<p class="cap">A live status board — working, needs you, done — for every project.</p>${deck(boardCells, 5)}`, 960, 540), also: join(DOCS, 'gallery-board.png') },
-  { name: 'gallery-2-controls.png', w: 960, h: 540, html: PAGE(`<p class="cap">A second page of controls: engine heartbeat, review queue, model, stop-all, launches.</p>${deck(opsCells, 5)}`, 960, 540), also: join(DOCS, 'gallery-controls.png') },
-  { name: 'gallery-3-hero.png', w: 960, h: 540, html: PAGE(`${BRAND}<p class="tag">Status board · attention doorbell · usage gauge · launch keys · Stream Deck + dial.</p>${deck(boardCells.slice(0, 10), 5)}`, 960, 540) },
+  { name: 'gallery-2-controls.png', w: 960, h: 540, html: PAGE(`<p class="cap">Keys you built by talking to it: app, URL and command shortcuts — recoloured, renamed, live.</p>${deck(opsCells, 5)}`, 960, 540), also: join(DOCS, 'gallery-controls.png') },
+  { name: 'gallery-3-hero.png', w: 960, h: 540, html: PAGE(`${BRAND}<p class="tag">Status board · attention doorbell · usage gauge · deck approvals · built by chat.</p>${deck(boardCells.slice(0, 10), 5)}`, 960, 540) },
   // The site's social preview. Generated from the same brand + board as the gallery so the
   // og-card can't drift from the store assets the way a hand-copied file does.
-  { name: 'og-card.png', dir: DOCS, w: 960, h: 540, html: PAGE(`${BRAND}<p class="tag">Status board · attention doorbell · usage gauge · launch keys · Stream Deck + dial.</p>${deck(boardCells.slice(0, 10), 5)}`, 960, 540) },
+  { name: 'og-card.png', dir: DOCS, w: 960, h: 540, html: PAGE(`${BRAND}<p class="tag">Status board · attention doorbell · usage gauge · deck approvals · built by chat.</p>${deck(boardCells.slice(0, 10), 5)}`, 960, 540) },
 ];
 
 if (!CHROME) {

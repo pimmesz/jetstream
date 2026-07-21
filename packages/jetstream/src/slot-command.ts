@@ -10,8 +10,8 @@ export interface SlotCommand {
 }
 
 const KINDS: readonly SlotKind[] = [
-  'empty', 'app', 'url', 'run', 'build', 'stopall', 'model', 'fleet', 'project', 'volup', 'voldown', 'volmute',
-  'logo',
+  'empty', 'app', 'url', 'run', 'build', 'stopall', 'fleet', 'project', 'volup', 'voldown', 'volmute',
+  'chat', 'logo',
 ];
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined);
@@ -101,11 +101,11 @@ export function parseSlotCommand(raw: unknown): SlotCommand | null {
     }
     case 'build':
     case 'stopall':
-    case 'model':
     case 'fleet':
     case 'volup':
     case 'voldown':
     case 'volmute':
+    case 'chat':
     case 'logo':
       // No per-key fields — a live/static face. `stopall`'s destructive press is gated (allowStopKeys);
       // the rest (build/model/fleet/vol*/logo) are inert/benign. Cosmetic overrides in `extra` are safe.

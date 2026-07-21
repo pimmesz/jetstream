@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SlotKey, slotFace } from './slot';
 import { stopFace } from './interrupt-all';
-import { modelFace } from './model';
 import { config } from '../config';
 import { board } from '../state';
 
@@ -158,10 +157,6 @@ describe('folded slot kinds: build + stopall', () => {
     expect(stopFace(0)).toMatchObject({ color: '#26262b', sub: 'idle' });
   });
 
-  it('modelFace → purple with the override name, or dim "default" (shared pure fn)', () => {
-    expect(modelFace('opus')).toMatchObject({ color: '#7c5cff', sub: 'opus' });
-    expect(modelFace('')).toMatchObject({ color: '#26262b', sub: 'default' });
-  });
 
   it('volume kinds paint a static face and drive output volume on press (no gate — benign)', async () => {
     expect(slotFace({ kind: 'volup' })).toMatchObject({ label: 'vol +', sub: 'output' });

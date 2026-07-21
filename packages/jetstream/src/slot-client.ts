@@ -1,5 +1,6 @@
 import { request } from 'node:http';
 import { DEFAULT_PORT } from './server';
+import { readToken, TOKEN_HEADER } from './listener-token';
 
 /** The loopback port the plugin's hook listener binds — env override or the shared default, so the
  * CLI and plugin can never drift. */
@@ -26,10 +27,13 @@ export function pluginAlive(timeoutMs = 800): Promise<boolean> {
 }
 
 /** POST a slot command to the running plugin; resolves the HTTP status (200 = applied, 404 = no slot
- * at that coordinate on the active profile, 400 = rejected), or -1 on a connection failure. */
+ * at that coordinate on the active profile, 400 = rejected, 401 = token missing or stale), or -1 on
+ * a connection failure. Read the token per call: the plugin writes it on first run, so a CLI that
+ * cached it at import time would miss the very first one. */
 export function sendSlot(body: Record<string, unknown>, timeoutMs = 2000): Promise<number> {
   return new Promise((resolve) => {
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
+    const token = readToken();
     const req = request(
       {
         host: '127.0.0.1',
@@ -37,7 +41,11 @@ export function sendSlot(body: Record<string, unknown>, timeoutMs = 2000): Promi
         path: '/slot',
         method: 'POST',
         timeout: timeoutMs,
-        headers: { 'content-type': 'application/json', 'content-length': payload.length },
+        headers: {
+          'content-type': 'application/json',
+          'content-length': payload.length,
+          ...(token ? { [TOKEN_HEADER]: token } : {}),
+        },
       },
       (res) => {
         res.resume();

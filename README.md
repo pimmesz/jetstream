@@ -2,9 +2,9 @@
 
 _Full Claude control on your Elgato Stream Deck._ One key per project, glowing with that
 project's live Claude Code status — working, needs-you, done — plus an attention doorbell,
-usage gauges, and preset headless launches. Add app / URL / command shortcut keys, give any
-key a colour, emoji, or the app's real logo, and **build your whole board by talking to it**
-(`jetstream chat`) — live, no re-import. See [SPEC.md](./packages/jetstream/SPEC.md).
+usage gauges, and deck-answerable permission prompts. Add app / URL / command shortcut keys,
+give any key a colour, emoji, or the app's real logo, and **build your whole board by talking
+to it** (`jetstream chat`) — live, no re-import. See [SPEC.md](./packages/jetstream/SPEC.md).
 
 ## Install (CLI-first — macOS or Windows)
 
@@ -52,10 +52,8 @@ folder opener), **long-press interrupts** the session; done keys show the
 change size, `+120/-40 · done 4m`), **Fleet roll-up** (one always-visible key counting the whole
 fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
 answerable even when projects outnumber keys), **Attention** (flashes if a request goes
-unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`), **CI / PR status** (one
-always-visible key: the worst CI state across your open PRs — green / red /
-running — flashing when CI newly fails; needs the `gh` CLI logged in), **Launch preset**
-(now usable inside Stream Deck multi-actions), **Approve / Deny** (place one of each — they answer
+unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`),
+**Approve / Deny** (place one of each — they answer
 the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude
 falls back to its normal dialog), and **Jetstream settings** (press to toggle colour-blind mode;
 its inspector sets escalation/long-press/refresh). Amber keys distinguish a deck-answerable prompt
@@ -103,8 +101,6 @@ node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
 ## Which meter does what
 
 - The **usage gauge** shows your interactive 5h/7d subscription windows.
-- **Launch preset** runs headless `claude -p`, which draws the separate Agent-SDK
-  allotment — it does **not** move the 5h/7d gauge.
 - Watching status costs nothing; the hooks only talk to the plugin locally
   (`127.0.0.1`, never the network). The status hook reports lifecycle events; the
   permission hook additionally holds a pending prompt briefly so a deck key can answer

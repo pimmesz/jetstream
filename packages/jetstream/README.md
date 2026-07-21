@@ -3,9 +3,9 @@
 _Full Claude control on your Elgato Stream Deck._
 
 One key per project, glowing with that project's live Claude Code status — working,
-needs-you, done — plus an attention doorbell, usage gauges, deck approvals, and preset
-headless launches. Add app / URL / command shortcut keys, give any key a colour, emoji, or
-the app's real logo, and build your whole board by talking to it (`jetstream chat`).
+needs-you, done, failed — plus an attention doorbell, usage gauges, and deck approvals.
+Add app / URL / command shortcut keys, give any key a colour, emoji, or the app's real
+logo, and build your whole board by talking to it (`jetstream chat`).
 
 This package is the installer: it ships the packed Stream Deck plugin and hands it to the
 Stream Deck app for you.

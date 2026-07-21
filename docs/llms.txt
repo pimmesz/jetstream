@@ -54,10 +54,8 @@ folder opener), **long-press interrupts** the session; done keys show the
 change size, `+120/-40 · done 4m`), **Fleet roll-up** (one always-visible key counting the whole
 fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
 answerable even when projects outnumber keys), **Attention** (flashes if a request goes
-unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`), **CI / PR status** (one
-always-visible key: the worst CI state across your open PRs — green / red /
-running — flashing when CI newly fails; needs the `gh` CLI logged in), **Launch preset**
-(now usable inside Stream Deck multi-actions), **Approve / Deny** (place one of each — they answer
+unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`),
+**Approve / Deny** (place one of each — they answer
 the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude
 falls back to its normal dialog), and **Jetstream settings** (press to toggle colour-blind mode;
 its inspector sets escalation/long-press/refresh). Amber keys distinguish a deck-answerable prompt
@@ -105,8 +103,6 @@ node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
 ## Which meter does what
 
 - The **usage gauge** shows your interactive 5h/7d subscription windows.
-- **Launch preset** runs headless `claude -p`, which draws the separate Agent-SDK
-  allotment — it does **not** move the 5h/7d gauge.
 - Watching status costs nothing; the hooks only talk to the plugin locally
   (`127.0.0.1`, never the network). The status hook reports lifecycle events; the
   permission hook additionally holds a pending prompt briefly so a deck key can answer

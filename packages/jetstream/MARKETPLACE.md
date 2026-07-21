@@ -26,39 +26,45 @@ Upload `packages/jetstream/gg.pim.jetstream.streamDeckPlugin` (~180 KB) in the C
 **Name:** Jetstream
 
 **Subtitle / tagline:**
-Claude Code, live on your Stream Deck — status board, doorbell, usage, and launch keys.
+Claude Code, live on your Stream Deck — status board, doorbell, usage, and a board you build by talking to it.
 
 **Category:** Productivity _(pick from the Console list; Productivity is the closest fit.)_
 
 **Tags / keywords:** claude, claude code, ai, coding, developer, productivity, status, agent,
-automation, git, pull request, usage, monitoring
+automation, usage, monitoring, permissions
 
 **Description:**
 
 > **Jetstream turns your Stream Deck into a live cockpit for Claude Code.**
 >
 > Every project you're running Claude in becomes a key that glows with its real status —
-> **working**, **needs you**, or **done** — so one glance answers "is anything waiting on me?"
-> without alt-tabbing. When Claude asks for permission, a doorbell key lights up; approve or
-> deny from the deck. A usage gauge shows your live 5-hour and 7-day subscription burn. Launch
-> keys fire preset headless prompts. A fleet roll-up covers every repo at once, even ones
-> without a dedicated key.
+> **working**, **needs you**, **done**, or **failed** — so one glance answers "is anything waiting
+> on me?" without alt-tabbing. When Claude asks for permission, a doorbell key lights up; approve
+> or deny from the deck. A usage gauge shows your live 5-hour and 7-day subscription burn. A fleet
+> roll-up covers every repo at once, even ones without a dedicated key.
 >
 > **Set up in seconds, no terminal required.** Installing the plugin wires the Claude hooks
 > itself; the Settings inspector walks you through adding your repos, building a personalized
-> layout, and a one-press health check. Prefer the keyboard? A bundled CLI (`init`, `chat`,
-> `doctor`) and a conversational setup are one command away.
+> layout, and a one-press health check.
+>
+> **Then build the board by talking to it.** `jetstream chat` takes plain English — "three repos in
+> ~/dev", "put the usage gauge at a3", "make docs purple", "add a Telegram key at a8", "move stop-all
+> to the bottom right" — and applies it to the deck live, with no profile export or re-import. It
+> reads the board you already have, so you edit by description instead of by dragging. It is not an
+> open agent: the model only returns a structured proposal, which Jetstream validates and writes
+> itself.
 >
 > **Stream Deck +:** a dial scrubs your whole fleet on the touchscreen. **Two-page layouts**
-> put a status Board and a controls page (model toggle, stop-all) a tap apart.
+> put a status Board and a controls page (stop-all, plus your own shortcuts) a tap apart.
 >
 > Works with Claude Code — no other tooling required.
 >
 > **Highlights**
-> - Live per-project status board (working / needs you / done)
+> - Live per-project status board (working / needs you / done / failed)
 > - Attention doorbell + deck approve/deny for permission prompts
 > - 5h / 7d subscription usage gauge
-> - Preset headless launch keys + a fleet roll-up
+> - Build and rearrange the whole board in plain English (`jetstream chat`), applied live
+> - App / URL / command shortcut keys + a fleet roll-up
 > - Stream Deck + dial (fleet scrubber) and two-page Board/Ops layouts
 > - Terminal-free setup: auto-wire + in-app fleet editor + Build-my-layout
 
@@ -95,10 +101,9 @@ Jetstream turns your Stream Deck into a live cockpit for Claude Code.
 - Live status board — every project glows with its real state: working, needs you, done.
 - Attention doorbell + deck approve/deny for Claude permission prompts.
 - Usage gauge — live 5h / 7d subscription burn, plus model + context window.
-- Launch keys — fire preset headless prompts in a project with one press.
 - Fleet roll-up — one key summarizing every repo, colored by the worst state present.
 - Stream Deck + — a dial scrubs your whole fleet on the touchscreen.
-- Two-page deck — a status Board and a controls page (model / stop-all).
+- Two-page deck — a status Board and a controls page (stop-all + your own shortcuts).
 - No-terminal setup — auto-wired hooks + an in-app fleet editor, health check, and layout
   builder; a bundled CLI and conversational `chat` setup for keyboard folks.
 Works with Claude Code. macOS.

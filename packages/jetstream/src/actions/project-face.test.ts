@@ -63,4 +63,13 @@ describe('projectFace', () => {
     expect(f.sub).toMatch(/^Bash · /);
     expect(f.glyph).not.toContain('⚠');
   });
+
+  it('failed says so, with when — never a wordless coloured key', () => {
+    // The sub-line is an if-chain plus a label lookup; a status missing from both renders a key
+    // with a colour and no words on it, which is unreadable across a room.
+    const f = projectFace({ ...base, name: 'x', configured: true, status: 'failed', since: base.now - 240_000 });
+    expect(f.sub).toMatch(/^failed /);
+    // …and it still reads without the elapsed time, rather than falling through to blank.
+    expect(projectFace({ ...base, name: 'x', configured: true, status: 'failed' }).sub).toBe('FAILED');
+  });
 });

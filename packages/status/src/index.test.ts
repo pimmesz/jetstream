@@ -104,6 +104,57 @@ describe('matchProject', () => {
   });
 });
 
+// A turn killed by the API fires StopFailure and NOT Stop. Before this existed the session stayed
+// pinned 'working' until the 20-min stall glyph gave up — the board could not tell finished from
+// died, which is the one distinction it exists to make.
+describe('StopFailure → failed', () => {
+  it('does not leave a killed turn pinned working', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 }));
+    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('working');
+    s = reduce(s, ev({ event: 'StopFailure', sessionId: 'h1', at: 2 }));
+    expect(statusByProject(s, PROJECTS).falcon?.status).toBe('failed');
+  });
+
+  it('is distinct from done — a died turn must not read as finished', () => {
+    const failed = reduce(initialState(), ev({ event: 'StopFailure', sessionId: 'h1', at: 1 }));
+    const done = reduce(initialState(), ev({ event: 'Stop', sessionId: 'h1', at: 1 }));
+    expect(statusByProject(failed, PROJECTS).falcon?.status).not.toBe(
+      statusByProject(done, PROJECTS).falcon?.status,
+    );
+  });
+
+  it('outranks working/done in the roll-up, and rings the doorbell', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'StopFailure', sessionId: 'h2', cwd: '/Users/me/osprey', at: 2 }));
+    const by = statusByProject(s, PROJECTS);
+    expect(worstStatus(by)).toBe('failed'); // beats the still-'working' sibling
+    expect(needsAttention(s, PROJECTS)).toContain('osprey'); // nothing else would surface it
+    expect(summarize(by).waiting).toBeGreaterThan(0); // and it can't vanish from the roll-up
+  });
+});
+
+// The /hook endpoint is unauthenticated, so cwd + session_id are untrusted AND become map keys
+// that get serialized to disk. Both the length and the count must be bounded.
+describe('untrusted hook payload bounds', () => {
+  it('rejects an absurdly long cwd or session_id instead of storing it', () => {
+    expect(parseHookPayload({ hook_event_name: 'SessionStart', cwd: 'x'.repeat(4097), session_id: 'h1' }, 1)).toBeNull();
+    expect(parseHookPayload({ hook_event_name: 'SessionStart', cwd: '/x', session_id: 'h'.repeat(129) }, 1)).toBeNull();
+    // Realistic values still parse — the bound is a ceiling, not a format check.
+    expect(parseHookPayload({ hook_event_name: 'SessionStart', cwd: '/Users/me/repo', session_id: 'h1' }, 1)).not.toBeNull();
+  });
+
+  it('caps the session map, evicting the oldest, so a flood cannot pin memory or disk', () => {
+    let s = initialState();
+    for (let i = 0; i < 400; i++) {
+      s = reduce(s, ev({ event: 'SessionStart', sessionId: `flood-${i}`, at: i + 1 }));
+    }
+    const ids = Object.keys(s.sessions);
+    expect(ids.length).toBeLessThanOrEqual(256);
+    expect(ids).toContain('flood-399'); // newest kept
+    expect(ids).not.toContain('flood-0'); // oldest evicted
+  });
+});
+
 describe('reduce + statusByProject', () => {
   it('maps the lifecycle to colours per project', () => {
     let s = initialState();
@@ -279,9 +330,25 @@ describe('needsAttention', () => {
     s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1' }));
     expect(needsAttention(s, PROJECTS)).toEqual(['ab']);
   });
+
+  // The doorbell shows and JUMPS TO the head of this list, so with a mixed set the order decides
+  // which project you are sent to. A blocking prompt outranks a died turn; config order must not.
+  it('puts a blocking prompt ahead of a died turn, whatever order the projects are configured in', () => {
+    // falcon is FIRST in PROJECTS, so config order alone would hand it the doorbell.
+    let s = reduce(initialState(), ev({ event: 'StopFailure', cwd: '/Users/me/falcon', sessionId: 'f1', at: 1 }));
+    s = reduce(s, ev({ event: 'Notification', cwd: '/Users/me/osprey', sessionId: 'o1', at: 2 }));
+    expect(needsAttention(s, PROJECTS)).toEqual(['osprey', 'falcon']);
+  });
+
+  it('breaks ties on age — whoever has been waiting longest comes first', () => {
+    let s = reduce(initialState(), ev({ event: 'Notification', cwd: '/Users/me/osprey', sessionId: 'o1', at: 50 }));
+    s = reduce(s, ev({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 'f1', at: 10 }));
+    expect(needsAttention(s, PROJECTS)).toEqual(['falcon', 'osprey']);
+  });
 });
 
-const ALL_STATUSES = ['none', 'idle', 'working', 'needsInput', 'done'] as const;
+// EVERY status — a missing entry here would let a new status ship with no colour or glyph.
+const ALL_STATUSES = ['none', 'idle', 'working', 'needsInput', 'done', 'failed'] as const;
 
 describe('colorFor', () => {
   it('is defined for every status in both themes', () => {

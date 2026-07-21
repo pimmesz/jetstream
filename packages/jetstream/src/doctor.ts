@@ -6,6 +6,7 @@ import { projectsConfigPath } from './projects-config';
 import { pluginAlive } from './slot-client';
 import { PLUGIN_VERSION } from './server';
 import { readBoardLayout, type BoardLayout } from './board-layout';
+import { ENFORCE_TOKEN, listenerTokenPath, readToken, tokenIsPrivate } from './listener-token';
 
 /**
  * `jetstream doctor` — the read-only answer to "why isn't my board lighting up?". Every
@@ -214,17 +215,6 @@ export function checkClaudeOnPath(found: boolean): CheckResult {
       };
 }
 
-/** Whether the `gh` CLI was found on PATH — needed by the CI/PR status key. Pure. */
-export function checkGhForCi(found: boolean): CheckResult {
-  return found
-    ? { status: 'ok', message: 'gh found on PATH (for the CI/PR status key)' }
-    : {
-        status: 'warn',
-        message:
-          'gh not found on PATH — the CI/PR status key needs it (`gh auth login`); other keys work without it',
-      };
-}
-
 /** Best-effort probe for an executable on PATH. Cross-platform (honours PATHEXT on
  * Windows) and NEVER throws — doctor must always exit 0. */
 export function commandOnPath(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -257,7 +247,6 @@ function readIfPresent(path: string): string | undefined {
 export interface DoctorIO {
   env: NodeJS.ProcessEnv;
   claudeOnPath: () => boolean;
-  ghOnPath: () => boolean;
   settingsRaw: () => string | undefined;
   projectsRaw: () => string | undefined;
   /** Is the plugin's hook listener answering on the loopback port? Injected for tests. */
@@ -266,19 +255,51 @@ export interface DoctorIO {
   boardLayout: () => BoardLayout | null;
   /** The latest published npm version (null when the registry can't be reached). Injected for tests. */
   latestVersion: () => Promise<string | null>;
+  /** Whether the loopback token exists and is owner-only. Injected for tests. */
+  listenerToken: () => { present: boolean; private: boolean };
 }
 
 export function defaultDoctorIO(): DoctorIO {
   return {
     env: process.env,
     claudeOnPath: () => commandOnPath('claude'),
-    ghOnPath: () => commandOnPath('gh'),
     settingsRaw: () => readIfPresent(defaultSettingsPath()),
     projectsRaw: () => readIfPresent(projectsConfigPath()),
     listenerAlive: () => pluginAlive(),
     boardLayout: () => readBoardLayout(),
     latestVersion: () => fetchLatestVersion(),
+    listenerToken: () => ({ present: readToken() !== undefined, private: tokenIsPrivate() }),
   };
+}
+
+/**
+ * The loopback listener answers hook events, permission decisions, and live board edits, so
+ * anything that can reach 127.0.0.1:41321 can drive your deck. It is authenticated by a shared
+ * token — but for two releases an untokened request is still accepted, so hooks installed by an
+ * older Jetstream keep working. Warn for that whole window: while it is open, the token is a
+ * speed bump, not a gate.
+ */
+export function checkListenerToken(token: { present: boolean; private: boolean }): CheckResult {
+  if (!token.present) {
+    return {
+      status: 'warn',
+      message:
+        'no loopback token — any local process can drive your board. Start the Stream Deck app once with Jetstream installed to generate one.',
+    };
+  }
+  if (!token.private) {
+    return {
+      status: 'warn',
+      message: `loopback token is readable by other users — run \`chmod 600 ${listenerTokenPath()}\``,
+    };
+  }
+  return ENFORCE_TOKEN
+    ? { status: 'ok', message: 'loopback token required on every hook and board edit' }
+    : {
+        status: 'warn',
+        message:
+          'loopback token in place, but untokened requests are still accepted (upgrade grace period). Run `jetstream hooks install` to re-wire your hooks, so enforcing it later is a no-op.',
+      };
 }
 
 /** The plugin can be installed + hooks wired yet the board still dark because its listener never
@@ -376,8 +397,8 @@ export async function runDoctor(io: DoctorIO = defaultDoctorIO()): Promise<Check
     checkUsageStatusline(settings),
     checkProjectsConfig(io.projectsRaw()),
     checkBoardKeys(io.boardLayout()),
-    checkGhForCi(io.ghOnPath()),
     checkListener(listener),
+    checkListenerToken(io.listenerToken()),
     checkLatestVersion(PLUGIN_VERSION, latest),
   ];
 }

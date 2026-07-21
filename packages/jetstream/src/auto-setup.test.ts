@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { autoWireHooks } from './auto-setup';
+import { autoWireHooks, WIRE_VERSION } from './auto-setup';
+import { HOOK_EVENTS } from './hooks-install';
 import type { InstallOptions, InstallResult } from './hooks-install';
 
 const BIN = '/plugin/bin';
@@ -57,7 +58,7 @@ describe('autoWireHooks (first-launch onboarding)', () => {
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
     expect(existsSync(markerPath)).toBe(true);
-    expect(readFileSync(markerPath, 'utf8').trim()).toBe('3'); // the wire-schema version it recorded
+    expect(readFileSync(markerPath, 'utf8').trim()).toBe(String(WIRE_VERSION)); // the wire-schema version it recorded
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
     // Same version → a user who later removes the hooks is not fought on every launch.
@@ -68,7 +69,7 @@ describe('autoWireHooks (first-launch onboarding)', () => {
     const logger = makeLogger();
     const markerPath = makeMarkerPath();
     mkdirSync(dirname(markerPath), { recursive: true });
-    writeFileSync(markerPath, '3\n'); // already wired for the current hook set
+    writeFileSync(markerPath, `${WIRE_VERSION}\n`); // already wired for the current hook set
     const install = vi.fn(async (): Promise<InstallResult> => ({ changed: false, settingsPath: '' }));
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
@@ -86,7 +87,7 @@ describe('autoWireHooks (first-launch onboarding)', () => {
 
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
     expect(install).toHaveBeenCalledTimes(1); // the fix: an old marker no longer blocks new hooks
-    expect(readFileSync(markerPath, 'utf8').trim()).toBe('3'); // stamped to the current wire version
+    expect(readFileSync(markerPath, 'utf8').trim()).toBe(String(WIRE_VERSION)); // stamped to the current wire version
 
     // …and now that it matches, a subsequent launch skips.
     await autoWireHooks({ binDir: BIN, logger, markerPath, install });
@@ -180,5 +181,28 @@ describe('autoWireHooks (first-launch onboarding)', () => {
     expect(installSpy.mock.calls[0]?.[0].commands.toolDetail).toBe(false);
     vi.doUnmock('./hooks-install');
     vi.resetModules();
+  });
+});
+
+// The marker means "this machine is already wired for hook set vN", so an install that ADDS a hook
+// without bumping WIRE_VERSION delivers it to nobody — every existing install skips the re-wire and
+// the new hook never reaches ~/.claude/settings.json. That is silent: the code is correct, the tests
+// pass, and only a fresh install gets the feature. This snapshot forces the bump to be deliberate.
+describe('WIRE_VERSION tracks the hook set', () => {
+  it('was bumped for the current set of auto-wired events', () => {
+    const WIRED_AT = {
+      2: ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
+      3: ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
+      4: ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'StopFailure', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
+    } as const;
+    const expected = WIRED_AT[WIRE_VERSION as keyof typeof WIRED_AT];
+    expect(
+      expected,
+      `WIRE_VERSION is ${WIRE_VERSION} but this table has no entry for it — add one`,
+    ).toBeDefined();
+    expect(
+      [...HOOK_EVENTS],
+      'HOOK_EVENTS changed without bumping WIRE_VERSION — existing installs would never get the new hook',
+    ).toEqual([...expected]);
   });
 });

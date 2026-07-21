@@ -37,6 +37,10 @@ export class Board {
   private registry = new Map<string, ProjectEntry>();
   private seeded = new Map<string, ProjectEntry>();
   private sessions = new Map<string, { pid: number; cwd: string }>();
+  /** Liveness probes are blocking `ps` calls, so a sweep is bounded per tick and resumes from
+   * `reapCursor` on the next one — see reapDeadSessions. */
+  private static readonly MAX_REAP_PROBES_PER_TICK = 32;
+  private reapCursor = 0;
   private discovered: DiscoveredSession[] = [];
   // Epoch ms each discovered cwd FIRST read CPU-active (reset when it goes quiet). A resting
   // hook status (done / needsInput / idle) is only upgraded to 'working' once a cwd has been
@@ -125,7 +129,16 @@ export class Board {
     // ambiguous cwd (two sessions in one repo, one now dead) can't be resolved from cwd alone,
     // so leave it to hooks/discovery rather than risk resurrecting the dead one's status.
     type Sess = StatusState['sessions'][string];
-    const VALID: ReadonlySet<string> = new Set(['none', 'idle', 'working', 'needsInput', 'done']);
+    // Every ProjectStatus the reducer can produce. A status missing here is silently DROPPED on
+    // restore, so a plugin restart would erase exactly the sessions that died and need your attention.
+    const VALID: ReadonlySet<string> = new Set([
+      'none',
+      'idle',
+      'working',
+      'needsInput',
+      'done',
+      'failed',
+    ] satisfies ProjectStatus[]);
     const byCwd = new Map<string, Array<[string, Sess]>>();
     for (const [sessionId, value] of Object.entries(rawSessions)) {
       if (typeof value !== 'object' || value === null) continue;
@@ -191,14 +204,25 @@ export class Board {
   ): void {
     // Skip during restore(): its async scan owns liveness reconciliation for that window.
     if (platform === 'win32' || this.restoring) return;
+    const ids = [...this.sessions.keys()];
+    if (ids.length === 0) return;
+    // Each probe is a BLOCKING execFileSync('ps'), and `sessions` is keyed by the untrusted /hook
+    // payload — so probing every session on every 5s tick lets a flood fork thousands of processes
+    // on the main thread (no repaints, no permission answers while it stalls). Bound the sweep and
+    // round-robin the cursor: every session is still checked, just spread across ticks.
+    const budget = Math.min(ids.length, Board.MAX_REAP_PROBES_PER_TICK);
     const dead: string[] = [];
-    for (const [sessionId, { pid }] of this.sessions) {
+    for (let n = 0; n < budget; n++) {
+      const sessionId = ids[(this.reapCursor + n) % ids.length]!;
+      const pid = this.sessions.get(sessionId)?.pid;
+      if (pid === undefined) continue;
       // Reap ONLY on a conclusive 'dead'. A probe that couldn't run returns 'unknown' and never
       // reaps — so neither a transient `ps` error nor a fleet-wide `ps` failure (EMFILE, where every
       // probe is 'unknown') can erase a live session, most importantly a needsInput the doorbell
       // exists to show and that discovery structurally cannot rebuild.
       if (probe(pid) === 'dead') dead.push(sessionId);
     }
+    this.reapCursor = (this.reapCursor + budget) % ids.length;
     if (dead.length === 0) return;
     const sessions = { ...this.state.sessions };
     for (const id of dead) {
@@ -352,8 +376,14 @@ export class Board {
 
   /** The projects currently waiting on the user, most useful first. */
   attention(): ProjectConfig[] {
-    const ids = new Set(needsAttention(this.state, this.projects()));
-    return this.projects().filter((p) => ids.has(p.id));
+    // Map the ids back IN THE ORDER needsAttention returned them (ranked: a blocking prompt ahead
+    // of a died turn, then oldest-first). Filtering `projects()` by a Set instead would silently
+    // restore config order and throw that ranking away — and the doorbell shows and jumps to the
+    // head of this list, so the order decides which project you are sent to.
+    const byId = new Map(this.projects().map((p) => [p.id, p]));
+    return needsAttention(this.state, this.projects())
+      .map((id) => byId.get(id))
+      .filter((p): p is ProjectConfig => p !== undefined);
   }
 
   subscribe(listener: () => void): () => void {

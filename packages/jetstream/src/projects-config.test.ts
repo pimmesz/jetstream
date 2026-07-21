@@ -61,11 +61,6 @@ describe('parseSettingsPreset', () => {
     expect(parseSettingsPreset('nope')).toEqual({});
     expect(parseSettingsPreset('{}')).toEqual({});
   });
-
-  it('carries launchModel, symmetric with the other settings (mergeConfig trims it)', () => {
-    expect(parseSettingsPreset('{"settings":{"launchModel":"opus"}}')).toEqual({ launchModel: 'opus' });
-    expect(parseSettingsPreset('{"settings":{"launchModel":42}}')).toEqual({}); // wrong type ignored
-  });
 });
 
 describe('projectsConfigPath', () => {

@@ -80,10 +80,6 @@ export function parseSettingsPreset(raw: string): Partial<JetstreamConfig> {
   if (typeof s.longPressMs === 'number') out.longPressMs = s.longPressMs;
   if (typeof s.usageRefreshSec === 'number') out.usageRefreshSec = s.usageRefreshSec;
   if (typeof s.escalateAfterSec === 'number') out.escalateAfterSec = s.escalateAfterSec;
-  if (typeof s.ciBranchPrefix === 'string' && s.ciBranchPrefix.trim() !== '') {
-    out.ciBranchPrefix = s.ciBranchPrefix.trim();
-  }
-  if (typeof s.launchModel === 'string') out.launchModel = s.launchModel; // mergeConfig trims it
   return out;
 }
 
