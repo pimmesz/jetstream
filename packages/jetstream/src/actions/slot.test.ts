@@ -21,6 +21,8 @@ vi.mock('../slot-icon', async (orig) => ({
   forgetIcon: vi.fn(),
 }));
 import { forgetIcon } from '../slot-icon';
+vi.mock('../exec-terminal'); // spy openInTerminal — the 'logo'/'chat' kinds launch `jetstream chat`
+import { openInTerminal } from '../exec-terminal';
 
 describe('slotFace', () => {
   it('empty → a blank dark key (absent kind = empty)', () => {
@@ -252,6 +254,35 @@ describe('folded slot kinds: build + stopall', () => {
       await new SlotKey().onKeyDown({ payload: { settings: { kind } }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
     }
     expect(action.showAlert).toHaveBeenCalledTimes(3);
+    expect(action.showOk).not.toHaveBeenCalled();
+  });
+
+  it('logo press opens `jetstream chat` in a terminal — the brand key doubles as a launcher', async () => {
+    vi.mocked(openInTerminal).mockResolvedValue(true);
+    const action = {
+      showOk: vi.fn(async () => {}),
+      showAlert: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      setImage: vi.fn(async () => {}),
+      isKey: () => true,
+    };
+    await new SlotKey().onKeyDown({ payload: { settings: { kind: 'logo' } }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    expect(openInTerminal).toHaveBeenCalledWith('chat');
+    expect(action.showOk).toHaveBeenCalled();
+    expect(action.showAlert).not.toHaveBeenCalled();
+  });
+
+  it('logo press ALERTS when the terminal launcher fails', async () => {
+    vi.mocked(openInTerminal).mockResolvedValue(false);
+    const action = {
+      showOk: vi.fn(async () => {}),
+      showAlert: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      setImage: vi.fn(async () => {}),
+      isKey: () => true,
+    };
+    await new SlotKey().onKeyDown({ payload: { settings: { kind: 'logo' } }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    expect(action.showAlert).toHaveBeenCalled();
     expect(action.showOk).not.toHaveBeenCalled();
   });
 

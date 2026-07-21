@@ -108,7 +108,8 @@ export function parseSlotCommand(raw: unknown): SlotCommand | null {
     case 'chat':
     case 'logo':
       // No per-key fields — a live/static face. `stopall`'s destructive press is gated (allowStopKeys);
-      // the rest (build/model/fleet/vol*/logo) are inert/benign. Cosmetic overrides in `extra` are safe.
+      // 'chat'/'logo' open `jetstream chat` (a compile-time-constant command, so ungated); the rest
+      // (build/fleet/vol*) are inert/benign. Cosmetic overrides in `extra` are safe.
       settings = { kind, ...extra };
       break;
     default: // 'empty' — clear the key back to a self-labeling slot

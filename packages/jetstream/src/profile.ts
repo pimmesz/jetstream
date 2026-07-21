@@ -159,7 +159,7 @@ export interface BuiltProfile {
  * personalized layout — same slots, so upgrading feels like filling in the same board).
  * Controls anchor a coherent BOTTOM zone so the project keys own the top of the deck and
  * flow left-to-right (Fleet/Attention/Usage/CI on the bottom row, Approve/Deny + Launch
- * beside them, Settings bottom-right, a Page:Ops nav cap). The Mini keeps its two-row
+ * beside them, a Page:Ops nav cap). The Mini keeps its two-row
  * essentials (no project keys, so nothing to anchor). Returns the slot map. */
 function fixedLayout(deck: DeckModel): Map<string, ProfileAction> {
   const slots = new Map<string, ProfileAction>();
@@ -179,30 +179,30 @@ function fixedLayout(deck: DeckModel): Map<string, ProfileAction> {
     at(2, 0, action('Usage gauge', 'gg.pim.jetstream.usage'));
     at(0, 1, action('Approve', 'gg.pim.jetstream.permission', allow));
     at(1, 1, action('Deny', 'gg.pim.jetstream.permission', deny));
-    at(2, 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
+    // The mark takes the bottom-right slot Settings used to hold; a press opens `jetstream chat`.
+    at(2, 1, action('Jetstream', 'gg.pim.jetstream.slot', { kind: 'logo' }));
     return slots;
   }
 
   if (deck.key === 'xl') {
     // On the XL every project gets its own key, so the roll-up + overflow keys are dropped: the
-    // board is projects plus three touches — the Usage gauge on d1, Jetstream settings beside it on
-    // d2 (a press opens `jetstream doctor`, and its inspector holds theme/timings/fleet), and the
-    // Jetstream mark in the top-right corner (a8). Approve/Deny are left OFF here: they add little
-    // when every repo has its own key, and nothing at all if you run with permissions bypassed —
-    // add them in the app or via `jetstream chat`. The smaller decks keep their control strips,
-    // where projects overflow and those keys earn their spot.
+    // board is projects plus two touches — the Usage gauge on d1 and the Jetstream mark in the
+    // top-right corner (a8), whose press opens `jetstream chat` to build the board. Approve/Deny
+    // are left OFF here: they add little when every repo has its own key, and nothing at all if you
+    // run with permissions bypassed — add them in the app or via `jetstream chat`. The smaller decks
+    // keep their control strips, where projects overflow and those keys earn their spot.
     at(0, 3, action('Usage gauge', 'gg.pim.jetstream.usage'));
-    at(1, 3, action('Jetstream settings', 'gg.pim.jetstream.settings'));
     at(7, 0, action('Jetstream', 'gg.pim.jetstream.slot', { kind: 'logo' }));
     return slots;
   }
 
-  // Standard (5x3): bottom row = watch strip + Settings; Nav/Approve/Deny sit on the
-  // right of row 1, leaving row 0 + the left of row 1 (7 slots) for projects.
+  // Standard (5x3): bottom row = watch strip + the Jetstream mark bottom-right (the slot Settings
+  // used to hold; a press opens `jetstream chat`). Nav/Approve/Deny sit on the right of row 1,
+  // leaving row 0 + the left of row 1 (7 slots) for projects.
   at(0, 2, action('Fleet roll-up', 'gg.pim.jetstream.fleet'));
   at(1, 2, action('Attention', 'gg.pim.jetstream.attention'));
   at(2, 2, action('Usage gauge', 'gg.pim.jetstream.usage'));
-  at(4, 2, action('Jetstream settings', 'gg.pim.jetstream.settings'));
+  at(4, 2, action('Jetstream', 'gg.pim.jetstream.slot', { kind: 'logo' }));
   at(2, 1, action('Page: Ops', 'gg.pim.jetstream.nav', ops));
   at(3, 1, action('Approve', 'gg.pim.jetstream.permission', allow));
   at(4, 1, action('Deny', 'gg.pim.jetstream.permission', deny));
@@ -376,14 +376,13 @@ function fixedOpsLayout(deck: DeckModel): Map<string, ProfileAction> {
   };
   at(0, 0, action('Page: Board', 'gg.pim.jetstream.nav', { target: 'board' } satisfies NavSettings));
   at(deck.cols - 1, 0, action('Stop all', 'gg.pim.jetstream.interruptall'));
-  at(deck.cols - 1, deck.rows - 1, action('Jetstream settings', 'gg.pim.jetstream.settings'));
   return slots;
 }
 
 /**
  * The bundled OPS profile (manifest `Profiles` array): the controls page of the two-page
  * deck. Baked at publish time, so it carries no user data — every key on it is zero-config
- * (page nav, stop-all, settings); the rest of the page is left empty for `jetstream chat` to
+ * (page nav, stop-all); the rest of the page is left empty for `jetstream chat` to
  * fill with your own shortcuts. Standard + XL only.
  */
 export function buildOpsProfile(deck: DeckModel): BuiltProfile {

@@ -49,7 +49,7 @@ export type SlotKind =
   | 'voldown'
   | 'volmute'
   | 'chat' // opens `jetstream chat` in a terminal — the board builder needs a real interactive TTY
-  | 'logo'; // a decorative key painting the bundled Jetstream mark; ships on the default board, removable
+  | 'logo'; // the bundled Jetstream mark; ships on the default board (removable). A press opens `jetstream chat`.
 
 /** A generic, plugin-owned board key. Empty slots self-label with their coordinate; a configured
  * slot is an app / URL / command shortcut. A type ALIAS (not interface) to satisfy the SDK's
@@ -269,7 +269,14 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       return;
     }
     if (settings.kind === 'build') return; // a static "which build am I?" key — no press action
-    if (settings.kind === 'logo') return; // decorative brand key — no press action
+    // The bundled brand key doubles as a chat launcher: a press opens `jetstream chat`. Same
+    // compile-time-constant command as the 'chat' kind (no user input reaches the launcher), so
+    // it needs no gate.
+    if (settings.kind === 'logo') {
+      const opened = await openInTerminal('chat');
+      await (opened ? ev.action.showOk() : ev.action.showAlert());
+      return;
+    }
     // `run` executes an arbitrary command; keep it OPT-IN so a command planted via the unauthenticated
     // loopback /slot endpoint stays inert until the user opts in via the projects.json settings
     // preset (`"allowRunKeys": true`) — deliberately a different channel from /slot itself. Don't
