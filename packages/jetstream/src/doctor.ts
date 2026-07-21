@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { get as httpsGet } from 'node:https';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defaultSettingsPath } from './hooks-install';
 import { projectsConfigPath } from './projects-config';
 import { pluginAlive } from './slot-client';
 import { PLUGIN_VERSION } from './server';
 import { readBoardLayout, type BoardLayout } from './board-layout';
+import { coordLabel } from './actions/coord';
 import { ENFORCE_TOKEN, listenerTokenPath, readToken, tokenIsPrivate } from './listener-token';
 
 /**
@@ -191,6 +193,53 @@ export function checkBoardKeys(board: BoardLayout | null): CheckResult {
   return { status: 'ok', message: `${count} Jetstream key(s) on "${board.profileName}"` };
 }
 
+/**
+ * Keys pointing at an action this build no longer declares.
+ *
+ * When a release DROPS an action (CI / Launch / Model went in v2.0.0), Stream Deck keeps the key
+ * on your profile — it has no idea the action is gone, and deleting keys for an unresolvable
+ * action would let one failed plugin load wipe a layout. So the key stays as a blank square that
+ * does nothing. `checkBoardKeys` can't see it either: the UUID still starts with
+ * `gg.pim.jetstream.`, so it counts as healthy.
+ *
+ * Detection only. Nothing here can delete the key — no plugin can (the SDK has no create/delete
+ * API for keys), which is precisely why this needs to be SAID rather than silently repaired.
+ */
+export function checkOrphanedKeys(board: BoardLayout | null, declared: string[]): CheckResult {
+  // No board, or no manifest to compare against → nothing verifiable; stay quiet rather than
+  // guess. (An empty `declared` would otherwise flag every key on the deck.)
+  if (board === null || declared.length === 0) {
+    return { status: 'ok', message: 'no keys pointing at removed actions' };
+  }
+  const known = new Set(declared);
+  const isOrphan = (uuid: string): boolean => uuid.startsWith('gg.pim.jetstream.') && !known.has(uuid);
+
+  // Coordinates come from the visible board, so the message can point at a key you can see.
+  const orphaned: string[] = [];
+  for (const [coord, key] of board.keys) {
+    if (!isOrphan(key.uuid)) continue;
+    const [cs, rs] = coord.split(',');
+    orphaned.push(coordLabel(Number(cs), Number(rs)));
+  }
+  // …but count across EVERY page. `keys` keeps only the first page's key per coordinate, so a dead
+  // key on page 2 hiding behind a live one on page 1 would otherwise go unreported entirely.
+  const totalOrphans = board.allUuids.filter(isOrphan).length;
+  if (totalOrphans === 0) {
+    return { status: 'ok', message: 'no keys pointing at removed actions' };
+  }
+  // Name coordinates when we have them; when the only orphans are on other pages we can still say
+  // they exist, which beats silence.
+  const where = orphaned.length > 0 ? ` (${orphaned.join(', ')})` : ' on another page of this profile';
+  const hidden = totalOrphans - orphaned.length;
+  const alsoHidden = hidden > 0 && orphaned.length > 0 ? ` — plus ${hidden} on another page` : '';
+  return {
+    status: 'warn',
+    message:
+      `${totalOrphans} key(s) point at actions this version removed${where}${alsoHidden} — ` +
+      'they do nothing. Delete them in Stream Deck, or run `jetstream chat` and ask for an empty slot there.',
+  };
+}
+
 /** Whether `projects.json` (if present) is parseable. `undefined` means the file is absent,
  * which is fine — it's optional. Pure. */
 export function checkProjectsConfig(raw: string | undefined): CheckResult {
@@ -257,6 +306,41 @@ export interface DoctorIO {
   latestVersion: () => Promise<string | null>;
   /** Whether the loopback token exists and is owner-only. Injected for tests. */
   listenerToken: () => { present: boolean; private: boolean };
+  /** The action UUIDs THIS build declares, read from its own manifest — the yardstick for
+   * spotting keys left pointing at an action a release removed. Empty when unreadable, which
+   * makes the check stay silent rather than flag every key. Injected for tests. */
+  declaredActions: () => string[];
+}
+
+/** Where the manifest sits relative to THIS module, in both shapes it runs in: bundled into the
+ * plugin's `bin/` (manifest is one level up) and straight from `src/` in a dev checkout or a test
+ * (manifest is under the sdPlugin dir). Getting this wrong is silent — the check would just never
+ * fire — so try both rather than assume the deployment. */
+function manifestCandidates(): string[] {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return [
+    join(here, '..', 'manifest.json'),
+    join(here, '..', 'gg.pim.jetstream.sdPlugin', 'manifest.json'),
+  ];
+}
+
+/** The action UUIDs in the plugin's own manifest.json — the first candidate path that yields any.
+ * [] when none can be read. Never throws: an unreadable manifest must degrade to "can't tell",
+ * not break `doctor`. */
+export function readDeclaredActions(...paths: string[]): string[] {
+  for (const manifestPath of paths) {
+    try {
+      const parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as { Actions?: unknown };
+      if (!Array.isArray(parsed.Actions)) continue;
+      const uuids = parsed.Actions.map((a) => (a as { UUID?: unknown }).UUID).filter(
+        (u): u is string => typeof u === 'string',
+      );
+      if (uuids.length > 0) return uuids;
+    } catch {
+      // next candidate
+    }
+  }
+  return [];
 }
 
 export function defaultDoctorIO(): DoctorIO {
@@ -269,6 +353,7 @@ export function defaultDoctorIO(): DoctorIO {
     boardLayout: () => readBoardLayout(),
     latestVersion: () => fetchLatestVersion(),
     listenerToken: () => ({ present: readToken() !== undefined, private: tokenIsPrivate() }),
+    declaredActions: () => readDeclaredActions(...manifestCandidates()),
   };
 }
 
@@ -293,12 +378,17 @@ export function checkListenerToken(token: { present: boolean; private: boolean }
       message: `loopback token is readable by other users — run \`chmod 600 ${listenerTokenPath()}\``,
     };
   }
+  // NOT a warning. During the grace period this state is expected and nothing the user does can
+  // clear it — the flag flips in a later release. Reporting it as a warning meant doctor
+  // permanently showed a "problem" with a prescribed command (`jetstream hooks install`) that
+  // could not change the outcome, which is exactly the trap the usage-statusline check fell into:
+  // a diagnostic must never hand you an action that leaves it saying the same thing.
   return ENFORCE_TOKEN
     ? { status: 'ok', message: 'loopback token required on every hook and board edit' }
     : {
-        status: 'warn',
+        status: 'ok',
         message:
-          'loopback token in place, but untokened requests are still accepted (upgrade grace period). Run `jetstream hooks install` to re-wire your hooks, so enforcing it later is a no-op.',
+          'loopback token in place (untokened requests still accepted during the upgrade grace period — no action needed)',
       };
 }
 
@@ -395,6 +485,7 @@ function fetchLatestVersion(timeoutMs = 1500): Promise<string | null> {
 /** Run every read-only check. Never mutates, never throws. */
 export async function runDoctor(io: DoctorIO = defaultDoctorIO()): Promise<CheckResult[]> {
   const settings = io.settingsRaw(); // read once, shared by the hooks + usage-statusline checks
+  const board = io.boardLayout(); // read once, shared by the key-count + orphaned-key checks
   // The two async probes (loopback listener + npm registry) run in parallel so doctor isn't serial.
   const [listener, latest] = await Promise.all([io.listenerAlive(), io.latestVersion()]);
   return [
@@ -403,7 +494,8 @@ export async function runDoctor(io: DoctorIO = defaultDoctorIO()): Promise<Check
     checkHooksPresent(settings),
     checkUsageStatusline(settings),
     checkProjectsConfig(io.projectsRaw()),
-    checkBoardKeys(io.boardLayout()),
+    checkBoardKeys(board),
+    checkOrphanedKeys(board, io.declaredActions()),
     checkListener(listener),
     checkListenerToken(io.listenerToken()),
     checkLatestVersion(PLUGIN_VERSION, latest),

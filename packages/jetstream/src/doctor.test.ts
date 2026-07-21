@@ -9,6 +9,8 @@ import {
   checkLatestVersion,
   checkProjectsConfig,
   checkListenerToken,
+  checkOrphanedKeys,
+  readDeclaredActions,
   checkUsageStatusline,
   usageStatuslineWired,
   commandOnPath,
@@ -30,6 +32,7 @@ describe('runDoctor listener check', () => {
     boardLayout: () => null,
     latestVersion: async () => null,
     listenerToken: () => ({ present: true, private: true }),
+    declaredActions: () => [],
   });
   it('warns when the hook listener is not responding (the silent dark-board case)', async () => {
     const listener = (await runDoctor(io(false))).find((r) => /listener/i.test(r.message));
@@ -190,6 +193,7 @@ describe('checkBoardKeys', () => {
     profileName: 'My Board',
     deck: DECK_MODELS[0]!,
     keys: new Map(uuids.map((uuid, i) => [`${i},0`, { uuid, settings: null, label: '' }])),
+    allUuids: uuids,
   });
 
   it('warns (fleet fix) when no board is detected', () => {
@@ -244,13 +248,98 @@ describe('checkListenerToken', () => {
     expect(r.message).toMatch(/chmod 600/);
   });
 
-  it('keeps warning for the whole grace period — an accepted untokened request is the open door', () => {
-    // While ENFORCE_TOKEN is false the token is a speed bump, not a gate, and doctor must say so.
-    // When the flag flips, this same input becomes the ok case; both arms are asserted here so the
-    // flip is a one-line change with a test that already covers it.
+  it('does NOT warn during the grace period — nothing the user does could clear it', () => {
+    // A warning whose prescribed command cannot change the outcome trains people to ignore
+    // doctor. The grace period is expected state, so it reports ok and says no action is needed;
+    // when ENFORCE_TOKEN flips, the same input stays ok with the stricter wording.
     const r = checkListenerToken({ present: true, private: true });
-    expect(r.status).toBe(ENFORCE_TOKEN ? 'ok' : 'warn');
-    if (!ENFORCE_TOKEN) expect(r.message).toMatch(/grace period/);
+    expect(r.status).toBe('ok');
+    expect(r.message).toMatch(ENFORCE_TOKEN ? /required/ : /no action needed/);
+  });
+});
+
+describe('checkOrphanedKeys', () => {
+  const board = (uuids: Record<string, string>): BoardLayout => ({
+    profileName: 'Jetstream',
+    deck: DECK_MODELS[0]!,
+    keys: new Map(
+      Object.entries(uuids).map(([coord, uuid]) => [coord, { uuid, settings: null, label: '' }]),
+    ),
+    allUuids: Object.values(uuids),
+  });
+  const DECLARED = ['gg.pim.jetstream.project', 'gg.pim.jetstream.slot', 'gg.pim.jetstream.usage'];
+
+  // The real case: v2.0.0 deleted the CI and Launch actions, but Stream Deck keeps the keys —
+  // they render as blank squares that do nothing, and checkBoardKeys counts them as healthy
+  // because the UUID still starts with gg.pim.jetstream.
+  it('names the coordinates of keys whose action this build no longer declares', () => {
+    const r = checkOrphanedKeys(
+      board({
+        '0,0': 'gg.pim.jetstream.project',
+        '1,3': 'gg.pim.jetstream.ci', // d2
+        '2,3': 'gg.pim.jetstream.launch', // d3
+      }),
+      DECLARED,
+    );
+    expect(r.status).toBe('warn');
+    expect(r.message).toContain('d2');
+    expect(r.message).toContain('d3');
+    expect(r.message).toMatch(/2 key/);
+  });
+
+  it('ignores keys from OTHER plugins — they are not ours to judge', () => {
+    const r = checkOrphanedKeys(
+      board({ '0,0': 'com.elgato.streamdeck.system.text', '1,0': 'gg.pim.jetstream.slot' }),
+      DECLARED,
+    );
+    expect(r.status).toBe('ok');
+  });
+
+  it('stays silent when the manifest could not be read, rather than flagging every key', () => {
+    // An empty `declared` means "cannot tell", not "nothing is declared" — treating it as the
+    // latter would warn about the entire board on any manifest read failure.
+    expect(checkOrphanedKeys(board({ '0,0': 'gg.pim.jetstream.project' }), []).status).toBe('ok');
+    expect(checkOrphanedKeys(null, DECLARED).status).toBe('ok');
+  });
+
+  it('counts an orphan hidden on another page behind a live key at the same coordinate', () => {
+    // `keys` keeps only the first page's key per coordinate, so page 2's dead key is invisible
+    // there. Without scanning allUuids this reported a clean board while a blank key sat on page 2.
+    const b = board({ '0,0': 'gg.pim.jetstream.project' });
+    b.allUuids = ['gg.pim.jetstream.project', 'gg.pim.jetstream.ci'];
+    const r = checkOrphanedKeys(b, DECLARED);
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/another page/);
+  });
+
+  it('is ok on a healthy board', () => {
+    expect(checkOrphanedKeys(board({ '0,0': 'gg.pim.jetstream.project' }), DECLARED).status).toBe('ok');
+  });
+});
+
+describe('readDeclaredActions', () => {
+  it("reads the plugin's own action UUIDs, and degrades to [] on any failure", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-doctor-'));
+    const good = join(dir, 'manifest.json');
+    writeFileSync(good, JSON.stringify({ Actions: [{ UUID: 'a' }, { UUID: 'b' }, { nope: 1 }] }));
+    expect(readDeclaredActions(good)).toEqual(['a', 'b']);
+
+    const bad = join(dir, 'bad.json');
+    writeFileSync(bad, '{ not json');
+    expect(readDeclaredActions(bad)).toEqual([]);
+    expect(readDeclaredActions(join(dir, 'absent.json'))).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('agrees with the REAL manifest this repo ships', () => {
+    // Guards the shape assumption: if Elgato ever changes `Actions` from an array, the check
+    // would silently start returning [] and never warn again.
+    const real = readDeclaredActions(
+      new URL('../gg.pim.jetstream.sdPlugin/manifest.json', import.meta.url).pathname,
+    );
+    expect(real.length).toBeGreaterThan(5);
+    expect(real).toContain('gg.pim.jetstream.slot');
+    expect(real).not.toContain('gg.pim.jetstream.ci'); // removed in v2.0.0
   });
 });
 

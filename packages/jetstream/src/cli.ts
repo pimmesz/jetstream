@@ -288,9 +288,14 @@ export async function run(argv: string[], binDir: string): Promise<number> {
                 );
                 return;
               }
+              // Say WHY and what happens next. "Not on your profile" reads like a failure; the
+              // real cause is that a live edit can only retarget a key that already exists (the
+              // Stream Deck API cannot create one), and the profile below genuinely fixes it —
+              // it merges your current board with the new keys, so nothing is lost.
               chatIo.say(
-                `\n(Couldn't apply ${failed.map((r) => r.coord).join(', ')} live — those keys aren't on your active ` +
-                  'Jetstream profile. Generating an importable profile instead.)',
+                `\n(${failed.map((r) => r.coord).join(', ')} has no key yet, and a live edit can only ` +
+                  'change a key that already exists. Generating an importable profile instead — it keeps ' +
+                  'your current board and adds these; double-click it to apply.)',
               );
             }
             // Fallback: rebuild + import the whole board (structural change, plugin down, or a live miss).

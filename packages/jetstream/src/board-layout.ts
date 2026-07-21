@@ -15,8 +15,11 @@ export interface BoardKey {
 export interface BoardLayout {
   profileName: string;
   deck: DeckModel;
-  /** `${col},${row}` → the placed key. */
+  /** `${col},${row}` → the placed key. FIRST page wins per coordinate. */
   keys: Map<string, BoardKey>;
+  /** Every action UUID on every page, undeduplicated — so a health check can see a key `keys`
+   * hides (a dead key on page 2 sitting behind a live one at the same coordinate on page 1). */
+  allUuids: string[];
 }
 
 const JETSTREAM_LABELS: Record<string, string> = {
@@ -114,9 +117,14 @@ function defaultProfilesDir(): string {
 }
 
 /** Merge every keypad controller/page of a .sdProfile into one `col,row` → placed action map. */
-function readProfileActions(
-  profileDir: string,
-): { model: string; actions: Record<string, { UUID?: unknown; Settings?: unknown }> } | null {
+function readProfileActions(profileDir: string): {
+  model: string;
+  actions: Record<string, { UUID?: unknown; Settings?: unknown }>;
+  /** EVERY key across EVERY page, undeduplicated. `actions` keeps only the first page's key per
+   * coordinate — right for "what does the board look like", wrong for "is anything broken
+   * anywhere", since a dead key on page 2 hides behind a live one on page 1. */
+  allUuids: string[];
+} | null {
   let device: { Device?: { Model?: unknown } };
   try {
     device = JSON.parse(readFileSync(join(profileDir, 'manifest.json'), 'utf8'));
@@ -125,6 +133,7 @@ function readProfileActions(
   }
   const model = typeof device.Device?.Model === 'string' ? device.Device.Model : '';
   const actions: Record<string, { UUID?: unknown; Settings?: unknown }> = {};
+  const allUuids: string[] = [];
   const pagesDir = join(profileDir, 'Profiles');
   if (existsSync(pagesDir)) {
     for (const page of readdirSync(pagesDir)) {
@@ -136,6 +145,8 @@ function readProfileActions(
         };
         for (const controller of parsed.Controllers ?? []) {
           for (const [coord, act] of Object.entries(controller.Actions ?? {})) {
+            const uuid = (act as { UUID?: unknown }).UUID;
+            if (typeof uuid === 'string') allUuids.push(uuid);
             if (!(coord in actions)) actions[coord] = act as { UUID?: unknown; Settings?: unknown };
           }
         }
@@ -144,7 +155,7 @@ function readProfileActions(
       }
     }
   }
-  return { model, actions };
+  return { model, actions, allUuids };
 }
 
 /** UUIDs Stream Deck currently marks as the preferred/active profile (per device), lowercased. macOS
@@ -289,7 +300,7 @@ export function readBoardLayout(
     // (e.g. a Spotify hotkey page) must not masquerade as your board and get rebuilt by chat.
     const score = (active.has(uuid) && jetstreamKeys > 0 ? 1_000_000 : 0) + configured;
     if (score > bestScore) {
-      best = { profileName: name, deck, keys };
+      best = { profileName: name, deck, keys, allUuids: read.allUuids };
       bestScore = score;
     }
   }
