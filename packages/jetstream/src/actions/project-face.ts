@@ -91,8 +91,8 @@ function projectGlyph(i: ProjectFaceInput, stalled: boolean): string | undefined
   return undefined;
 }
 
-/** The line under the label: `Bash · 12m` (working), `+120/-40 · done 4m` (finished), `approve on deck` /
- * `answer in Claude` (needs you — deck-answerable or not), or the plain status word. */
+/** The line under the label: `Bash · 12m` (working), `done 4m · +120/-40` (finished), `failed 4m` (a died turn),
+ * `approve on deck` / `answer in Claude` (needs you — deck-answerable or not), or the plain status word. */
 function projectSub(i: ProjectFaceInput, stalled: boolean): { sub: string } | Record<string, never> {
   // Name the place, not just the mood. `answer` never said where, and `approve?` read as though
   // pressing THIS key approves — it does not; the separate Approve key does.

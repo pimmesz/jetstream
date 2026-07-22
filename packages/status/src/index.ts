@@ -57,7 +57,7 @@ export interface HookEvent {
  * Claude fires Notification for several unrelated things, and treating them all as "needs you" made
  * amber meaningless: the most frequent one by far is `idle_prompt`, a 60-SECOND IDLE NUDGE sent
  * after a turn has already finished. That flipped a resting `done` key to amber "answer" a minute
- * after every turn — destroying the `+120/-40 · done 4m` badge with it (the diff cache is dropped
+ * after every turn — destroying the `done 4m · +120/-40` badge with it (the diff cache is dropped
  * when status leaves 'done') and outranking genuinely-working repos, since needsInput outranks
  * working. A repo with subagents actively running would sit there claiming it needed you.
  *
@@ -365,7 +365,7 @@ function effectiveStatus(session: SessionState, now: number): ProjectStatus {
 }
 
 /** Collapse all live sessions into one status per configured project. A project takes
- * its highest-priority session (needsInput > working > done > idle), earliest `since`
+ * its highest-priority session (needsInput > failed > working > done > idle), earliest `since`
  * within that status — so `working` shows how long it's been busy. Pure given `now`
  * (used only to age out stale in-flight subagents). */
 export function statusByProject(

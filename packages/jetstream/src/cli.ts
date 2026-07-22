@@ -46,7 +46,7 @@ Commands:
   hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
     [--replace-statusline]        …and take the statusline slot from another tool, so the
                                   usage gauge works (your statusline is kept without this)
-  doctor                          Read-only health check — why isn't my board lighting up?
+  doctor [--json]                 Read-only health check — why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps
   board                           Print your current Stream Deck board as a coordinate map (a1…hN)
   update                          Update the npm package + reinstall the plugin (npm CLI)

@@ -1,10 +1,10 @@
 import { request } from 'node:http';
-import { DEFAULT_PORT } from './server';
+import { resolvedPort } from './server';
 import { readToken, TOKEN_HEADER } from './listener-token';
 
-/** The loopback port the plugin's hook listener binds — env override or the shared default, so the
- * CLI and plugin can never drift. */
-const port = (): number => Number(process.env.JETSTREAM_PORT) || DEFAULT_PORT;
+/** The loopback port the plugin's hook listener binds — the shared `resolvedPort()` so the CLI,
+ * the plugin bind, and doctor's report can never drift. */
+const port = resolvedPort;
 
 /** Is the Jetstream plugin's hook listener up? A GET /health preflight so a live edit fails fast
  * with an actionable message instead of hanging on a dead port. */

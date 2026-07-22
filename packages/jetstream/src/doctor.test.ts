@@ -43,6 +43,19 @@ describe('runDoctor listener check', () => {
     const listener = (await runDoctor(io(true))).find((r) => /listener/i.test(r.message));
     expect(listener?.status).toBe('ok');
   });
+
+  it('reports the resolved port from JETSTREAM_PORT, not a hardcoded 41321', async () => {
+    const prev = process.env.JETSTREAM_PORT;
+    process.env.JETSTREAM_PORT = '55123';
+    try {
+      const listener = (await runDoctor(io(false))).find((r) => /listener/i.test(r.message));
+      expect(listener?.message).toContain('127.0.0.1:55123');
+      expect(listener?.message).not.toContain('41321');
+    } finally {
+      if (prev === undefined) delete process.env.JETSTREAM_PORT;
+      else process.env.JETSTREAM_PORT = prev;
+    }
+  });
 });
 
 describe('checkAnthropicEnv', () => {

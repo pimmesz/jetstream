@@ -10,8 +10,8 @@
 //
 // Two notable details: the version for the
 // JSON-LD comes from packages/jetstream/package.json (the published package, not
-// the private workspace root, which is pinned at 0.0.0), and the site lives at a
-// GitHub Pages project subpath rather than a custom domain.
+// the private workspace root, which is pinned at 0.0.0), and the site is served from its
+// custom domain (getjetstream.dev, via docs/CNAME) rather than the GitHub Pages subpath.
 
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -25,13 +25,13 @@ const PAGE = join(root, 'docs', 'index.html');
 const LLMS = join(root, 'docs', 'llms.txt');
 const PKG = join(root, 'packages', 'jetstream', 'package.json');
 const REPO = 'pimmesz/jetstream';
-const SITE = 'https://pimmesz.github.io/jetstream/';
+const SITE = 'https://getjetstream.dev/';
 const START = '<!-- README:START -->';
 const END = '<!-- README:END -->';
 const SUMMARY =
   'Full Claude Code control on your Elgato Stream Deck. One key per project, glowing with that ' +
   "project's live status — working, needs-you, done — plus an attention doorbell, usage gauges, " +
-  'deck-answerable permission prompts, and preset headless launches. Build the whole board by ' +
+  'deck-answerable permission prompts. Build the whole board by ' +
   'talking to it.';
 
 // 1. Read the README and drop the top matter (title, tagline): the mirror starts

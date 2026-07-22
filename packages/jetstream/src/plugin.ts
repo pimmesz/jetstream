@@ -8,7 +8,7 @@ import { forgetPainted } from './paint';
 import { permissions } from './permissions';
 import { config } from './config';
 import { readConfigFile } from './projects-config';
-import { DEFAULT_PORT, startHookServer, type HookServerHandlers } from './server';
+import { resolvedPort, startHookServer, type HookServerHandlers } from './server';
 import { setListenerBound } from './listener-status';
 import { ensureToken, isAuthorized } from './listener-token';
 import { discoverClaudeSessions } from './discover';
@@ -162,7 +162,7 @@ function pidOf(raw: unknown): number | undefined {
 void autoWireHooks({ binDir: dirname(fileURLToPath(import.meta.url)), logger: streamDeck.logger });
 
 // The loopback port must match the hook scripts (separate processes): env or default.
-const port = Number(process.env.JETSTREAM_PORT) || DEFAULT_PORT;
+const port = resolvedPort();
 
 // The shared secret the hooks and the CLI authenticate with. Generated here on first run because
 // the plugin is the one component guaranteed to start; a hook only ever reads it. If the file

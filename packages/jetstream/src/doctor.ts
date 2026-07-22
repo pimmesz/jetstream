@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { defaultSettingsPath } from './hooks-install';
 import { parseProjectsConfig, resolveProjectsConfigPath } from './projects-config';
 import { pluginAlive } from './slot-client';
-import { PLUGIN_VERSION } from './server';
+import { PLUGIN_VERSION, resolvedPort } from './server';
 import { readBoardLayout, type BoardLayout } from './board-layout';
 import { coordLabel } from './actions/coord';
 import { ENFORCE_TOKEN, listenerTokenPath, readToken, tokenIsPrivate } from './listener-token';
@@ -418,7 +418,7 @@ export function defaultDoctorIO(): DoctorIO {
 
 /**
  * The loopback listener answers hook events, permission decisions, and live board edits, so
- * anything that can reach 127.0.0.1:41321 can drive your deck. It is authenticated by a shared
+ * anything that can reach 127.0.0.1 (the JETSTREAM_PORT, default 41321) can drive your deck. It is authenticated by a shared
  * token — but for two releases an untokened request is still accepted, so hooks installed by an
  * older Jetstream keep working. Warn for that whole window: while it is open, the token is a
  * speed bump, not a gate.
@@ -455,12 +455,12 @@ export function checkListenerToken(token: { present: boolean; private: boolean }
  * bound (e.g. an orphaned prior process held the port). Probe it so doctor stops reporting all-green
  * on a dark board. */
 function checkListener(alive: boolean): CheckResult {
+  const addr = `127.0.0.1:${resolvedPort()}`;
   return alive
-    ? { status: 'ok', message: 'plugin hook listener responding on 127.0.0.1:41321' }
+    ? { status: 'ok', message: `plugin hook listener responding on ${addr}` }
     : {
         status: 'warn',
-        message:
-          'plugin hook listener NOT responding on 127.0.0.1:41321 — the board will not update. Is the Stream Deck app running with Jetstream installed? (restart it if so.)',
+        message: `plugin hook listener NOT responding on ${addr} — the board will not update. Is the Stream Deck app running with Jetstream installed? (restart it if so.)`,
       };
 }
 

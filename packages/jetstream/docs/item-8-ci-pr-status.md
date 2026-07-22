@@ -1,5 +1,7 @@
 # Jetstream v2 — Item #8: CI/PR status key
 
+> **Superseded — BUILT, then REMOVED 2026-07-20.** Build record only; do not re-propose. See the removal list in SPEC.md.
+
 **Status: BUILT.** A v2 Opus-tier item, first link of the roadmap's "own the loop past done"
 bet (diff badge → **CI/PR status** → ship-as-PR). Closes the gap between a green "done" key
 and an actually-mergeable PR. Built the pull design below (standalone `CiKey` singleton +

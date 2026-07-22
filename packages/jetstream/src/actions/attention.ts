@@ -9,18 +9,18 @@ import { paintKey } from '../paint';
 import { openProject } from '../switchto';
 
 /**
- * The doorbell: dim until ANY project needs input, then amber with the project's
- * name (and a +N when several are waiting). After `escalateAfterSec` unacknowledged,
+ * The doorbell: dim until a project needs you — amber for a waiting turn, magenta for a turn
+ * that DIED (`failed`) — with the project's name (and a +N when several are waiting). After `escalateAfterSec` unacknowledged,
  * it FLASHES (pulses colour) so it can't be missed. Short press → jump to the neediest;
- * LONG press → snooze the flash for a while (the amber "needs you" face stays, the pulsing
- * stops) so a genuinely-blocked repo can't flash at you forever (the 3am problem).
+ * LONG press → snooze the flash for a while (the face stays — amber for waiting, magenta for
+ * failed — only the pulsing stops) so a genuinely-blocked repo can't flash at you forever (the 3am problem).
  */
 @action({ UUID: 'gg.pim.jetstream.attention' })
 export class AttentionKey extends SingletonAction {
   private flashOn = false;
   private flashTimer: ReturnType<typeof setInterval> | undefined;
   private pressAt = new Map<string, number>();
-  /** Snooze silences the escalation flash for this long after a long-press. The amber face and
+  /** Snooze silences the escalation flash for this long after a long-press. The face and
    * the jump-to-project press stay live — it only quiets the pulsing. Fixed (not a setting) to
    * keep it simple; long enough to cover a call or a meeting. */
   private static readonly SNOOZE_MS = 60 * 60_000;
@@ -134,7 +134,7 @@ export function pressAction(
 }
 
 /** The doorbell flashes only when something has waited past the escalation threshold AND the user
- * hasn't snoozed it — a snooze keeps the amber "needs you" face but stops the pulsing. Pure. */
+ * hasn't snoozed it — a snooze keeps the face but stops the pulsing. Pure. */
 export function shouldFlash(
   oldestSince: number | undefined,
   now: number,

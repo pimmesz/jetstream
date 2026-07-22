@@ -6,14 +6,18 @@ usage gauges, and deck-answerable permission prompts. Add app / URL / command sh
 give any key a colour, emoji, or the app's real logo, and **build your whole board by talking
 to it** (`jetstream chat`) — live, no re-import. See [SPEC.md](./packages/jetstream/SPEC.md).
 
-## Install (CLI-first — macOS or Windows)
+## Install (CLI-first — macOS)
+
+Requires macOS 12+ and the Stream Deck app 6.9+. Windows isn't supported yet (the plugin manifest is macOS-only).
 
 1. **Claude Code**, logged in with your subscription (`claude` → `/login`). Leave
    `ANTHROPIC_API_KEY` unset: Jetstream strips it from anything it spawns so a keypress
    can never silently bill the metered API.
 2. **Jetstream**: `npm i -g @pimmesz/jetstream`, then
    `jetstream install` — it hands the packed plugin to the Stream Deck app; approve
-   the install prompt there. (Updating? Re-run the same two commands.) That's it — on **first
+   the install prompt there. (Updating? `jetstream update` — it fetches the latest published package from
+   npmjs.org and reinstalls the plugin, so a bare `npm i -g` behind a stale mirror can't strand you on an old
+   version; override the registry with `JETSTREAM_REGISTRY`.) That's it — on **first
    launch** (once, recorded in a marker next to `projects.json`) the plugin wires two hooks
    into `~/.claude/settings.json`, backing the file up first: the **per-project status
    hook** (lights the board) and the **permission hook** (lets Approve/Deny keys answer
@@ -21,7 +25,8 @@ to it** (`jetstream chat`) — live, no re-import. See [SPEC.md](./packages/jets
    falls back to Claude's own dialog after ~90s). No terminal step. Restart any running
    `claude` sessions to pick the hooks up. Remove the hooks from `settings.json` and they
    stay removed — re-wire any time with `jetstream setup`. The usage/statusline hook is
-   installed automatically on first launch if you have no statusline yet (re-wirable via the CLI commands below).
+   installed automatically on first launch if you have no statusline yet; if another tool already owns your
+   statusline, hand the slot over with `jetstream hooks install --replace-statusline` (otherwise the usage gauge stays blank).
 
    With the plugin installed (step 2 above), set up your fleet — two ways, both via the `jetstream` CLI:
 
@@ -42,33 +47,36 @@ to it** (`jetstream chat`) — live, no re-import. See [SPEC.md](./packages/jets
    by hand always works.)
 
    The smaller pieces still exist: `setup` (hooks + a starter `projects.json` template),
-   `hooks install` (only the hooks; the old `bin/hooks-install.js` still works, and
-   `--tool-detail` adds the active-tool hooks), and `doctor` (read-only health check for
+   `hooks install` (only the hooks; the old `bin/hooks-install.js` still works; `--tool-detail` adds the
+   active-tool hooks, `--replace-statusline` takes the statusline slot from another tool so the usage gauge
+   works), `update` (bump + reinstall in one step), and `doctor` (read-only health check for
    when the board isn't lighting up).
 
 Drag keys onto your deck: **Project status** (set a name + project path per key;
 short-press opens the project folder in your editor (VS Code → Cursor → `$EDITOR`, else the OS
 folder opener), **long-press interrupts** the session; done keys show the
-change size, `+120/-40 · done 4m`), **Fleet roll-up** (one always-visible key counting the whole
+change size, `done 4m · +120/-40`), **Fleet roll-up** (one always-visible key counting the whole
 fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
 answerable even when projects outnumber keys), **Attention** (flashes if a request goes
 unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`),
 **Approve / Deny** (place one of each — they answer
 the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude
-falls back to its normal dialog), and **Jetstream settings** (press to toggle colour-blind mode;
-its inspector sets escalation/long-press/refresh). Amber keys distinguish a deck-answerable prompt
-(`!`, `approve?`) from an open question you must type (`?`, `answer`).
+falls back to its normal dialog), and **Jetstream settings** (a press opens `jetstream doctor`;
+its inspector toggles colour-blind mode and sets escalation/long-press/refresh). A waiting Project key reads
+`approve on deck` when you can answer it from the deck, or `answer in Claude` when the question needs a typed reply.
 
-Every state also carries a **glyph** (`⋯` working, `!` needs-you, `✓` done), so the board reads
-without relying on colour — and the settings key's high-contrast theme swaps the red/green pair
-for orange/blue
+The board reads without relying on colour: each key's sub-line names its state in words (`done 4m`,
+`approve on deck`), and a corner glyph marks the exceptions — a stall, a failure, or a working key showing
+its tool (`Bash · 12m`, where the glyph carries "working"). The settings key's high-contrast theme also
+swaps the red/green pair for orange/blue.
 
 ## Works on any Stream Deck
 
 Nothing is device-specific — you drag as many keys as your device has (Mini 6, MK.2 15, XL 32,
 Neo). No fixed layout is required — drag keys wherever you like, or let `jetstream init` prebuild
 a starting layout (Mini / MK.2 / XL); each **Project** key holds its own name+path, so everyone's
-board is their own. (Stream Deck **+** dials / touch strip aren't used yet — a future item.)
+board is their own. (On the Stream Deck **+**, drag the **Fleet dial** onto an encoder: rotate scrubs the
+fleet, the touchscreen shows the current project, a tap or short-press opens it, a long-touch or long-press interrupts.)
 
 ## Config file (optional)
 
@@ -131,8 +139,9 @@ keys you'd let an AI press.
 ## Develop
 
 ```sh
-pnpm --filter '@pimmesz/jetstream' run check    # typecheck + tests
-pnpm --filter '@pimmesz/jetstream' run build    # bundle into the .sdPlugin
+pnpm install                                    # install workspace deps
+pnpm check                                      # build the shared cores, then typecheck + test every package
+pnpm build                                      # build:cores + bundle the plugin into the .sdPlugin
 pnpm --filter '@pimmesz/jetstream' run validate # Elgato manifest validation
-pnpm --filter '@pimmesz/jetstream' run pack     # produce the .streamDeckPlugin
+pnpm --filter '@pimmesz/jetstream' run repack   # rebuild, validate, and produce the .streamDeckPlugin (pack --force)
 ```

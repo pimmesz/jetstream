@@ -7,15 +7,15 @@ ready-to-go submission kit.
 
 ## What's already done (in the repo)
 
-- `manifest.json` — `Version: 1.0.0.0`, `URL` set, passes `streamdeck validate`.
+- `manifest.json` — `Version` is auto-bumped by `ci.yml` on release (read the current manifest before uploading; never hand-set it lower), `URL` set, passes `streamdeck validate`.
 - Build + pack produce the submittable file.
 
 ## Produce the plugin file
 
 ```sh
-pnpm --filter '@pimmesz/jetstream' run build
-pnpm --filter '@pimmesz/jetstream' run validate     # must be green
-pnpm --filter '@pimmesz/jetstream' run pack          # → packages/jetstream/gg.pim.jetstream.streamDeckPlugin
+pnpm build                                           # build:cores + bundle the plugin
+pnpm --filter '@pimmesz/jetstream' run validate      # must be green
+pnpm --filter '@pimmesz/jetstream' run repack        # rebuild + validate + pack --force → packages/jetstream/gg.pim.jetstream.streamDeckPlugin
 ```
 
 Upload `packages/jetstream/gg.pim.jetstream.streamDeckPlugin` (~180 KB) in the Console.
@@ -115,13 +115,13 @@ Future versions: list ONLY what changed since the last release, e.g.
 ## Shipping updates later
 
 Each update is a **new upload of a higher-`Version` `.streamDeckPlugin`** through the same
-Console, re-reviewed. Bump `manifest.json`'s `Version` (4-part, e.g. `1.0.1.0`), rebuild, pack,
+Console, re-reviewed. The `Version` is bumped by `ci.yml` on release — rebuild + pack the current manifest (don't hand-bump it),
 upload. There is no automated release path — the Marketplace is manual by design.
 
 ## Pre-submit checklist
 
 - [x] `streamdeck validate` green
-- [x] `Version` ≥ `1.0.0.0`, `URL` set
+- [x] `Version` present (auto-bumped by `ci.yml`), `URL` set
 - [x] packed `.streamDeckPlugin` produced
 - [ ] listing icon, marquee, 2–5 screenshots produced (real imagery)
 - [ ] Maker account + product created, UUID `gg.pim.jetstream`
@@ -132,4 +132,4 @@ upload. There is no automated release path — the Marketplace is manual by desi
 Windows paths (profile open via `explorer`, `.cmd` CLI resolution) but they're not
 hardware-tested, so Windows is deliberately excluded to avoid a review rejection for a
 Windows-only bug. To add it back once verified on Windows: append a second `OS` entry
-(`{ "Platform": "windows", "MinimumVersion": "10" }`), re-validate, bump `Version`, re-pack.
+(`{ "Platform": "windows", "MinimumVersion": "10" }`), re-validate and re-pack (the release `Version` bump rides `ci.yml`).

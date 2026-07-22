@@ -45,7 +45,7 @@ export function darkReason(): string {
 /**
  * One always-visible roll-up key so the fleet is legible even when projects outnumber
  * keys: it shows the live counts and takes the colour of the WORST state present
- * (needsInput > working > done > idle), so "is anything waiting on me?" is answerable at
+ * (needsInput > failed > working > done > idle), so "is anything waiting on me?" is answerable at
  * a glance. When the board is DARK (no live sessions) it becomes a self-diagnosis: it names
  * the likely reason (empty fleet / hooks not wired) and a press explains it on the face.
  */

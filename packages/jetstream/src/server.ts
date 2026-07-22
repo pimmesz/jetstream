@@ -1,6 +1,10 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 
 export const DEFAULT_PORT = 41321;
+
+/** The loopback port the hook listener binds — the JETSTREAM_PORT override or the shared default.
+ * One source of truth so the plugin that binds, the CLI that probes, and doctor's report all agree. */
+export const resolvedPort = (): number => Number(process.env.JETSTREAM_PORT) || DEFAULT_PORT;
 const MAX_BODY_BYTES = 256 * 1024;
 
 // esbuild bakes the npm package version in (scripts/build.mjs `define`); under vitest/tsc there is

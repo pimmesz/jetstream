@@ -5,7 +5,7 @@
   "Version": "2.1.0.0",
   "Author": "pimmesz",
   "URL": "https://github.com/pimmesz/jetstream",
-  "Description": "Full Claude control on your Stream Deck: a live per-project status board (working / needs you / done), an attention doorbell, usage gauges, and preset headless launches.",
+  "Description": "Full Claude control on your Stream Deck: a live per-project status board (working / needs you / done), an attention doorbell, usage gauges, and deck-answerable permission prompts.",
   "Category": "Jetstream",
   "CategoryIcon": "imgs/plugin",
   "Icon": "imgs/plugin",
@@ -100,7 +100,7 @@
       "UUID": "gg.pim.jetstream.attention",
       "Name": "Attention",
       "Icon": "imgs/attention",
-      "Tooltip": "Lights up when any project's Claude needs your input. Press to jump there.",
+      "Tooltip": "Lights up amber when a project's Claude needs your input, magenta when a turn failed. Press to jump there.",
       "Controllers": [
         "Keypad"
       ],
@@ -143,7 +143,7 @@
       "UUID": "gg.pim.jetstream.settings",
       "Name": "Jetstream settings",
       "Icon": "imgs/settings",
-      "Tooltip": "Plugin settings + manage your fleet (add/scan repos, no terminal) + a health check + switch to the Jetstream layout. Press to toggle high-contrast colours.",
+      "Tooltip": "Plugin settings + manage your fleet (add/scan repos, no terminal) + a health check + switch to the Jetstream layout. A press opens jetstream doctor; toggle high-contrast colours in the inspector.",
       "PropertyInspectorPath": "ui/settings.html",
       "Controllers": [
         "Keypad"

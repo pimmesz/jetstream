@@ -455,7 +455,7 @@ describe('summarize / worstStatus (fleet roll-up)', () => {
     });
   });
 
-  it('worstStatus picks the highest priority present (needsInput > working > done > idle)', () => {
+  it('worstStatus picks the highest priority present (needsInput > failed > working > done > idle)', () => {
     expect(worstStatus(by)).toBe('needsInput');
     expect(worstStatus({ a: { status: 'working' }, b: { status: 'done' } })).toBe('working');
     expect(worstStatus({ a: { status: 'done' }, b: { status: 'idle' } })).toBe('done');

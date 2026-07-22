@@ -1,5 +1,7 @@
 # Jetstream v1.3 — Item G: terminal onboarding (CLI + config-file projects)
 
+> **Superseded — historical build record.** Jetstream now ALSO ships via npm with a `jetstream` PATH bin (see `package.json`); the "ships via the Marketplace, NOT npm / no PATH command / do not add an npm `bin`" notes below describe the original Marketplace-only design, not the current state.
+
 **Status: BUILT (G1–G3).** Items A–F of v1.3 shipped; G was the largest deferred piece and is
 now implemented — CLI consolidation (`jetstream` = `hooks install` / `doctor` / `setup`, with
 `bin/hooks-install.js` kept as a thin alias), config-file projects (`parseProjectsConfig` +
