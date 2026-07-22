@@ -1,5 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { coordToCell, isHttpUrl, parseSlotCommand } from './slot-command';
+import { coordToCell, isHttpUrl, isSafeAppTarget, parseSlotCommand } from './slot-command';
+
+describe('isSafeAppTarget', () => {
+  it('rejects only empty targets and opener flags, so apps, files and folders all open', () => {
+    expect(isSafeAppTarget('/Applications/Telegram.app')).toBe(true);
+    expect(isSafeAppTarget('/Users/me/Documents')).toBe(true); // native Open migrates folders through here
+    expect(isSafeAppTarget('/Users/me/report.pdf')).toBe(true);
+    expect(isSafeAppTarget('C:\\Apps\\x.exe')).toBe(true);
+    expect(isSafeAppTarget('-a')).toBe(false); // never let the opener parse the target as a flag
+    expect(isSafeAppTarget('')).toBe(false);
+    // On Windows, explorer treats a leading '/' as a switch (/select, /root), so reject it there.
+    expect(isSafeAppTarget('/select,C:\\secret', 'win32')).toBe(false);
+    expect(isSafeAppTarget('C:\\Apps\\x.exe', 'win32')).toBe(true);
+  });
+  it('is wired into parseSlotCommand — a flag-like app on a valid coordinate is rejected', () => {
+    expect(parseSlotCommand({ coord: 'a8', kind: 'app', app: '-a' })).toBeNull();
+    expect(parseSlotCommand({ coord: 'a8', kind: 'app', app: '/Applications/Telegram.app' })).not.toBeNull();
+  });
+});
 
 describe('coordToCell', () => {
   it('inverts a coordinate label (row = letter, col = 1-indexed)', () => {

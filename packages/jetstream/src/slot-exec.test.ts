@@ -14,6 +14,10 @@ describe('execPlan', () => {
     expect(execPlan({ kind: 'app', app: '/opt/x' }, 'linux')).toEqual({ cmd: 'xdg-open', args: ['/opt/x'] });
   });
 
+  it('rejects a flag-like app target (isSafeAppTarget guard) so the opener never gets an option', () => {
+    expect(execPlan({ kind: 'app', app: '-a' }, 'darwin')).toBeNull();
+  });
+
   it('opens only http(s) URLs', () => {
     expect(execPlan({ kind: 'url', url: 'https://github.com' }, 'darwin')).toEqual({
       cmd: 'open',

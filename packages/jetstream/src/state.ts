@@ -37,6 +37,9 @@ export class Board {
   private registry = new Map<string, ProjectEntry>();
   private seeded = new Map<string, ProjectEntry>();
   private sessions = new Map<string, { pid: number; cwd: string }>();
+  /** Cap the pid map so an unauthenticated /hook flood of unique session ids can't grow it (and the
+   * persisted checkpoint) without bound — evict oldest-inserted, mirroring the status map's SESSION_CAP. */
+  private static readonly SESSION_PID_CAP = 256;
   /** Liveness probes are blocking `ps` calls, so a sweep is bounded per tick and resumes from
    * `reapCursor` on the next one — see reapDeadSessions. */
   private static readonly MAX_REAP_PROBES_PER_TICK = 32;
@@ -86,7 +89,15 @@ export class Board {
    * and so a restart can reconcile persisted state against live processes. */
   notePid(sessionId: string, pid: number, cwd: string): void {
     if (sessionId && Number.isInteger(pid) && pid > 1) {
+      // In-place set keeps insertion order stable (reapDeadSessions round-robins over it). Bound the
+      // map (and the checkpoint) against a flood of unique session ids, evicting oldest-inserted — but
+      // never the entry we just wrote (only reachable if a restore left the map already over cap).
       this.sessions.set(sessionId, { pid, cwd });
+      while (this.sessions.size > Board.SESSION_PID_CAP) {
+        const oldest = this.sessions.keys().next().value;
+        if (oldest === undefined || oldest === sessionId) break;
+        this.sessions.delete(oldest);
+      }
       this.persist();
     }
   }

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { augmentedPath } from './exec-path';
-import { isHttpUrl } from './slot-command';
+import { isHttpUrl, isSafeAppTarget } from './slot-command';
 import type { SlotSettings } from './actions/slot';
 
 /** What a configured slot spawns on press: argv[0] + a pre-split argument vector — NEVER a shell
@@ -25,7 +25,9 @@ const opener = (platform: NodeJS.Platform): string =>
 export function execPlan(s: SlotSettings, platform: NodeJS.Platform = process.platform): ExecPlan | null {
   switch (s.kind) {
     case 'app':
-      return s.app ? { cmd: opener(platform), args: [s.app] } : null;
+      // Guard here too (not only at parse) so even a persisted/planted bad `app` can't launch — the
+      // same defence-in-depth the `url` case gets from isHttpUrl.
+      return s.app && isSafeAppTarget(s.app, platform) ? { cmd: opener(platform), args: [s.app] } : null;
     case 'url':
       return s.url && isHttpUrl(s.url) ? { cmd: opener(platform), args: [s.url] } : null;
     case 'run':

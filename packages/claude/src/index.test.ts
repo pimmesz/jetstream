@@ -223,6 +223,37 @@ describe('runClaude', () => {
     expect((await pending).isError).toBe(true);
   });
 
+  // The money guard at the SPAWN boundary: sanitizeEnv is unit-tested above, but that alone can't
+  // prove runClaude actually hands the child a sanitized env — capture what spawnFn receives.
+  // Drop the sanitizeEnv() call in runClaude and this test fails; without it, a leaked
+  // ANTHROPIC_API_KEY would silently bill the metered API on every chat turn.
+  it('spawns claude with API-key credentials stripped from the child env, and exactly buildArgs', async () => {
+    const stdout = new EventEmitter();
+    const proc = new EventEmitter();
+    const child = { stdout, stdin: { end() {} }, on: proc.on.bind(proc) } as unknown as SpawnLike;
+    let captured: { command: string; args: string[]; options: { cwd?: string; env?: NodeJS.ProcessEnv } } | undefined;
+    const spawnFn: RunDeps['spawnFn'] = (command, args, options) => {
+      captured = { command, args, options };
+      return child;
+    };
+    const opts = { prompt: 'x', model: 'sonnet', appendSystemPrompt: 'sys' };
+    const pending = runClaude(opts, () => {}, {
+      spawnFn,
+      env: { ANTHROPIC_API_KEY: 'sk-x', ANTHROPIC_AUTH_TOKEN: 't', CLAUDE_CODE_OAUTH_TOKEN: 'ok', PATH: '/usr/bin' },
+    });
+    proc.emit('close', 0);
+    await pending;
+    // Neither metered-API credential reaches the child...
+    expect(captured?.options.env?.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(captured?.options.env?.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    // ...while the subscription login + PATH survive.
+    expect(captured?.options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe('ok');
+    expect(captured?.options.env?.PATH).toBe('/usr/bin');
+    // And the launch argv is exactly the buildArgs contract — no drift.
+    expect(captured?.command).toBe('claude');
+    expect(captured?.args).toEqual(buildArgs(opts));
+  });
+
   it('handles a result split across stdout chunks (line buffering)', async () => {
     const stdout = new EventEmitter();
     const proc = new EventEmitter();

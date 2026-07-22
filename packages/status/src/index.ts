@@ -281,8 +281,10 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
           // of planting an entry whose Stop already came and went.
           stopped = stopped.filter((a) => a.id !== id);
         } else {
-          // A duplicate Start refreshes its timestamp instead of double-counting.
-          inflight = [...inflight.filter((a) => a.id !== id), { id, at: event.at }];
+          // A duplicate Start refreshes its timestamp instead of double-counting. Cap on push (like
+          // `stopped`/`ended`) so an unauthenticated /hook flood of unique agent ids can't grow one
+          // session's inflight list without bound.
+          inflight = [...inflight.filter((a) => a.id !== id), { id, at: event.at }].slice(-64);
         }
       } else {
         const had = inflight.some((a) => a.id === id);
@@ -303,6 +305,7 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
       ...(inflight.length ? { inflight } : {}),
       ...(stopped.length ? { stopped } : {}),
     };
+    capSessions(next); // untrusted key → bound the map on the subagent path too (mirrors the base path)
     return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
   }
 

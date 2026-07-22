@@ -25,6 +25,19 @@ export function isHttpUrl(url: string): boolean {
   }
 }
 
+/** A safe launch target for the 'app' slot, so a key planted via the unauthenticated /slot endpoint
+ * can't inject a flag into the OS opener: a leading '-' would be parsed as an option by open/xdg-open,
+ * so reject it. Pure — mirrors isHttpUrl, and guards at parse AND exec time.
+ * NOTE: this deliberately does NOT restrict WHICH path is opened — the slot legitimately opens apps,
+ * files and folders (native `system.open` keys migrate through here, see board-layout toSlotKey).
+ * Blocking a *malicious* app bundle needs a location/existence whitelist, a separate follow-up
+ * (security audit authz-2). */
+export function isSafeAppTarget(app: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (!app || app.startsWith('-')) return false; // a '-' target is parsed as an option by open/xdg-open
+  if (platform === 'win32' && app.startsWith('/')) return false; // '/select', '/root', … are explorer switches
+  return true;
+}
+
 /** "a8" → {column:7,row:0}; row = letter (a = top), column = 1-indexed number. Deliberately NOT
  * bound-checked against a deck — the IPC matches whatever key instances are actually visible, not a
  * fixed grid. Null when unparseable. Inverse of `coordLabel`. */
@@ -70,7 +83,7 @@ export function parseSlotCommand(raw: unknown): SlotCommand | null {
   switch (kind) {
     case 'app': {
       const app = str(r.app);
-      if (!app) return null;
+      if (!app || !isSafeAppTarget(app)) return null;
       settings = { kind, app, ...extra };
       break;
     }
