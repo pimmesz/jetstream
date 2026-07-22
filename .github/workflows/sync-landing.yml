@@ -1,10 +1,10 @@
 name: Sync landing page
 
-# Keep docs/index.html's "Full documentation" block in sync with README.md.
-# README.md is the single source of truth; scripts/render-landing.mjs renders it
-# between the README:START / README:END markers and this workflow commits the
-# result. Runs only on push to main (never on pull_request), and only renders
-# the README — it does not execute repo/PR code, so holding a write token is safe.
+# Keep the landing page's JSON-LD softwareVersion and docs/llms.txt in sync with
+# README.md + the published package. README.md is the single source of truth;
+# scripts/render-landing.mjs regenerates them and this workflow commits the result.
+# Runs only on push to main (never on pull_request), and only runs the sync script,
+# which does not execute repo/PR code, so holding a write token is safe.
 #
 # NOTE: the automated release bump (ci.yml's bump-version job) CANNOT reach this
 # workflow — its commit carries [skip ci] and is pushed with GITHUB_TOKEN, and

@@ -1,6 +1,6 @@
 # Jetstream
 
-> Full Claude Code control on your Elgato Stream Deck. One key per project, glowing with that project's live status — working, needs-you, done — plus an attention doorbell, usage gauges, deck-answerable permission prompts. Build the whole board by talking to it.
+> Claude Code on your Elgato Stream Deck. One key per project, glowing with that project's live status (working, needs-you, done), plus an attention doorbell, usage gauges, and deck-answerable permission prompts. Build the whole board by talking to it.
 
 - [Website](https://getjetstream.dev/)
 - [Source (GitHub)](https://github.com/pimmesz/jetstream)
