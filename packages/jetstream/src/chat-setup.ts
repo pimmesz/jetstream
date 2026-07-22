@@ -49,6 +49,14 @@ export const SETUP_SYSTEM = [
   '    coordinate, which of several keys they mean, or WHAT a key should do ("a selector" is unclear).',
   '    Prefer ONE focused question; you MAY ask a follow-up on a later turn. Do NOT ask about trivial',
   '    defaults you can reasonably infer (an exact colour shade, an obvious label) — pick a sensible one.',
+  '',
+  "Another Stream Deck plugin's action (Philips Hue, Spotify, OBS, Home Assistant, or any hardware /",
+  'service integration) is NOT in the type list and you CANNOT place it — Jetstream only arranges its',
+  'own keys plus the Elgato Text action. Do NOT dead-end by only asking for a command: reply with a',
+  'QUESTION that (1) names the Stream Deck plugin for it and says to install it from the Elgato',
+  "Marketplace and drag its action onto the coordinate, and (2) offers a `run` (a CLI/command) or",
+  '`open-url` key there as the fallback if they have one. Place a `run` key only once they give the',
+  'exact command (run keys are opt-in via "allowRunKeys").',
   'Never invent paths. Keep a home-relative path (~/dev/x) as the user gave it. Prefer their exact names.',
 ].join('\n');
 

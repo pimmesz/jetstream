@@ -386,11 +386,7 @@ jetstream doctor             <span class="c"># read-only health check if keys do
 
       <p class="lead" style="margin-top:26px;">The model only returns a proposal. Jetstream validates it with the same rules as the <code class="inline">init</code> wizard, then writes <code class="inline">projects.json</code> itself, so the model never touches your disk or runs a command. Ambiguous request? It asks instead of guessing. Runs on your subscription, not the metered API.</p>
       <p class="lead" style="margin-top:22px;">Prefer a wizard? <code class="inline">jetstream init</code> scans a folder for repos, writes your config, wires the hooks, and can prebuild a layout.</p>
-      <figure>
-        <img src="./gallery-controls.png" alt="A second Stream Deck page built by jetstream chat — app, URL and command shortcut keys, each recoloured and renamed, alongside page-nav, stop-all and settings keys" loading="lazy" />
-        <figcaption>App, URL and command shortcuts: telegram, grafana, deploy, tail logs. Recoloured and renamed.</figcaption>
-      </figure>
-      <p class="lead" style="margin-top:22px;margin-bottom:0;">Each key's sub-line names its state in words, so the board reads without relying on colour; a corner glyph is reserved for exceptions like a stall or a failure. A high-contrast theme swaps red/green for orange/blue.</p>
+      <p class="lead" style="margin-top:26px;margin-bottom:0;">Each key's sub-line names its state in words, so the board reads without relying on colour; a corner glyph is reserved for exceptions like a stall or a failure. A high-contrast theme swaps red/green for orange/blue.</p>
     </div>
   </div>
 </section>

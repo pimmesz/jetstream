@@ -104,6 +104,18 @@ describe('SETUP_SYSTEM ↔ KEY_TYPES coverage', () => {
     expect(advertised.length).toBeGreaterThan(5); // the parse found a real catalogue, not nothing
     expect(advertised.filter((name) => !KEY_TYPE_NAMES.includes(name))).toEqual([]);
   });
+
+  // Third-party integrations (Hue / Spotify / OBS / …) are NOT placeable — Jetstream can't put another
+  // plugin's action on the deck. The prompt must tell the model to NAME the plugin and point at the
+  // Marketplace, not dead-end on "give me a command". Guards that instruction against silent removal.
+  it('tells the model it cannot place another plugin action, and how to respond instead', () => {
+    expect(SETUP_SYSTEM).toMatch(/another Stream Deck plugin/i);
+    expect(SETUP_SYSTEM.toLowerCase()).toContain('cannot');
+    expect(SETUP_SYSTEM).toMatch(/QUESTION/); // reply with a question, not a dead-end
+    expect(SETUP_SYSTEM).toMatch(/Marketplace/); // install the plugin from the Marketplace
+    expect(SETUP_SYSTEM).toMatch(/drag/i); // and drag its action onto the coordinate
+    expect(SETUP_SYSTEM).toMatch(/`run`|open-url/); // offer the run / open-url fallback
+  });
 });
 
 /** Scripted IO: queued answers to `ask`, captured `say` lines. */
@@ -144,6 +156,18 @@ describe('runChatSetup', () => {
     expect(code).toBe(0);
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0]![0]).toHaveLength(1);
+  });
+
+  it('a third-party-plugin request (Hue) surfaces the QUESTION and writes nothing', async () => {
+    const { io, said } = makeIo(['add a hue toggle to d6', 'cancel']);
+    const write = vi.fn();
+    const ask = async () =>
+      'QUESTION: That is the Philips Hue Stream Deck plugin — install it from the Elgato Marketplace and drag its Toggle action onto d6. Or give me a Hue command and I will wire a run key there.';
+    const code = await runChatSetup({ io, ask, write, configPath: '/tmp/p.json', claudeAvailable: () => true });
+    expect(code).toBe(0);
+    expect(said.some((l) => /Philips Hue Stream Deck plugin/.test(l))).toBe(true);
+    expect(said.some((l) => /Marketplace/.test(l))).toBe(true);
+    expect(write).not.toHaveBeenCalled(); // a question is not a proposal — nothing is written
   });
 
   it('runs onWritten with the written fleet after applying (the layout hook)', async () => {

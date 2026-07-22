@@ -77,7 +77,6 @@ PNGs via headless Chrome (macOS, no deps). It writes:
 |---|---|---|
 | `marketing/thumbnail.png` | 1280×1280 | listing thumbnail / card |
 | `marketing/gallery-1-board.png` | 1920×1080 | gallery — the status board |
-| `marketing/gallery-2-controls.png` | 1920×1080 | gallery — the Ops/controls page |
 | `marketing/gallery-3-hero.png` | 1920×1080 | gallery — hero + feature line |
 
 Upload these in the Console (it shows the exact accepted sizes and will resize/crop). Tweak the
