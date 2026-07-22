@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Jetstream — full Claude Code control on your Elgato Stream Deck</title>
+<title>Jetstream: Claude Code status and controls on your Elgato Stream Deck</title>
 <meta name="description" content="An Elgato Stream Deck plugin for Claude Code. One key per project shows its live status: working, needs-you, done, idle. Answer permission prompts from the deck. Free and open source." />
 <link rel="canonical" href="https://getjetstream.dev/" />
 <link rel="icon" type="image/png" href="./jetstream-logo.png" />
@@ -14,8 +14,8 @@
 
 <!-- Open Graph -->
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Jetstream — Claude Code on your Stream Deck" />
-<meta property="og:description" content="Full Claude Code control on your Elgato Stream Deck. One key per project, live status on every key, and permission prompts you answer with a keypress." />
+<meta property="og:title" content="Jetstream: Claude Code on your Stream Deck" />
+<meta property="og:description" content="See each Claude Code project's live status on your Elgato Stream Deck, and answer permission prompts with a keypress." />
 <meta property="og:url" content="https://getjetstream.dev/" />
 <meta property="og:image" content="https://getjetstream.dev/og-card.png" />
 <meta property="og:image:width" content="1920" />
@@ -25,8 +25,8 @@
 
 <!-- Twitter / X -->
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Jetstream — Claude Code on your Stream Deck" />
-<meta name="twitter:description" content="Full Claude Code control on your Elgato Stream Deck. One key per project, live status on every key, and permission prompts you answer with a keypress." />
+<meta name="twitter:title" content="Jetstream: Claude Code on your Stream Deck" />
+<meta name="twitter:description" content="See each Claude Code project's live status on your Elgato Stream Deck, and answer permission prompts with a keypress." />
 <meta name="twitter:image" content="https://getjetstream.dev/og-card.png" />
 <meta name="twitter:image:alt" content="A Stream Deck running Jetstream — one key per project, each lit with its live Claude Code status" />
 
@@ -52,7 +52,7 @@
     {
       "@type": "SoftwareSourceCode",
       "name": "Jetstream",
-      "description": "Full Claude Code control on your Elgato Stream Deck — live per-project status, permission prompts answered from the deck, and a board you build by talking to it.",
+      "description": "Claude Code on your Elgato Stream Deck: live per-project status, permission prompts answered from the deck, and a board you build by talking to it.",
       "codeRepository": "https://github.com/pimmesz/jetstream",
       "programmingLanguage": "TypeScript",
       "runtimePlatform": "Node.js",
@@ -300,7 +300,7 @@
       <div class="hero-copy">
         <p class="kicker">Jetstream · Stream Deck plugin for Claude Code · free &amp; open source</p>
         <h1>Your Stream Deck shows which Claude Code project <span class="amber">needs you</span>.</h1>
-        <p class="tag">One key per project, right on your desk. You see what needs you without switching windows, and answer permission prompts with a keypress.</p>
+        <p class="tag">One key per project. See what needs you without switching windows, and answer permission prompts with a keypress.</p>
         <div class="install">
           <span class="ps1">$</span><code>npm i -g @pimmesz/jetstream</code>
           <button class="copy" type="button" data-copy="npm i -g @pimmesz/jetstream">copy</button>
@@ -331,7 +331,7 @@
     <div class="body">
       <p class="kicker">The problem</p>
       <h2>Is anything waiting on you?</h2>
-      <p class="lead">Run Claude Code in five repos and that question never stops. Jetstream answers it from across the room: one key per project, and anything waiting on you glows amber.</p>
+      <p class="lead">Run Claude Code in five repos and it's easy to miss what's waiting. Jetstream shows every project at once, and anything waiting on you glows amber.</p>
       <div class="board">
         <div class="keycap feat"><h3>Project status</h3><p>Short press opens it in your editor. Long press interrupts the run. Done keys show the diff size (<code class="inline">+120/-40</code>).</p></div>
         <div class="keycap feat"><h3>Fleet roll-up</h3><p>One key counts the whole fleet (<code class="inline">3w 1! 2✓</code>), coloured by its worst state. For when projects outnumber keys.</p></div>
@@ -381,11 +381,11 @@ jetstream doctor             <span class="c"># read-only health check if keys do
         <div class="chatcard"><h4>Build the fleet</h4><p>"Three repos in <code class="inline">~/dev</code>: falcon, api, web." Jetstream turns that into a validated <code class="inline">projects.json</code>.</p></div>
         <div class="chatcard"><h4>Place any key</h4><p>Status, usage, fleet, attention, approve/deny, nav, stop-all, or app, URL and command shortcuts. Addressed by coordinate, so <code class="inline">a8</code> is row 1, column 8.</p></div>
         <div class="chatcard"><h4>Restyle it</h4><p>"Make docs purple." "Call it prod." "Give telegram its real logo." Colours by name or hex; icons from an emoji or an image file.</p></div>
-        <div class="chatcard"><h4>Rearrange it</h4><p>It knows your current board, so "move stop-all to the bottom right" or "swap those two" just works. No need to describe the whole layout.</p></div>
+        <div class="chatcard"><h4>Rearrange it</h4><p>It knows your current board, so you can say "move stop-all to the bottom right" or "swap those two" without describing the whole layout.</p></div>
       </div>
 
-      <p class="lead" style="margin-top:26px;">The model only returns a proposal. Jetstream validates it with the same rules as the <code class="inline">init</code> wizard, then writes <code class="inline">projects.json</code> itself, so the model never touches your disk or runs a command. Ambiguous request? It asks instead of guessing. Runs on your subscription, not the metered API.</p>
-      <p class="lead" style="margin-top:22px;">Prefer a wizard? <code class="inline">jetstream init</code> scans a folder for repos, writes your config, wires the hooks, and can prebuild a layout.</p>
+      <p class="lead" style="margin-top:26px;">The model only returns a proposal. Jetstream validates it with the same rules as the <code class="inline">init</code> wizard, then writes <code class="inline">projects.json</code> itself, so the model never touches your disk or runs a command. If a request is ambiguous, it asks instead of guessing. Runs on your subscription, not the metered API.</p>
+      <p class="lead" style="margin-top:22px;">For a guided setup, <code class="inline">jetstream init</code> scans a folder for repos, writes your config, wires the hooks, and can prebuild a layout.</p>
       <p class="lead" style="margin-top:26px;margin-bottom:0;">Each key's sub-line names its state in words, so the board reads without relying on colour; a corner glyph is reserved for exceptions like a stall or a failure. A high-contrast theme swaps red/green for orange/blue.</p>
     </div>
   </div>
