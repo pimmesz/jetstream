@@ -4,7 +4,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-const run = promisify(execFile);
+const execFileP = promisify(execFile);
+// Bound every helper spawn: a wedged osascript/bgm-vol (audio HAL hang, a system modal) must reject,
+// not leak a pending promise that keeps the key busy forever. Mirrors discover.ts's execFile timeout.
+// encoding pins the string-stdout overload so callers keep `.trim()`.
+const run = (cmd: string, args: string[]) => execFileP(cmd, args, { encoding: 'utf8', timeout: 4000 });
 
 /**
  * Optional power-user helper. On a VOLUME-FIXED interface (e.g. a Focusrite Scarlett) the macOS

@@ -270,7 +270,7 @@ export class Board {
   private writeCheckpoint(): void {
     try {
       mkdirSync(dirname(this.statePath), { recursive: true });
-      const tmp = `${this.statePath}.tmp`;
+      const tmp = `${this.statePath}.tmp-${process.pid}`; // pid-suffixed so two overlapping plugin processes never share the temp inode
       writeFileSync(tmp, JSON.stringify({ state: this.state, sessions: [...this.sessions.entries()] }));
       renameSync(tmp, this.statePath); // atomic swap — a crash mid-write can't truncate the live checkpoint
     } catch {

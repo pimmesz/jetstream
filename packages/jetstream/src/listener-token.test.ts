@@ -65,6 +65,16 @@ describe('ensureToken', () => {
     expect(readFileSync(path, 'utf8')).toBe(written); // byte-identical: a stray \n would break the compare
   });
 
+  it('heals a blank/interrupted token file rather than returning a token it never persisted', () => {
+    // The exclusive-create mint (flag 'wx') would EEXIST on a pre-existing blank file; ensure that
+    // path still writes the token to disk, so a corrupted file can't wedge auth (clients 401 forever).
+    const path = join(tmp(), 'listener-token');
+    writeFileSync(path, ''); // a prior write created the file but never wrote the token
+    const token = ensureToken(path);
+    expect(token).toHaveLength(64);
+    expect(readToken(path)).toBe(token); // healed in place, so a client can read the token we returned
+  });
+
   it('treats a missing or blank file as no token, never throwing', () => {
     const dir = tmp();
     expect(readToken(join(dir, 'absent'))).toBeUndefined();

@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -97,7 +97,11 @@ export function defaultCachePath(home = homedir()): string {
 /** Persist a feed to the cache (used by the hook). Creates the dir; best-effort. */
 export async function writeCache(feed: UsageFeed, cachePath = defaultCachePath()): Promise<void> {
   await mkdir(dirname(cachePath), { recursive: true });
-  await writeFile(cachePath, JSON.stringify(feed), 'utf8');
+  // Atomic write (temp-per-pid + rename) so two concurrent statusline-hook processes can't tear the
+  // JSON the reader parses — mirrors fleet.ts / state.ts. Readers already tolerate an absent file.
+  const tmp = `${cachePath}.tmp-${process.pid}`;
+  await writeFile(tmp, JSON.stringify(feed), 'utf8');
+  await rename(tmp, cachePath);
 }
 
 /** Read the cached feed, or null when absent/unreadable/invalid. Never throws. */

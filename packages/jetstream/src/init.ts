@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
@@ -305,7 +305,11 @@ export async function runInit(deps: InitDeps): Promise<number> {
   if (write) {
     try {
       mkdirSync(dirname(configPath), { recursive: true });
-      writeFileSync(configPath, rendered);
+      // Atomic swap (temp-per-pid + rename), mirroring fleet.ts writeFleetFile — a crash mid-write
+      // can't truncate an existing projects.json.
+      const tmp = `${configPath}.jetstream-tmp-${process.pid}`;
+      writeFileSync(tmp, rendered);
+      renameSync(tmp, configPath);
       io.say(
         `Wrote ${configPath} (${projects.length} project${projects.length === 1 ? '' : 's'}).`,
       );

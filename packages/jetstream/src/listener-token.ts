@@ -76,12 +76,27 @@ export function ensureToken(path = listenerTokenPath()): string {
   // primary path while clients keep reading an older one elsewhere is worse than having none:
   // they would present a token this listener does not hold, which is rejected as WRONG — even
   // during the grace period, which only forgives a MISSING token.
-  const existing = readToken(path === listenerTokenPath() ? listenerTokenPaths() : [path]);
+  const candidates = path === listenerTokenPath() ? listenerTokenPaths() : [path];
+  const existing = readToken(candidates);
   if (existing) return existing;
   const token = randomBytes(32).toString('hex');
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, token, { encoding: 'utf8', mode: 0o600 });
-  return token;
+  try {
+    // Exclusive create (flag 'wx'): if a racing process minted first during the kill->respawn
+    // overlap, our write fails EEXIST and we ADOPT its token instead of writing a rival secret the
+    // clients won't be holding — two different tokens would make every request 401 once enforced.
+    writeFileSync(path, token, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return token;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    const winner = readToken(candidates);
+    // Adopt only a COMPLETE token (32 bytes hex) — never a partially-written one glimpsed mid-write.
+    if (winner && /^[0-9a-f]{64}$/.test(winner)) return winner;
+    // The file exists but holds no token (a blank/interrupted prior write): heal it in place, as the
+    // non-exclusive write used to, so a corrupted token file can't wedge auth forever.
+    writeFileSync(path, token, { encoding: 'utf8', mode: 0o600 });
+    return token;
+  }
 }
 
 /** Constant-time compare, length-guarded (timingSafeEqual throws on a length mismatch). */
