@@ -72,8 +72,10 @@ jobs:
         run: |
           # The tarball is built from packages/** (the plugin bundle inlines all four
           # packages), so any change there is shippable. Absent from it: .github/ (CI),
-          # top-level docs, docs/ (the landing page), and scripts/ (the landing renderer)
-          # — a landing-page edit must not cut an npm release of an identical tarball.
+          # top-level docs, docs/ (the landing page), scripts/ (the landing renderer), and
+          # DECISIONS.md (the design-decision log, which `npm pack` does not include)
+          # — a landing-page or decision-log edit must not cut an npm release of an
+          # identical tarball.
           # Fail safe toward publishing: an unknown base (first push / rewritten
           # history) => shipped.
           if ! git rev-parse --verify --quiet "${BEFORE}^{commit}" >/dev/null; then
@@ -81,13 +83,17 @@ jobs:
             echo "shipped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          files="$(git diff --name-only "${BEFORE}" "${AFTER}")"
+          # --no-renames on purpose: with rename detection a file MOVED out of packages/ into an
+          # excluded path (docs/, scripts/) is reported only as its new name, so the package losing
+          # a file would read as a docs-only change and skip the release. Splitting a rename into
+          # delete+add emits both paths, which can only ever widen what counts as shippable.
+          files="$(git diff --no-renames --name-only "${BEFORE}" "${AFTER}")"
           echo "changed files in push range:"
           echo "${files:-<none>}"
           if [ -z "${files}" ]; then
             echo "no file delta — nothing to publish"
             echo "shipped=false" >> "$GITHUB_OUTPUT"
-          elif grep -qvE '^(\.github/|docs/|scripts/|README\.md$|LICENSE$)' <<< "${files}"; then
+          elif grep -qvE '^(\.github/|docs/|scripts/|README\.md$|LICENSE$|DECISIONS\.md$)' <<< "${files}"; then
             echo "a published file changed — release will proceed"
             echo "shipped=true" >> "$GITHUB_OUTPUT"
           else

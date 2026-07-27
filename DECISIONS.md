@@ -201,6 +201,28 @@ next to the file.
 removed repo can come back. That is the correct bias: a resurrected repo is visible and one
 click to remove, a silently lost one is not.
 
+**AMENDED 2026-07-27 — the decision above is WRONG and was NOT applied. Do not apply it.**
+`handleFleetMessage`'s `remove` case (`fleet.ts:284-294`) writes through the same
+`writeFleetFile`, and `mergeFleet` is a union that keeps existing entries absent from the
+proposal. Merging on every write therefore resurrects a deleted repo **always**, not only under a
+race — it breaks removal outright. The "residual" above understated this as a race-only bias.
+
+The correct fix needs the caller's BASE snapshot so the delta can be replayed onto freshly-read
+disk state, which changes `writeFleetFile`'s signature. That is a design decision, so it stays open.
+
+**And fixing `writeFleetFile` alone would NOT be enough.** It has only two call sites
+(`chat-setup.ts:226`, `actions/settings.ts:161`); `jetstream init` is a THIRD writer that
+reimplements the temp+rename inline (`init.ts:302-313`) and never calls the function — so it would
+keep clobbering, and it does not write the `.bak` trail either. Anyone implementing this must route
+init through the same writer first, or the fix will look complete while covering two writers out of
+three. (This repo has been bitten by exactly that before: a fix is not fixed until you trace every
+call path.)
+
+Severity is also lower than the audit assumed: the writer with the long read→write window,
+`jetstream chat`, ALREADY merges (`chat-setup.ts:335`). The two remaining writers read, mutate and
+write microseconds apart. **TRIGGER to reopen:** a report of a repo vanishing from the board, or
+any new third-party writer of `projects.json`.
+
 ### 8. Interrupt gets a cooldown and immediate feedback — DO IT NOW
 
 `packages/jetstream/src/actions/interrupt-all.ts:31`
@@ -225,3 +247,64 @@ verifying first.
   is the actual cure — mashing is a response to missing feedback, and `showOk()`'s checkmark does
   not change the number the user is staring at. It MUST go through `paintKey`; a raw `setImage`
   fails the `paint-discipline` guard and would strand the key with a stale cache entry.
+
+---
+
+## 2026-07-27 — Cross-review of the 2.1.5 update fix (shipped in 3.0.0 / 3.0.1)
+
+Two findings from the Claude×Codex review of `npm-cli.ts`. Both are real and both were
+knowingly shipped rather than fixed. Recorded so the next audit stops re-raising them.
+
+### 9. `jetstream update` reasons about `import.meta.url`, not npm's install target — ACCEPTED
+
+`packages/jetstream/src/npm-cli.ts:369`
+
+`npm i -g` installs into the prefix belonging to whichever npm is spawned, but the version
+comparison and the follow-on `installPlugin` both continue from the module that is _currently
+running_. When those differ — Homebrew node against a `/usr/local` install, or invocation via
+`npx` — npm updates one installation while this code inspects and reinstalls from the other. The
+result is "Already on \<old>" plus a reinstall of the old bundle.
+
+**Accepted, not fixed.** The wrong-target behaviour predates the 2.1.5 change, which only
+replaced one inaccurate message with another; Codex downgraded its own HIGH to MEDIUM on that
+basis. Fixing it properly means resolving npm's real global root (`npm root -g`) and re-sourcing
+both the version read and the bundle from there — a design change to where `installPlugin` gets
+its artifact, not a patch.
+
+**TRIGGER to reopen:** an `update` that reports success or no-op while `jetstream --version`
+disagrees, on a machine with more than one node/npm prefix.
+
+### 10. `JETSTREAM_REGISTRY` credentials reach the process command line — ACCEPTED
+
+`packages/jetstream/src/npm-cli.ts:365`
+
+A registry URL of the form `https://user:token@mirror/` is accepted and passed twice in npm's
+argv, where it is readable by any process that can see the process list.
+
+**Accepted, and deliberately so — do not "fix" this without asking.** Inline credentials are a
+supported escape hatch for a corporate mirror that requires them; `npm-cli.test.ts:671` asserts
+it by name, and `redactRegistry` exists specifically to keep them out of printed output. Removing
+it could break the only path by which a locked-down laptop can update at all. The safer
+alternative — credentials in `~/.npmrc` — is not always available to the user.
+
+**TRIGGER to reopen:** a shared or multi-user machine enters the threat model, or `.npmrc`
+becomes a viable path for every environment that needs a mirror.
+
+**Hardened instead (shipped in 3.0.1):** `%` is now rejected, because cmd.exe expands `%VAR%`
+while parsing and would reintroduce the metacharacters the allowlist exists to exclude; and
+structurally invalid URLs are rejected so a bad port names the setting rather than surfacing as
+npm's own opaque error.
+
+### Errata — commit `c85c077` overstates what it changed
+
+Its message claims it rebuilt "the tracked sdPlugin bundle" because main's committed bundle still
+had enforcement off. **That was wrong.** `packages/jetstream/.gitignore:2` ignores
+`gg.pim.jetstream.sdPlugin/bin/` — the bundle is untracked build output and was never stale. The
+claim came from a verification command whose failure mode was indistinguishable from a finding: a
+`gh api` fetch of a path that does not exist in the repo returned nothing, and `grep -c` on that
+empty stream printed `0`, which was read as "zero enforcement matches" rather than "no such file".
+
+The commit's actual content is correct and was needed (the two workflow author fixes plus the
+registry hardening); only its message overclaims. **Decided: leave it.** It is already pushed and
+CI released 3.0.1 from it, and rewriting published history to correct prose would orphan tags for
+no functional gain.
