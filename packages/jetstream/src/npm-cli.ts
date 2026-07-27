@@ -31,8 +31,13 @@ export const PUBLIC_REGISTRY = 'https://registry.npmjs.org/';
  * `shell: true`), where cmd.exe re-parses the joined command string. A URL is otherwise free to
  * contain `&`, so validating merely that it parses would still let
  * `https://host/& calc.exe &` execute. This pattern allows every character a real registry URL
- * needs — host, port, path, userinfo, percent-encoding — and no cmd.exe metacharacter. */
-const SAFE_REGISTRY = /^https?:\/\/[A-Za-z0-9._~:/@%+-]+$/;
+ * needs — host, port, path, userinfo — and no cmd.exe metacharacter.
+ *
+ * `%` is deliberately NOT allowed, even though URLs may percent-encode. cmd.exe expands `%VAR%`
+ * while parsing, so a registry containing `%FOO%` becomes whatever FOO holds — and if that is
+ * `x&calc.exe&`, the expansion reintroduces the very metacharacters this pattern exists to
+ * exclude. A base registry URL has no need to percent-encode, so forbidding it costs nothing. */
+const SAFE_REGISTRY = /^https?:\/\/[A-Za-z0-9._~:/@+-]+$/;
 
 /** Hide `user:password@` before a registry URL is printed — npm redacts these in its own output
  * and a terminal log or a pasted bug report must not be where they leak. */
@@ -58,11 +63,20 @@ export function resolveRegistry(
 ): string {
   const raw = env.JETSTREAM_REGISTRY?.trim();
   if (!raw) return PUBLIC_REGISTRY;
-  if (!SAFE_REGISTRY.test(raw)) {
+  const reject = (): string => {
     onInvalid(
       `Ignoring JETSTREAM_REGISTRY — it must be a plain http(s) URL (got ${redactRegistry(raw)}). Using ${PUBLIC_REGISTRY}`,
     );
     return PUBLIC_REGISTRY;
+  };
+  if (!SAFE_REGISTRY.test(raw)) return reject();
+  // The character allowlist alone still passes structurally invalid URLs — `https://host:99999/`
+  // is all legal characters but has an out-of-range port. npm would take it and fail with its own
+  // opaque error; parsing here means the message names the variable that actually caused it.
+  try {
+    new URL(raw);
+  } catch {
+    return reject();
   }
   return raw;
 }
@@ -381,7 +395,9 @@ export function updatePackage(deps: RunJetstreamDeps = {}): void {
     ? spawnFn(process.execPath, [npmCli, ...npmArgs], { stdio: 'inherit' })
     : win
       ? // Fallback .cmd shim needs a shell; pin cwd to HOME so the current directory can
-        // never supply the binary. The arguments are fixed literals.
+        // never supply the binary. Two of the arguments carry the resolved registry, which is
+        // env-derived — they are VALIDATED (see SAFE_REGISTRY), not fixed literals, so relaxing
+        // that pattern relaxes what reaches cmd.exe here.
         spawnFn('npm.cmd', npmArgs, { stdio: 'inherit', shell: true, cwd: homedir() })
       : spawnFn('npm', npmArgs, { stdio: 'inherit' }); // execvp PATH lookup — no CWD resolution
   child.on('exit', (code) => {

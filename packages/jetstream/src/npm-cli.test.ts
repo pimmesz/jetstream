@@ -685,6 +685,27 @@ describe('resolveRegistry / redactRegistry', () => {
     expect(seen).toHaveLength(5); // every rejection is reported, never silent
   });
 
+  it('rejects a percent sign — cmd.exe would expand it back into metacharacters', () => {
+    // The Windows npm.cmd fallback joins these args into a shell command string, and cmd.exe
+    // expands %VAR% while parsing. `%PAYLOAD%` where PAYLOAD is `x&calc.exe&` reintroduces
+    // exactly the `&` the allowlist exists to exclude, so the character cannot be allowed.
+    const seen: string[] = [];
+    expect(
+      resolveRegistry({ JETSTREAM_REGISTRY: 'https://nexus.internal/%PAYLOAD%' }, (m) => seen.push(m)),
+    ).toBe(PUBLIC_REGISTRY);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('rejects a structurally invalid URL that the character allowlist alone would pass', () => {
+    // Every character here is legal; the port is not. Passing it through would hand npm a
+    // registry it cannot use and surface as npm's own error, hiding which setting caused it.
+    const seen: string[] = [];
+    expect(
+      resolveRegistry({ JETSTREAM_REGISTRY: 'https://nexus.internal:99999/' }, (m) => seen.push(m)),
+    ).toBe(PUBLIC_REGISTRY);
+    expect(seen).toHaveLength(1);
+  });
+
   it('hides credentials when a registry URL is printed', () => {
     expect(redactRegistry('https://u:secret@nexus.internal/npm/')).not.toContain('secret');
     expect(redactRegistry('https://u:secret@nexus.internal/npm/')).toContain('credentials hidden');
