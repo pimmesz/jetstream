@@ -40,6 +40,8 @@ describe('cli dispatch', () => {
     // success — the exact failure `jetstream update` exists to prevent.
     expect(printed).toContain('--registry=https://registry.npmjs.org/');
     expect(printed).toContain('--@pimmesz:registry=https://registry.npmjs.org/');
+    // …and force a fresh packument so npm's own cache can't reinstall the old version either.
+    expect(printed).toContain('--prefer-online');
     expect(printed).not.toMatch(/npm i -g @pimmesz\/jetstream/);
   });
 

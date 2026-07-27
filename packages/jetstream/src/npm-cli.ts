@@ -357,6 +357,11 @@ export function updatePackage(deps: RunJetstreamDeps = {}): void {
   const npmArgs = [
     'i',
     '-g',
+    // Force a fresh packument read. The registry pin below defeats a stale MIRROR index, but not
+    // npm's own on-disk cache: a cached "latest" can reinstall the same old version, exit 0, and
+    // leave this command reporting "nothing newer" while `jetstream doctor` (a direct GET, no
+    // cache) already sees the new one. That is the exact disagreement the two commands must avoid.
+    '--prefer-online',
     `--registry=${registry}`,
     `--@pimmesz:registry=${registry}`,
     '@pimmesz/jetstream',

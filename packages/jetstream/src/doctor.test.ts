@@ -32,7 +32,7 @@ describe('runDoctor listener check', () => {
     listenerAlive: async () => listenerAlive,
     boardLayout: () => null,
     latestVersion: async () => null,
-    listenerToken: () => ({ present: true, private: true }),
+    listenerToken: () => ({ present: true, private: true, consistent: true }),
     declaredActions: () => [],
   });
   it('warns when the hook listener is not responding (the silent dark-board case)', async () => {
@@ -124,11 +124,16 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
 });
 
 describe('checkLatestVersion', () => {
-  it('warns (with the update command) when a newer version is published', () => {
+  it('warns (naming the Stream Deck plugin + the approval step) when a newer version is published', () => {
     const r = checkLatestVersion('1.3.1', '1.4.0');
     expect(r.status).toBe('warn');
     expect(r.message).toContain('jetstream update');
-    expect(r.message).toContain('1.4.0');
+    expect(r.message).toContain('1.4.0'); // the version available
+    expect(r.message).toContain('1.3.1'); // the plugin version that's behind
+    // This check reads the DECK plugin's version, not the npm package — so it must say so and point
+    // at the approval step, or it reads as a contradiction with `update` ("already on latest").
+    expect(r.message).toContain('Stream Deck');
+    expect(r.message.toLowerCase()).toContain('approve');
   });
 
   it('ok when already on the latest', () => {
@@ -269,22 +274,30 @@ describe('commandOnPath', () => {
 
 describe('checkListenerToken', () => {
   it('warns loudly when there is no token at all — the listener is wide open', () => {
-    const r = checkListenerToken({ present: false, private: false });
+    const r = checkListenerToken({ present: false, private: false, consistent: true });
     expect(r.status).toBe('warn');
     expect(r.message).toMatch(/any local process/);
   });
 
   it('warns when the token is readable by other users, which is the whole threat it addresses', () => {
-    const r = checkListenerToken({ present: true, private: false });
+    const r = checkListenerToken({ present: true, private: false, consistent: true });
     expect(r.status).toBe('warn');
     expect(r.message).toMatch(/chmod 600/);
+  });
+
+  it('warns when two config locations hold different tokens — a dark board with a green doctor', () => {
+    // The plugin reconciles candidates on start, so reaching doctor means one could not be
+    // written. Nothing else in the product explains why every request is suddenly refused.
+    const r = checkListenerToken({ present: true, private: true, consistent: false });
+    expect(r.status).toBe('warn');
+    expect(r.message).toMatch(/differs between/);
   });
 
   it('does NOT warn during the grace period — nothing the user does could clear it', () => {
     // A warning whose prescribed command cannot change the outcome trains people to ignore
     // doctor. The grace period is expected state, so it reports ok and says no action is needed;
     // when ENFORCE_TOKEN flips, the same input stays ok with the stricter wording.
-    const r = checkListenerToken({ present: true, private: true });
+    const r = checkListenerToken({ present: true, private: true, consistent: true });
     expect(r.status).toBe('ok');
     expect(r.message).toMatch(ENFORCE_TOKEN ? /required/ : /no action needed/);
   });

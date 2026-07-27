@@ -196,15 +196,16 @@ function currentToken(): string | undefined {
   return listenerToken;
 }
 currentToken(); // create it now so `jetstream doctor` and the hooks can see it immediately
-// Log the first unauthenticated accept only. During the grace period these are expected (hooks
-// from an older release); one line tells you the window is still carrying real traffic, while
-// logging every hook event would drown the log.
+// Log the first untokened request only — logging every hook event would drown the log. This fires
+// BEFORE the accept/refuse decision and for two very different causes: a hook older than the token,
+// or this plugin holding no token at all (an unwritable home). So the line must not assert either
+// one, and must not claim the request was accepted — under enforcement only /hook still is.
 let loggedLegacy = false;
 const noteLegacyRequest = (): void => {
   if (loggedLegacy) return;
   loggedLegacy = true;
   streamDeck.logger.warn(
-    'Jetstream accepted an untokened loopback request — a hook from an older release. Run `jetstream hooks install` to re-wire it.',
+    'Jetstream saw an untokened loopback request — either a hook older than the token (run `jetstream hooks install`) or no token on this machine (run `jetstream doctor`). Status events still paint; permission answers and board edits are refused.',
   );
 };
 

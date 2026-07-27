@@ -19,8 +19,12 @@ const code = src
 
 const STATUSES: ProjectStatus[] = ['working', 'needsInput', 'done', 'idle', 'none'];
 
-describe('gen-store-assets palette', () => {
-  it('reads the status palette from the product instead of restating it', () => {
+// STATIC SOURCE CHECKS, not behavioural coverage. gen-store-assets.mjs is not importable (top-level
+// Chrome side effects) and making it so was declined — the output is a marketplace gallery image
+// reviewed by eye, not shipped code. So these assert one thing only: that the generator does not
+// restate the palette. A wrong colour MAPPING still ships undetected; that gap is accepted.
+describe('gen-store-assets palette (static source checks)', () => {
+  it('imports colorFor instead of restating the palette', () => {
     expect(code).toMatch(/import \{[^}]*colorFor[^}]*\} from '@pimmesz\/jetstream-status'/);
     // Only the statuses the mock board actually renders must be read from the product (idle isn't lit here).
     for (const status of ['working', 'needsInput', 'done', 'none'] as ProjectStatus[]) {
@@ -39,10 +43,14 @@ describe('gen-store-assets palette', () => {
     expect(hexesInCode.filter((h) => statusHexes.has(h))).toEqual([]);
   });
 
-  it('paints the reserved danger red only on the stop-all key, never a status', () => {
+  it('mentions the reserved danger red only on stop-all lines, never a status', () => {
     // #e5484d is `stopFace`'s danger red (interrupt-all); the REAL stop-all key is red too, so the
     // mockup mirrors it. But it must never restate a project STATUS in that red (the old bug).
-    for (const line of code.split('\n').filter((l) => l.includes('#e5484d'))) {
+    const redLines = code.split('\n').filter((l) => l.includes('#e5484d'));
+    // Guard the loop: with zero matches it runs zero times and the claim below is vacuous, so
+    // recolouring the stop-all key would leave this test green while asserting nothing.
+    expect(redLines.length).toBeGreaterThan(0);
+    for (const line of redLines) {
       expect(line).toMatch(/stop all/i);
     }
     for (const status of STATUSES) {
@@ -60,16 +68,8 @@ describe('gen-store-assets palette', () => {
     expect(glyphFor('working')).toBe('⋯'); // product sanity: the real glyph is one char, not three dots
   });
 
-  it('renders a full XL board — exactly 8×4 = 32 cells (guards an off-by-one that misplaces the bottom row)', () => {
-    // The mock board mirrors a real XL. A miscount silently shifts the bottom-row keys a column and
-    // leaves a hole — invisible in tests until someone eyeballs the PNG. Count the cell tokens.
-    // Strip every `//` comment (full-line AND trailing) from the block before counting, so a
-    // commented-out cell drops the count instead of being tallied — which would hide the very
-    // off-by-one this guards. (No cell literal contains `//`, so this can't eat real content.)
-    const block = /const boardCells = \[([\s\S]*?)\n\];/.exec(src)?.[1] ?? '';
-    const bare = block.replace(/\/\/.*$/gm, '');
-    const count = (re: RegExp) => bare.match(re)?.length ?? 0;
-    const cells = count(/\bK\(/g) + count(/\bBLANK\b/g) + count(/\bLOGO_CELL\b/g) + count(/\bTELEGRAM\b/g);
-    expect(cells).toBe(32);
-  });
+  // REMOVED: a 32-cell count over `K(` / `BLANK` / `LOGO_CELL` / `TELEGRAM` tokens. It could not
+  // fail for the reason it claimed — an inline cell not in that token list ships a 33-cell board
+  // green — so it held a coverage slot without holding the invariant. Counting tokens is not
+  // counting rendered cells; only looking at the PNG is.
 });

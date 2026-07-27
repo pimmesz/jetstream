@@ -266,10 +266,11 @@ describe('runJetstream', () => {
       platform: 'darwin',
       exists: () => false, // no npm-cli.js next to node → PATH fallback
     });
-    // The registry is pinned so a machine-local mirror cannot serve a stale "latest".
+    // The registry is pinned so a machine-local mirror cannot serve a stale "latest", and
+    // --prefer-online forces a fresh packument so a cached one cannot either.
     expect(spawn).toHaveBeenCalledWith(
       'npm',
-      ['i', '-g', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      ['i', '-g', '--prefer-online', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
       { stdio: 'inherit' },
     );
     expect(install).not.toHaveBeenCalled(); // not before npm finishes
@@ -314,7 +315,7 @@ describe('runJetstream', () => {
     // cwd pinned to HOME so cmd.exe's CWD-first resolution can't run a planted npm.cmd.
     expect(spawn).toHaveBeenCalledWith(
       'npm.cmd',
-      ['i', '-g', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      ['i', '-g', '--prefer-online', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
       { stdio: 'inherit', shell: true, cwd: homedir() },
     );
   });
@@ -335,7 +336,7 @@ describe('runJetstream', () => {
     const expected = join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
     expect(spawn).toHaveBeenCalledWith(
       process.execPath,
-      [expected, 'i', '-g', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      [expected, 'i', '-g', '--prefer-online', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
       { stdio: 'inherit' },
     );
   });
@@ -617,6 +618,12 @@ describe('updatePackage', () => {
     // `--registry=https://registry.npmjs.org` is ignored for this scope — npm returned the
     // mirror's 1.6.0 instead of the public 2.0.0. Pinning only the unscoped form is defeated.
     expect(run().args).toContain(`--@pimmesz:registry=${PUBLIC_REGISTRY}`);
+  });
+
+  it('forces a fresh packument (--prefer-online) so a cached "latest" cannot pin the old version', () => {
+    // The registry pin defeats a stale mirror INDEX; --prefer-online defeats npm's on-disk cache —
+    // the other half of the "update says nothing moved while doctor sees a newer one" bug.
+    expect(run().args).toContain('--prefer-online');
   });
 
   it('JETSTREAM_REGISTRY overrides both, for a machine that can only reach a mirror', () => {

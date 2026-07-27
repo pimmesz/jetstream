@@ -8,7 +8,14 @@ import { pluginAlive } from './slot-client';
 import { PLUGIN_VERSION, resolvedPort } from './server';
 import { readBoardLayout, type BoardLayout } from './board-layout';
 import { coordLabel } from './actions/coord';
-import { ENFORCE_TOKEN, listenerTokenPath, readToken, tokenIsPrivate } from './listener-token';
+import {
+  ENFORCE_TOKEN,
+  listenerTokenPaths,
+  readToken,
+  tokenIsPrivate,
+  tokenPathInUse,
+  tokensAgree,
+} from './listener-token';
 
 /**
  * `jetstream doctor` — the read-only answer to "why isn't my board lighting up?". Every
@@ -363,8 +370,9 @@ export interface DoctorIO {
   boardLayout: () => BoardLayout | null;
   /** The latest published npm version (null when the registry can't be reached). Injected for tests. */
   latestVersion: () => Promise<string | null>;
-  /** Whether the loopback token exists and is owner-only. Injected for tests. */
-  listenerToken: () => { present: boolean; private: boolean };
+  /** Whether the loopback token exists, is owner-only, and reads the same at every candidate
+   * path. Injected for tests. */
+  listenerToken: () => { present: boolean; private: boolean; consistent: boolean };
   /** The action UUIDs THIS build declares, read from its own manifest — the yardstick for
    * spotting keys left pointing at an action a release removed. Empty when unreadable, which
    * makes the check stay silent rather than flag every key. Injected for tests. */
@@ -411,7 +419,11 @@ export function defaultDoctorIO(): DoctorIO {
     listenerAlive: () => pluginAlive(),
     boardLayout: () => readBoardLayout(),
     latestVersion: () => fetchLatestVersion(),
-    listenerToken: () => ({ present: readToken() !== undefined, private: tokenIsPrivate() }),
+    listenerToken: () => ({
+      present: readToken() !== undefined,
+      private: tokenIsPrivate(),
+      consistent: tokensAgree(),
+    }),
     declaredActions: () => readDeclaredActions(...manifestCandidates()),
   };
 }
@@ -419,11 +431,15 @@ export function defaultDoctorIO(): DoctorIO {
 /**
  * The loopback listener answers hook events, permission decisions, and live board edits, so
  * anything that can reach 127.0.0.1 (the JETSTREAM_PORT, default 41321) can drive your deck. It is authenticated by a shared
- * token — but for two releases an untokened request is still accepted, so hooks installed by an
- * older Jetstream keep working. Warn for that whole window: while it is open, the token is a
- * speed bump, not a gate.
+ * token, now enforced: an untokened request is refused on `/permission` and `/slot`. `/hook` stays
+ * served either way, so a hook installed by an older Jetstream still colours keys rather than
+ * leaving the board dark — re-installing hooks is what restores the rest.
  */
-export function checkListenerToken(token: { present: boolean; private: boolean }): CheckResult {
+export function checkListenerToken(token: {
+  present: boolean;
+  private: boolean;
+  consistent: boolean;
+}): CheckResult {
   if (!token.present) {
     return {
       status: 'warn',
@@ -434,7 +450,17 @@ export function checkListenerToken(token: { present: boolean; private: boolean }
   if (!token.private) {
     return {
       status: 'warn',
-      message: `loopback token is readable by other users — run \`chmod 600 ${listenerTokenPath()}\``,
+      message: `loopback token is readable by other users — run \`chmod 600 ${tokenPathInUse()}\``,
+    };
+  }
+  // Two config locations holding DIFFERENT tokens is the one failure that looks like nothing is
+  // wrong: the plugin serves its own, a hook whose environment resolves the other path sends that
+  // one, and a WRONG token is refused everywhere — a dark board with a green doctor. The plugin
+  // reconciles these on start, so seeing it here means a candidate could not be written.
+  if (!token.consistent) {
+    return {
+      status: 'warn',
+      message: `loopback token differs between ${listenerTokenPaths().join(' and ')} — delete the one outside your config dir, then restart Stream Deck`,
     };
   }
   // NOT a warning. During the grace period this state is expected and nothing the user does can
@@ -443,7 +469,11 @@ export function checkListenerToken(token: { present: boolean; private: boolean }
   // could not change the outcome, which is exactly the trap the usage-statusline check fell into:
   // a diagnostic must never hand you an action that leaves it saying the same thing.
   return ENFORCE_TOKEN
-    ? { status: 'ok', message: 'loopback token required on every hook and board edit' }
+    ? {
+        status: 'ok',
+        message:
+          'loopback token required for permission answers and board edits (status events stay accepted untokened, so the board can never go dark)',
+      }
     : {
         status: 'ok',
         message:
@@ -489,11 +519,13 @@ export function checkLatestVersion(installed: string, latest: string | null): Ch
   return isNewerVersion(latest, installed)
     ? {
         status: 'warn',
-        // Name the registry. This check asks npmjs.org directly, so if the machine's npm points at
-        // a stale mirror, plain `npm i -g` can "succeed" without moving the version and this
-        // warning would repeat forever with no explanation. `jetstream update` pins the same
-        // registry, which is why it is the command to run.
-        message: `${installed} installed — ${latest} is available on npmjs.org; run \`jetstream update\` (it pins the public registry; a bare \`npm i -g\` may hit a stale mirror)`,
+        // `installed` is PLUGIN_VERSION — the Stream Deck plugin running RIGHT HERE, NOT the npm
+        // package on disk. They are two artifacts on two version lines: `npm i -g` moves the
+        // package instantly, but the deck plugin only moves when Stream Deck accepts the new build.
+        // So `jetstream update` can honestly report the npm package "already on latest" while THIS
+        // plugin is still behind — which read as a contradiction. Name the plugin and the approval
+        // step so the remedy doesn't look like it did nothing.
+        message: `Stream Deck plugin is ${installed} — ${latest} is published; run \`jetstream update\` and approve the Stream Deck prompt (the deck upgrades only when you accept it — \`update\` reporting the npm package "already on latest" is a separate version).`,
       }
     : { status: 'ok', message: `on the latest version (${installed})` };
 }

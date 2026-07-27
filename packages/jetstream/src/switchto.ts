@@ -123,14 +123,57 @@ export function probeClaudeProcess(pid: number, platform: NodeJS.Platform = proc
   }
 }
 
-/** SIGINT the given PIDs that are verified to still be Claude sessions. Returns how
- * many were signalled (0 = nothing safe to interrupt). */
-export function interruptPids(pids: number[], platform: NodeJS.Platform = process.platform): number {
+/**
+ * How long a PID is left alone after being SIGINTed. The board does not repaint until the next
+ * hook event or the 5s discovery poll, so a press can look like it did nothing and invite another
+ * — and Claude Code escalates a second Ctrl-C within about a second from "interrupt this turn" to
+ * "end the session", losing the user's context. Re-signalling a process that got one 200ms ago
+ * cannot help under either behaviour, so the cooldown is right without needing to know which.
+ */
+const INTERRUPT_COOLDOWN_MS = 2_000;
+const lastInterrupt = new Map<number, number>();
+
+/**
+ * SIGINT the given PIDs that are verified to still be Claude sessions, skipping any signalled
+ * within the cooldown. Returns how many sessions are now being interrupted — freshly signalled
+ * PLUS those still inside their cooldown, so a second press on a session that is already stopping
+ * reports success rather than flashing "nothing to interrupt" at a user who did nothing wrong.
+ * 0 means exactly that: nothing safe to interrupt.
+ *
+ * The cooldown lives HERE rather than in the key handlers so every caller gets it — the stop-all
+ * key, the slot `stopall` kind, and both long-press interrupts.
+ */
+/** Seams for testing — the cooldown is unreachable otherwise, since `isClaudeProcess` is false for
+ * every PID a test can safely use and a real `kill` would signal the test runner. */
+export interface InterruptDeps {
+  isClaude?: (pid: number, platform: NodeJS.Platform) => boolean;
+  kill?: (pid: number) => void;
+  now?: () => number;
+}
+
+export function interruptPids(
+  pids: number[],
+  platform: NodeJS.Platform = process.platform,
+  deps: InterruptDeps = {},
+): number {
+  const isClaude = deps.isClaude ?? isClaudeProcess;
+  const kill = deps.kill ?? ((pid: number): void => void process.kill(pid, 'SIGINT'));
+  const now = (deps.now ?? Date.now)();
+  // Drop expired entries first, so the map stays bounded by "PIDs signalled in the last 2s"
+  // instead of growing with every session the fleet has ever run.
+  for (const [pid, at] of lastInterrupt) {
+    if (now - at >= INTERRUPT_COOLDOWN_MS) lastInterrupt.delete(pid);
+  }
   let sent = 0;
   for (const pid of pids) {
-    if (!isClaudeProcess(pid, platform)) continue;
+    if (!isClaude(pid, platform)) continue;
+    if (lastInterrupt.has(pid)) {
+      sent += 1; // already interrupting — count it, but do not signal again
+      continue;
+    }
     try {
-      process.kill(pid, 'SIGINT');
+      kill(pid);
+      lastInterrupt.set(pid, now);
       sent += 1;
     } catch {
       /* process exited between the check and the signal */

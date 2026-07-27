@@ -61,6 +61,25 @@ describe('interrupt guards (never signal a non-claude process)', () => {
   it('interruptPids signals nothing when no PID is a verified claude process', () => {
     expect(interruptPids([process.pid, 999999])).toBe(0);
   });
+
+  it('does not re-signal a PID inside the cooldown, but still reports it as interrupting', () => {
+    // Claude Code escalates a second Ctrl-C within about a second from "interrupt this turn" to
+    // "end the session", and the board does not repaint until the next hook event — so a user who
+    // sees nothing happen and presses again would lose their session. The repeat must not signal.
+    const killed: number[] = [];
+    const deps = { isClaude: () => true, kill: (pid: number) => void killed.push(pid), now: () => 1000 };
+    expect(interruptPids([4242], 'darwin', deps)).toBe(1);
+    expect(interruptPids([4242], 'darwin', { ...deps, now: () => 1500 })).toBe(1); // counted, not re-sent
+    expect(killed).toEqual([4242]);
+  });
+
+  it('signals again once the cooldown has passed', () => {
+    const killed: number[] = [];
+    const deps = { isClaude: () => true, kill: (pid: number) => void killed.push(pid) };
+    interruptPids([4243], 'darwin', { ...deps, now: () => 1000 });
+    interruptPids([4243], 'darwin', { ...deps, now: () => 9000 });
+    expect(killed).toEqual([4243, 4243]);
+  });
 });
 
 describe('probeClaudeProcess (conclusive dead vs inconclusive unknown, for the reaper)', () => {

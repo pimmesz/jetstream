@@ -197,7 +197,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
       // `jetstream update` exists to prevent. Printing it here would hand it right back.
       console.log(
         'Update via the npm CLI:\n' +
-          '  npm i -g --registry=https://registry.npmjs.org/ --@pimmesz:registry=https://registry.npmjs.org/ @pimmesz/jetstream\n' +
+          '  npm i -g --prefer-online --registry=https://registry.npmjs.org/ --@pimmesz:registry=https://registry.npmjs.org/ @pimmesz/jetstream\n' +
           '  jetstream install',
       );
       return 0;

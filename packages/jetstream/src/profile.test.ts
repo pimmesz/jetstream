@@ -356,6 +356,21 @@ describe('buildOpsProfile (the shipped controls page)', () => {
       ])
       .map((m) => m[1]!);
     expect(new Set(manifest.Actions.map((a) => a.UUID))).toEqual(new Set(implemented));
+
+    // THIRD surface: registration. The two sets above cannot see it — plugin.ts must also call
+    // registerAction, and dropping that call ships a key Stream Deck lists and nothing answers:
+    // decorator present, manifest entry present, suite green, key dead. Scraped rather than
+    // imported because plugin.ts is the live entry point and importing it would boot the SDK.
+    const plugin = stripComments(readFileSync(new URL('./plugin.ts', import.meta.url), 'utf8'));
+    // Every action class is named `<Something>Key`, so this cannot pick up an unrelated `new`.
+    const constructed = new Set(
+      [...plugin.matchAll(/const (\w+) = new \w+Key\(\);/g)].map((m) => m[1]!),
+    );
+    const registered = new Set(
+      [...plugin.matchAll(/registerAction\((\w+)\)/g)].map((m) => m[1]!),
+    );
+    expect(registered).toEqual(constructed);
+    expect(registered.size).toBe(implemented.length);
   });
 });
 

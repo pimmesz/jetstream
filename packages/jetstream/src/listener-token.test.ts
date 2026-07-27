@@ -1,4 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,9 +13,11 @@ import {
   classifyRequest,
   ensureToken,
   isAuthorized,
+  listenerTokenMintPath,
   listenerTokenPath,
   readToken,
   tokenIsPrivate,
+  tokensAgree,
   tokensMatch,
   TOKEN_HEADER,
   ENFORCE_TOKEN,
@@ -37,6 +46,26 @@ describe('listenerTokenPath', () => {
   });
 });
 
+describe('listenerTokenMintPath', () => {
+  it('mints at the environment-independent path even when XDG_CONFIG_HOME points elsewhere', () => {
+    // XDG_CONFIG_HOME is normally set in a shell profile and absent from the GUI env, so minting
+    // at the derived primary let the plugin and a shell-spawned hook create two rival secrets.
+    expect(listenerTokenMintPath({ XDG_CONFIG_HOME: '/cfg' }, '/home/me')).toBe(
+      join('/home/me', '.config', 'jetstream', 'listener-token'),
+    );
+    // READING still prefers the XDG path, so a token already minted there is adopted, not orphaned.
+    expect(listenerTokenPath({ XDG_CONFIG_HOME: '/cfg' }, '/home/me')).toBe(
+      join('/cfg', 'jetstream', 'listener-token'),
+    );
+  });
+
+  it('is the ordinary config path when nothing overrides it', () => {
+    expect(listenerTokenMintPath({}, '/home/me')).toBe(
+      join('/home/me', '.config', 'jetstream', 'listener-token'),
+    );
+  });
+});
+
 describe('ensureToken', () => {
   it('adopts a token already present at a fallback path instead of minting a rival', () => {
     // Two secrets is worse than none: clients reading the older one would present a token this
@@ -45,8 +74,99 @@ describe('ensureToken', () => {
     const fallback = join(dir, 'fallback-token');
     const primary = join(dir, 'primary-token');
     writeFileSync(fallback, 'a'.repeat(64));
-    // ensureToken checks the candidate list it is given, not just where it would write.
-    expect(readToken([primary, fallback])).toBe('a'.repeat(64));
+    // Drive ensureToken itself, not just readToken: the adopt branch is what must not mint.
+    expect(ensureToken(primary, [primary, fallback])).toBe('a'.repeat(64));
+    // ...and it must PROPAGATE the adopted token to the mint path. Leaving it only at the
+    // candidate this process happens to see (an XDG path a desktop-launched plugin cannot) means
+    // the next run finds nothing there, mints a rival, and rejects every client on the old one.
+    expect(readToken(primary)).toBe('a'.repeat(64));
+  });
+
+  it('reconciles a stale earlier candidate to the mint path, so every reader converges', () => {
+    // The race this closes: a process adopts token A from an XDG path while another mints B at the
+    // mint path. Readers take the FIRST candidate they can see, so hooks with XDG in their
+    // environment would keep sending A while the plugin holds B — and a WRONG token is refused on
+    // every endpoint, dark board included. The mint path is the one location every candidate list
+    // contains, so it wins and the stale file is rewritten to match.
+    const dir = tmp();
+    const stale = join(dir, 'xdg-token');
+    const mint = join(dir, 'mint-token');
+    writeFileSync(mint, 'b'.repeat(64));
+    writeFileSync(stale, 'a'.repeat(64));
+    // Candidate order puts the stale path FIRST, exactly as a reader with XDG set would see it.
+    expect(ensureToken(mint, [stale, mint])).toBe('b'.repeat(64));
+    expect(readToken(stale)).toBe('b'.repeat(64)); // rewritten, so the early candidate agrees
+    expect(readToken([stale, mint])).toBe('b'.repeat(64)); // a hook now reads the same token
+  });
+
+  it('propagates an adopted token to the mint path AND leaves the source agreeing', () => {
+    // The upgrade path: a token minted by an older release sits only at the XDG candidate.
+    const dir = tmp();
+    const stale = join(dir, 'xdg-token');
+    const mint = join(dir, 'mint-token');
+    writeFileSync(stale, 'a'.repeat(64));
+    expect(ensureToken(mint, [stale, mint])).toBe('a'.repeat(64));
+    expect(readToken(mint)).toBe('a'.repeat(64)); // copied, so a process without XDG finds it
+    expect(readToken(stale)).toBe('a'.repeat(64)); // untouched — it already agreed
+  });
+
+  it('never adopts or propagates a malformed token', () => {
+    // A truncated write or a hand-edited file must not become the secret — and above all must not
+    // be copied over a VALID token at another candidate, which would spread a guessable one.
+    const dir = tmp();
+    const stale = join(dir, 'xdg-token');
+    const mint = join(dir, 'mint-token');
+    writeFileSync(mint, 'x'); // not 64 hex — junk, however non-empty
+    writeFileSync(stale, 'a'.repeat(64));
+    const token = ensureToken(mint, [stale, mint]);
+    expect(token).toBe('a'.repeat(64)); // the real token wins over the junk
+    expect(readToken(mint)).toBe('a'.repeat(64)); // junk healed, not enthroned
+    expect(readToken(stale)).toBe('a'.repeat(64)); // and never overwritten with 'x'
+  });
+
+  it('looks past a malformed early candidate to a valid later one', () => {
+    // A junk file at the first candidate must not MASK a real token further down the list: minting
+    // a rival there would overwrite the token every running process is already holding.
+    const dir = tmp();
+    const junk = join(dir, 'junk-token');
+    const mint = join(dir, 'mint-token');
+    const home = join(dir, 'home-token');
+    writeFileSync(junk, 'x');
+    writeFileSync(home, 'a'.repeat(64));
+    expect(ensureToken(mint, [junk, mint, home])).toBe('a'.repeat(64));
+    expect(readToken(mint)).toBe('a'.repeat(64)); // adopted, not freshly minted
+    expect(readToken(junk)).toBe('a'.repeat(64)); // the junk is reconciled away
+  });
+
+  it('heals a blank mint path while adopting, so the next process finds it', () => {
+    // Without this the adopted token stays only at the candidate this process can see, and a
+    // process that resolves a different environment mints a rival on its next start.
+    const dir = tmp();
+    const stale = join(dir, 'xdg-token');
+    const mint = join(dir, 'mint-token');
+    writeFileSync(mint, ''); // exists, so the exclusive create fails — but holds nothing
+    writeFileSync(stale, 'a'.repeat(64));
+    expect(ensureToken(mint, [stale, mint])).toBe('a'.repeat(64));
+    expect(readToken(mint)).toBe('a'.repeat(64));
+  });
+
+  it('ignores a blank fallback and mints, rather than adopting nothing', () => {
+    const dir = tmp();
+    const fallback = join(dir, 'fallback-token');
+    const primary = join(dir, 'primary-token');
+    writeFileSync(fallback, '   \n'); // present but empty — not a token to adopt
+    const token = ensureToken(primary, [primary, fallback]);
+    expect(token).toHaveLength(64);
+    expect(readToken(primary)).toBe(token);
+  });
+
+  it('leaves no temp file behind — the token appears complete or not at all', () => {
+    // The token is linked into place from a fully-written temp file, so a reader can never observe
+    // a half-written secret. The temp name must not survive the call either.
+    const dir = tmp();
+    const path = join(dir, 'listener-token');
+    ensureToken(path, [path]);
+    expect(readdirSync(dir)).toEqual(['listener-token']);
   });
 
   it('creates a 32-byte token owner-only, and is idempotent', () => {
@@ -82,6 +202,30 @@ describe('ensureToken', () => {
     writeFileSync(blank, '   \n');
     expect(readToken(blank)).toBeUndefined();
     expect(tokenIsPrivate(join(dir, 'absent'))).toBe(false);
+  });
+});
+
+describe('tokensAgree', () => {
+  it('is true when candidates hold the same token, or only one holds anything', () => {
+    const dir = tmp();
+    const a = join(dir, 'a');
+    const b = join(dir, 'b');
+    expect(tokensAgree([a, b])).toBe(true); // neither exists yet
+    writeFileSync(a, 'a'.repeat(64));
+    expect(tokensAgree([a, b])).toBe(true); // one holds it, the other is simply absent
+    writeFileSync(b, 'a'.repeat(64));
+    expect(tokensAgree([a, b])).toBe(true);
+  });
+
+  it('is false when two candidates hold DIFFERENT tokens', () => {
+    // The split-brain doctor must surface: plugin serves one, a hook sends the other, every
+    // request is refused as a WRONG token, and nothing else in the product says why.
+    const dir = tmp();
+    const a = join(dir, 'a');
+    const b = join(dir, 'b');
+    writeFileSync(a, 'a'.repeat(64));
+    writeFileSync(b, 'b'.repeat(64));
+    expect(tokensAgree([a, b])).toBe(false);
   });
 });
 
@@ -140,8 +284,11 @@ describe('isAuthorized', () => {
     expect(noticed).toBe(0); // an attacker must not be able to spam the "upgrade your hooks" log
   });
 
-  it('serves everything while the grace period is open, whatever the endpoint', () => {
-    expect(isAuthorized({}, secret, undefined, 'status')).toBe(!ENFORCE_TOKEN);
+  it('keeps the status feed alive for an untokened client, but refuses the sensitive endpoints', () => {
+    // The endpoint split covers BOTH untokened verdicts, not just no-secret. A hook older than the
+    // token keeps painting keys — refusing /hook is what turns "your hooks are stale" into a black
+    // board — while /permission and /slot, the two reasons to authenticate at all, are refused.
+    expect(isAuthorized({}, secret, undefined, 'status')).toBe(true);
     expect(isAuthorized({}, secret, undefined, 'sensitive')).toBe(!ENFORCE_TOKEN);
   });
 
