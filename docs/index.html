@@ -20,7 +20,7 @@
 <meta property="og:image" content="https://getjetstream.dev/og-card.png" />
 <meta property="og:image:width" content="1920" />
 <meta property="og:image:height" content="1080" />
-<meta property="og:image:alt" content="A Stream Deck running Jetstream — one key per project, each lit with its live Claude Code status" />
+<meta property="og:image:alt" content="A Stream Deck running Jetstream: one key per project, each lit with its live Claude Code status" />
 <meta property="og:site_name" content="Jetstream" />
 
 <!-- Twitter / X -->
@@ -28,7 +28,7 @@
 <meta name="twitter:title" content="Jetstream: Claude Code on your Stream Deck" />
 <meta name="twitter:description" content="See each Claude Code project's live status on your Elgato Stream Deck, and answer permission prompts with a keypress." />
 <meta name="twitter:image" content="https://getjetstream.dev/og-card.png" />
-<meta name="twitter:image:alt" content="A Stream Deck running Jetstream — one key per project, each lit with its live Claude Code status" />
+<meta name="twitter:image:alt" content="A Stream Deck running Jetstream: one key per project, each lit with its live Claude Code status" />
 
 <!-- Structured data: what jetstream is, for search rich-results and LLM extraction -->
 <script type="application/ld+json">
@@ -41,7 +41,7 @@
       "url": "https://getjetstream.dev/",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "macOS",
-      "description": "An Elgato Stream Deck plugin for Claude Code. One key per project, lit with that project's live status — working, needs-you, done — plus a fleet roll-up, an attention doorbell, 5h/7d usage gauges, deck-answerable permission prompts, and a board you build by talking to it.",
+      "description": "An Elgato Stream Deck plugin for Claude Code. One key per project, lit with that project's live status (working, needs-you, done), plus a fleet roll-up, an attention doorbell, 5h/7d usage gauges, deck-answerable permission prompts, and a board you build by talking to it.",
       "softwareVersion": "3.0.1",
       "license": "https://www.apache.org/licenses/LICENSE-2.0",
       "downloadUrl": "https://www.npmjs.com/package/@pimmesz/jetstream",
@@ -75,7 +75,7 @@
     --code-ink: #c9cdd6;     /* neutral mono / inline-code text; replaces the old decorative orange */
     /* Orange is the shipped "working" colour (#f76808); it now shows only on the primary CTA and
        the focus ring. Amber #ffb224 is reserved for the needs-you state (the legend and the h1 span).
-       The four --st values are frozen — the legend teaches the real deck colours. */
+       The four --st values are frozen: the legend teaches the real deck colours. */
     --jet: #f76808;
     --st-working: #f76808;
     --st-needs: #ffb224;
@@ -131,7 +131,7 @@
   .chapter > .body > h2 { margin-bottom: 14px; }
   .chapter > .body > .kicker { margin-bottom: 12px; }
 
-  /* keycap — the moulded Stream Deck key. Shared by the feature keys. */
+  /* keycap: the moulded Stream Deck key. Shared by the feature keys. */
   .keycap {
     position: relative; border-radius: 12px;
     background: linear-gradient(150deg, #1b1e26, #0f1116);
@@ -180,19 +180,16 @@
   .ghost-btn { font-family: var(--mono); font-size: 0.86rem; color: var(--muted); padding: 12px 4px; text-decoration: none; }
   .ghost-btn:hover { color: var(--ink); text-decoration: none; }
 
-  /* The deck photo rests on a surface: perspective bleed + a real contact shadow. */
-  .deck-stage { position: relative; margin-right: calc(50% - 50vw); }
-  .deck { position: relative; }
-  .deck img {
-    display: block; width: 100%; height: auto;
-    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 14%);
-    mask-image: linear-gradient(180deg, transparent 0, #000 14%);
-  }
-  .deck::after {
-    content: ""; position: absolute; left: 14%; right: 22%; bottom: 2%; height: 36px; z-index: -1;
-    background: radial-gradient(50% 100% at 50% 100%, rgba(0, 0, 0, 0.45), transparent 70%);
-    filter: blur(18px);
-  }
+  /* The hero photo has a transparent background, so it sits straight on the page colour
+     with no edge to seam. The shadow under it is baked into the image. */
+  .deck-stage { position: relative; }
+  .deck-photo { display: block; width: 100%; height: auto; }
+
+  /* The board figure is drawn, not photographed: the key faces use the same geometry and
+     colours the plugin paints (packages/jetstream/src/render.ts), in the MK.2's 5x3 grid. */
+  .board-figure { margin: 36px 0 0; max-width: 640px; }
+  .deck-board { display: block; width: 100%; height: auto; }
+  figcaption { font-size: 0.85rem; color: var(--dim); margin-top: 12px; }
 
   /* legend chips: tiny deck keys in the frozen status colours */
   .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 28px 0 0;
@@ -216,15 +213,6 @@
   /* glyphs stay coloured only in the accessibility sentence that documents them */
   .glyph.g-work { color: var(--st-working); } .glyph.g-need { color: var(--st-needs); } .glyph.g-done { color: var(--st-done); }
 
-  /* figures: plain captions, not spec plates */
-  figure { margin: 36px 0 0; }
-  figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; }
-  /* A letterbox crop of the real deck photo, framed on the lit keys so the labels read large.
-     Deliberately a tighter, wider frame than the hero so it works as a detail shot, not a repeat. */
-  .shot { aspect-ratio: 16 / 7; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; }
-  .shot img { width: 100%; height: 100%; border: 0; border-radius: 0; object-fit: cover; object-position: 50% 32%; transform: scale(1.24); }
-  figcaption { font-family: var(--sans); font-size: 0.85rem; color: var(--dim); margin-top: 12px; }
-
   /* code block + example inputs */
   pre { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px;
     padding: 18px 20px; overflow-x: auto; font-family: var(--mono); font-size: 0.88rem; color: #e4e7ec; margin: 20px 0 0; }
@@ -232,7 +220,7 @@
   .term { font-size: 0.88rem; line-height: 1.75; }
   .term .in { color: var(--ink); } .term .in::before { content: "> "; color: var(--dim); }
 
-  /* CH.03 chat capabilities — same moulded surface as the feature keys */
+  /* CH.03 chat capabilities: same moulded surface as the feature keys */
   h3.sub { font-family: var(--display); font-size: 1.06rem; font-weight: 700; margin: 30px 0 14px; }
   .chatgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .chatcard {
@@ -250,7 +238,7 @@
 
   @media (max-width: 900px) {
     .hero-grid, .chatgrid { grid-template-columns: 1fr; }
-    .deck-stage { margin-right: 0; order: 2; }
+    .deck-stage { order: 2; }
     .chapter { padding-block: 72px; }
     .board { grid-template-columns: repeat(2, 1fr); }
   }
@@ -286,10 +274,8 @@
         </p>
       </div>
       <div class="deck-stage">
-        <div class="deck">
-          <img src="./deck-hero.jpg" width="1672" height="941" fetchpriority="high"
-            alt="A Stream Deck MK.2 running Jetstream: 15 keys showing a live Claude Code status board — fleet and attention amber, an Opus usage gauge and web done in green, falcon and docs working in orange, approve and settings keys, infra idle in gray, bottom row unlit" />
-        </div>
+          <img class="deck-photo" src="./deck-hero.png" width="1154" height="748" fetchpriority="high"
+            alt="A 15-key deck standing on a desk stand, its top two rows lit amber, orange, green and grey, the bottom row unlit" />
       </div>
     </div>
   </div>
@@ -309,9 +295,75 @@
         <div class="keycap feat"><h3>Attention</h3><p>A doorbell that flashes when any repo's request goes unanswered.</p></div>
         <div class="keycap feat"><h3>Stop all</h3><p>Interrupts every session at once, showing how many are running. Off until you opt in.</p></div>
       </div>
-      <figure>
-        <div class="shot"><img src="./deck-hero.jpg" alt="Close-up of a lit Stream Deck: falcon and docs orange, api amber and asking to approve, web green and done, infra grey and idle" loading="lazy" /></div>
-        <figcaption>falcon working, api waiting on you, web done, infra idle.</figcaption>
+      <figure class="board-figure">
+        <svg class="deck-board" viewBox="0 0 888 552" width="888" height="552" role="img"
+          aria-label="A 15-key Stream Deck board running Jetstream: a fleet roll-up and an attention doorbell in amber, a usage gauge and a pending approval in green, a settings key in dark grey, falcon and docs working in orange, api waiting on a deck approval in amber, web done in green, infra idle in grey, and an unused bottom row"
+          font-family="-apple-system,Segoe UI,sans-serif">
+          <rect x="0.5" y="0.5" width="887" height="551" rx="20" fill="#14161d" stroke="rgba(255,255,255,0.07)" />
+
+          <g transform="translate(36,36)">
+            <rect width="144" height="144" rx="18" fill="#ffb224" />
+            <text x="18" y="34" font-size="22" font-weight="700" fill="#ffffff">!</text>
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">fleet</text>
+            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">3w 1! 2✓</text>
+          </g>
+          <g transform="translate(204,36)">
+            <rect width="144" height="144" rx="18" fill="#ffb224" />
+            <text x="18" y="34" font-size="22" font-weight="700" fill="#ffffff">!</text>
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">api</text>
+            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">needs you</text>
+          </g>
+          <g transform="translate(372,36)">
+            <rect width="144" height="144" rx="18" fill="#30a46c" />
+            <text x="72" y="42" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">5h 34%</text>
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">7d 41%</text>
+            <text x="72" y="112" text-anchor="middle" font-size="14" fill="rgba(255,255,255,0.85)">resets 3h33m</text>
+          </g>
+          <g transform="translate(540,36)">
+            <rect width="144" height="144" rx="18" fill="#30a46c" />
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">APPROVE</text>
+            <text x="72" y="112" text-anchor="middle" font-size="14" fill="rgba(255,255,255,0.85)">Bash: rm -rf dist/</text>
+          </g>
+          <g transform="translate(708,36)">
+            <rect width="144" height="144" rx="18" fill="#3a3a3a" />
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">settings</text>
+            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">contrast: off</text>
+          </g>
+
+          <g transform="translate(36,204)">
+            <rect width="144" height="144" rx="18" fill="#f76808" />
+            <text x="18" y="34" font-size="22" font-weight="700" fill="#ffffff">⋯</text>
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">falcon</text>
+            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">Bash · 12m</text>
+          </g>
+          <g transform="translate(204,204)">
+            <rect width="144" height="144" rx="18" fill="#ffb224" />
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">api</text>
+            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">approve on deck</text>
+          </g>
+          <g transform="translate(372,204)">
+            <rect width="144" height="144" rx="18" fill="#30a46c" />
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">web</text>
+            <text x="72" y="112" text-anchor="middle" font-size="14" fill="rgba(255,255,255,0.85)">done 4m · +120/-40</text>
+          </g>
+          <g transform="translate(540,204)">
+            <rect width="144" height="144" rx="18" fill="#f76808" />
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">docs</text>
+            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">working 3m</text>
+          </g>
+          <g transform="translate(708,204)">
+            <rect width="144" height="144" rx="18" fill="#8e8e93" />
+            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">infra</text>
+            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">idle</text>
+          </g>
+
+          <rect x="36" y="372" width="144" height="144" rx="18" fill="#0f1116" />
+          <rect x="204" y="372" width="144" height="144" rx="18" fill="#0f1116" />
+          <rect x="372" y="372" width="144" height="144" rx="18" fill="#0f1116" />
+          <rect x="540" y="372" width="144" height="144" rx="18" fill="#0f1116" />
+          <rect x="708" y="372" width="144" height="144" rx="18" fill="#0f1116" />
+        </svg>
+        <figcaption>The faces Jetstream paints: falcon running Bash, api waiting on a deck approval, web done with its diff size, infra idle.</figcaption>
       </figure>
     </div>
   </div>
