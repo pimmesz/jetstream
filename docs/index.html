@@ -20,7 +20,7 @@
 <meta property="og:image" content="https://getjetstream.dev/og-card.png" />
 <meta property="og:image:width" content="1920" />
 <meta property="og:image:height" content="1080" />
-<meta property="og:image:alt" content="A Stream Deck running Jetstream: one key per project, each lit with its live Claude Code status" />
+<meta property="og:image:alt" content="Jetstream: a Stream Deck lit amber, orange, green and grey, beside the line &quot;See which Claude Code project needs you.&quot;" />
 <meta property="og:site_name" content="Jetstream" />
 
 <!-- Twitter / X -->
@@ -28,7 +28,7 @@
 <meta name="twitter:title" content="Jetstream: Claude Code on your Stream Deck" />
 <meta name="twitter:description" content="See each Claude Code project's live status on your Elgato Stream Deck, and answer permission prompts with a keypress." />
 <meta name="twitter:image" content="https://getjetstream.dev/og-card.png" />
-<meta name="twitter:image:alt" content="A Stream Deck running Jetstream: one key per project, each lit with its live Claude Code status" />
+<meta name="twitter:image:alt" content="Jetstream: a Stream Deck lit amber, orange, green and grey, beside the line &quot;See which Claude Code project needs you.&quot;" />
 
 <!-- Structured data: what jetstream is, for search rich-results and LLM extraction -->
 <script type="application/ld+json">
@@ -185,12 +185,6 @@
   .deck-stage { position: relative; }
   .deck-photo { display: block; width: 100%; height: auto; }
 
-  /* The board figure is drawn, not photographed: the key faces use the same geometry and
-     colours the plugin paints (packages/jetstream/src/render.ts), in the MK.2's 5x3 grid. */
-  .board-figure { margin: 36px 0 0; max-width: 640px; }
-  .deck-board { display: block; width: 100%; height: auto; }
-  figcaption { font-size: 0.85rem; color: var(--dim); margin-top: 12px; }
-
   /* legend chips: tiny deck keys in the frozen status colours */
   .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 28px 0 0;
     font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
@@ -295,76 +289,6 @@
         <div class="keycap feat"><h3>Attention</h3><p>A doorbell that flashes when any repo's request goes unanswered.</p></div>
         <div class="keycap feat"><h3>Stop all</h3><p>Interrupts every session at once, showing how many are running. Off until you opt in.</p></div>
       </div>
-      <figure class="board-figure">
-        <svg class="deck-board" viewBox="0 0 888 552" width="888" height="552" role="img"
-          aria-label="A 15-key Stream Deck board running Jetstream: a fleet roll-up and an attention doorbell in amber, a usage gauge and a pending approval in green, a settings key in dark grey, falcon and docs working in orange, api waiting on a deck approval in amber, web done in green, infra idle in grey, and an unused bottom row"
-          font-family="-apple-system,Segoe UI,sans-serif">
-          <rect x="0.5" y="0.5" width="887" height="551" rx="20" fill="#14161d" stroke="rgba(255,255,255,0.07)" />
-
-          <g transform="translate(36,36)">
-            <rect width="144" height="144" rx="18" fill="#ffb224" />
-            <text x="18" y="34" font-size="22" font-weight="700" fill="#ffffff">!</text>
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">fleet</text>
-            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">3w 1! 2✓</text>
-          </g>
-          <g transform="translate(204,36)">
-            <rect width="144" height="144" rx="18" fill="#ffb224" />
-            <text x="18" y="34" font-size="22" font-weight="700" fill="#ffffff">!</text>
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">api</text>
-            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">needs you</text>
-          </g>
-          <g transform="translate(372,36)">
-            <rect width="144" height="144" rx="18" fill="#30a46c" />
-            <text x="72" y="42" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">5h 34%</text>
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">7d 41%</text>
-            <text x="72" y="112" text-anchor="middle" font-size="14" fill="rgba(255,255,255,0.85)">resets 3h33m</text>
-          </g>
-          <g transform="translate(540,36)">
-            <rect width="144" height="144" rx="18" fill="#30a46c" />
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">APPROVE</text>
-            <text x="72" y="112" text-anchor="middle" font-size="14" fill="rgba(255,255,255,0.85)">Bash: rm -rf dist/</text>
-          </g>
-          <g transform="translate(708,36)">
-            <rect width="144" height="144" rx="18" fill="#3a3a3a" />
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">settings</text>
-            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">contrast: off</text>
-          </g>
-
-          <g transform="translate(36,204)">
-            <rect width="144" height="144" rx="18" fill="#f76808" />
-            <text x="18" y="34" font-size="22" font-weight="700" fill="#ffffff">⋯</text>
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">falcon</text>
-            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">Bash · 12m</text>
-          </g>
-          <g transform="translate(204,204)">
-            <rect width="144" height="144" rx="18" fill="#ffb224" />
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">api</text>
-            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">approve on deck</text>
-          </g>
-          <g transform="translate(372,204)">
-            <rect width="144" height="144" rx="18" fill="#30a46c" />
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">web</text>
-            <text x="72" y="112" text-anchor="middle" font-size="14" fill="rgba(255,255,255,0.85)">done 4m · +120/-40</text>
-          </g>
-          <g transform="translate(540,204)">
-            <rect width="144" height="144" rx="18" fill="#f76808" />
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">docs</text>
-            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">working 3m</text>
-          </g>
-          <g transform="translate(708,204)">
-            <rect width="144" height="144" rx="18" fill="#8e8e93" />
-            <text x="72" y="82" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">infra</text>
-            <text x="72" y="112" text-anchor="middle" font-size="18" fill="rgba(255,255,255,0.85)">idle</text>
-          </g>
-
-          <rect x="36" y="372" width="144" height="144" rx="18" fill="#0f1116" />
-          <rect x="204" y="372" width="144" height="144" rx="18" fill="#0f1116" />
-          <rect x="372" y="372" width="144" height="144" rx="18" fill="#0f1116" />
-          <rect x="540" y="372" width="144" height="144" rx="18" fill="#0f1116" />
-          <rect x="708" y="372" width="144" height="144" rx="18" fill="#0f1116" />
-        </svg>
-        <figcaption>The faces Jetstream paints: falcon running Bash, api waiting on a deck approval, web done with its diff size, infra idle.</figcaption>
-      </figure>
     </div>
   </div>
 </section>
