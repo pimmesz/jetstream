@@ -80,9 +80,12 @@ export function buildOpenCommand(
     : { cmd: 'xdg-open', args: [path] };
 }
 
-/** Is `pid` a live process whose command mentions `claude`? Guards interrupt against
- * PID reuse and against a hook parent that turned out to be a shell wrapper — we only
- * SIGINT something that actually looks like the Claude session. macOS/Linux only. */
+/** Is `pid` a live Claude Code CLI process? Guards interrupt against PID reuse and against a
+ * hook parent that turned out to be a shell wrapper — we only SIGINT something that actually IS
+ * the Claude session. Uses the same strict classifier as {@link probeClaudeProcess}: a substring
+ * match here would authorise SIGINT against any process whose command line merely mentions
+ * claude (`vim claude-notes.md`, a checkout under a path containing "claude"), which on a kill
+ * path is the wrong side of "any doubt is don't". macOS/Linux only. */
 export function isClaudeProcess(pid: number, platform: NodeJS.Platform = process.platform): boolean {
   if (platform === 'win32' || !Number.isInteger(pid) || pid <= 1) return false;
   try {
@@ -90,7 +93,7 @@ export function isClaudeProcess(pid: number, platform: NodeJS.Platform = process
       encoding: 'utf8',
       timeout: 2000,
     });
-    return /claude/i.test(out);
+    return isClaudeCommand(out);
   } catch {
     return false; // no such process, or ps unavailable → don't kill
   }
