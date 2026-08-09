@@ -5,6 +5,45 @@ Newest first. A decision here is settled — re-open it only against its stated 
 
 ---
 
+## 2026-08-09 — `1.1.1` stays untagged, and the guard that let it hide
+
+Two calls from the first monthly supply-chain review.
+
+### `1.1.1` is the one published version with no git tag — accepted, not back-filled
+
+Tags on the remote start at `v1.2.0`; every version from 1.2.0 through 3.0.2 has one. `1.1.1`
+(published 2026-07-16) has none, so the tree it shipped from cannot now be identified.
+
+**Accepted.** 1.1.1 predates the automated release job, which cuts the tag inside `release`
+only after `publish` succeeds — the gap is structural to the era, not a hole in the current
+path. It is 25 versions superseded, and current `latest` is independently verified: the
+published `dist/npm-cli-entry.js` is byte-identical to a fresh build from source, and the
+package carries SLSA provenance from an OIDC publish by GitHub Actions. Back-filling would mean
+pushing a tag onto a guessed commit, which manufactures exactly the certainty that is missing.
+
+**TRIGGER to reopen:** anyone needs to reproduce or audit 1.1.1 specifically, or a second
+untagged version appears (which would mean the release job's ordering broke, not history).
+
+### The kill guard is strict on purpose — a substring match is not a lenient version of it
+
+`isClaudeProcess` (`switchto.ts`) once returned `/claude/i.test(ps_output)`. It gates
+`interruptPids`, reached from six deck handlers including interrupt-all with `board.allPids()`,
+so the loose form authorised SIGINT against any process merely mentioning claude on a recycled
+pid. It now shares `isClaudeCommand` with `probeClaudeProcess`.
+
+**The reason this is written down:** relaxing it looks locally harmless and reads as a
+false-negative fix ("the guard missed my session"). It is not. The failure it actually caused
+was silent — the suite's own `interruptPids([process.pid])` test SIGINTed vitest's fork worker
+on any checkout under a path containing "claude", and vitest reported the 12 lost tests as
+`pending` with `numFailedTests: 0` and `success: true`. Only the exit code was red, and CI could
+never show it because ubuntu-latest workspace paths do not contain "claude". A guard on a kill
+path is not a matcher to be tuned; any doubt is "don't".
+
+**TRIGGER to reopen:** a real Claude session is provably missed by `isClaudeCommand` — in which
+case fix that one classifier, so the read and write paths keep one definition.
+
+---
+
 ## 2026-07-25 — Loopback auth-transport cluster
 
 Four linked findings from the 2026-07-22 security, test-suite and concurrency audits.
