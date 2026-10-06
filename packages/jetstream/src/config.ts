@@ -14,9 +14,9 @@ export type JetstreamConfig = {
    * `/slot` endpoint is unauthenticated, so a local process could plant a `run` command; keeping
    * execution opt-in means a planted command is inert until the user deliberately enables this. */
   allowRunKeys: boolean;
-  /** Whether a slot's `stopall` kind may SIGINT the whole fleet on press. OFF by default for the same
+  /** Whether a slot's `stopall` kind may stop every running turn on press. OFF by default for the same
    * reason as {@link allowRunKeys}: the loopback `/slot` endpoint is unauthenticated, so a planted
-   * stopall key stays inert (a fleet-wide interrupt is destructive) until the user opts in. */
+   * stopall key stays inert (a fleet-wide stop is disruptive) until the user opts in. */
   allowStopKeys: boolean;
 };
 

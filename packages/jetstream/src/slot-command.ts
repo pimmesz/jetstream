@@ -38,6 +38,13 @@ export function isSafeAppTarget(app: string, platform: NodeJS.Platform = process
   return true;
 }
 
+/** The chessboard-style label for a key at (column,row), both 0-indexed: row = letter (a = top),
+ * column = number (1 = left). So the top-right key of an XL (col 7, row 0) is "a8". Pure. Lives
+ * here, not in the SDK action module, so the CLI can use it without loading the Stream Deck SDK. */
+export function coordLabel(column: number, row: number): string {
+  return `${String.fromCharCode(97 + row)}${column + 1}`;
+}
+
 /** "a8" → {column:7,row:0}; row = letter (a = top), column = 1-indexed number. Deliberately NOT
  * bound-checked against a deck — the IPC matches whatever key instances are actually visible, not a
  * fixed grid. Null when unparseable. Inverse of `coordLabel`. */

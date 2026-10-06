@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { installHooks, mergeHooks, HOOK_EVENTS } from './hooks-install';
+import { defaultSettingsPath, installHooks, mergeHooks, HOOK_EVENTS, TOOL_DETAIL_EVENTS } from './hooks-install';
 
 // Realistic jetstream commands: node + a script under the gg.pim.jetstream.sdPlugin dir
 // (the marker the same-script matcher requires so it can't hijack a user's own hook).
@@ -207,3 +207,29 @@ describe('installHooks read failures', () => {
     }
   });
 });
+
+describe('stop gate, tool-failure detail and CLAUDE_CONFIG_DIR', () => {
+  const GATE = "[ -f '/p/gg.pim.jetstream.sdPlugin/bin/stop-gate.js' ] || exit 0; exec 'node' '/p/gg.pim.jetstream.sdPlugin/bin/stop-gate.js'";
+
+  it('wires the stop gate on PreToolUse by default, beside any user hook', () => {
+    const settings = { hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'mine' }] }] } };
+    const { next } = mergeHooks(settings, { status: STATUS, stopGate: GATE });
+    const pre = JSON.stringify((next.hooks as Record<string, unknown>).PreToolUse);
+    expect(pre).toContain('mine');
+    expect(pre).toContain('stop-gate.js');
+    // The status hook itself stays off PreToolUse unless tool detail is asked for.
+    expect(pre).not.toContain('status-hook.js');
+  });
+
+  it('tool detail also covers failed tool calls', () => {
+    expect([...TOOL_DETAIL_EVENTS]).toContain('PostToolUseFailure');
+    const { next } = mergeHooks({}, { status: STATUS, toolDetail: true });
+    expect((next.hooks as Record<string, unknown>).PostToolUseFailure).toBeDefined();
+  });
+
+  it('follows CLAUDE_CONFIG_DIR like Claude Code does', () => {
+    expect(defaultSettingsPath('/home/u', { CLAUDE_CONFIG_DIR: '/cfg/claude' })).toBe('/cfg/claude/settings.json');
+    expect(defaultSettingsPath('/home/u', {})).toBe('/home/u/.claude/settings.json');
+  });
+});
+

@@ -74,8 +74,20 @@ describe('toSlotKey (native → slot migration)', () => {
       settings: { kind: 'url', url: 'https://github.com/x' },
     });
   });
-  it('leaves Jetstream keys and unmigrated native types (text) alone', () => {
-    expect(toSlotKey('gg.pim.jetstream.project', { path: '/x' })).toBeNull();
+  it('migrates the older standalone Jetstream keys to slot kinds, so later edits apply live', () => {
+    expect(toSlotKey('gg.pim.jetstream.project', { path: '/x', name: 'X' })).toEqual({
+      uuid: 'gg.pim.jetstream.slot',
+      settings: { kind: 'project', path: '/x', name: 'X' },
+    });
+    expect(toSlotKey('gg.pim.jetstream.fleet', null)?.settings).toEqual({ kind: 'fleet' });
+    // The slot stopall kind is inert until allowStopKeys, so a working stop-all key stays native.
+    expect(toSlotKey('gg.pim.jetstream.interruptall', null)).toBeNull();
+    // A project key with no path is the bundled default board's placeholder: leave it native.
+    expect(toSlotKey('gg.pim.jetstream.project', {})).toBeNull();
+  });
+
+  it('leaves slots and unmigrated native types (text) alone', () => {
+    expect(toSlotKey('gg.pim.jetstream.slot', { kind: 'app', app: '/A.app' })).toBeNull();
     expect(toSlotKey('com.elgato.streamdeck.system.text', { pastedText: 'hi' })).toBeNull();
     expect(toSlotKey('com.elgato.streamdeck.system.open', {})).toBeNull(); // no path → nothing to migrate
   });

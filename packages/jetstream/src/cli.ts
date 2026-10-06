@@ -1,13 +1,15 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
-import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { runClaude } from '@pimmesz/jetstream-claude';
 import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
-import { installHooks, type HookCommands } from './hooks-install';
+import { hookCommands, installHooks } from './hooks-install';
+
+export { hookCommands } from './hooks-install';
 import { runDoctor, formatReport, commandOnPath } from './doctor';
-import { offerProfile, runInit } from './init';
+import { isInputAbort, offerProfile, runInit } from './init';
 import {
   buildLayoutProfile,
   detectConnectedDeck,
@@ -15,8 +17,17 @@ import {
   renderProfileArchive,
   type DeckModel,
 } from './profile';
-import { mergeBoard, pruneCustomProfiles, readBoardLayout, renderBoardMap } from './board-layout';
-import { coordLabel } from './actions/coord';
+import {
+  activeProfileUuids,
+  defaultProfilesDir,
+  mergeBoard,
+  pruneCustomProfiles,
+  readBoardLayout,
+  renderBoardMap,
+} from './board-layout';
+import { applyLayout } from './chat-apply';
+import { readForeignCatalog } from './plugin-catalog';
+import { writeInPlace } from './profile-store';
 import { selectOne } from './select';
 import { paintCoordByRow, spinner } from './term';
 import { pluginAlive, sendSlot } from './slot-client';
@@ -52,28 +63,11 @@ Commands:
   update                          Update the npm package + reinstall the plugin (npm CLI)
   version                         Show the installed plugin / npm package versions`;
 
-/** Build the node-quoted hook commands pointing at the sibling bundled hook scripts, so
- * they install with correct absolute paths wherever the .sdPlugin lives. */
-/** POSIX-single-quote a path for embedding in the hook command string. Single quotes neutralize
- * every shell metacharacter ($, backticks, ", \), so an install path containing them can't break
- * out of the command; an embedded single quote uses the standard '\'' dance. */
-const shellQuote = (path: string): string => `'${path.replace(/'/g, `'\\''`)}'`;
-
-export function hookCommands(binDir: string, toolDetail: boolean): HookCommands {
-  // Stable node symlink survives a Homebrew upgrade; fall back to the installing node.
-  const node = existsSync('/opt/homebrew/bin/node') ? '/opt/homebrew/bin/node' : process.execPath;
-  // Skip cleanly if the script is missing (e.g. mid-rebuild), otherwise exec node so
-  // its real exit code and errors still surface.
-  const cmd = (file: string): string => {
-    const script = shellQuote(join(binDir, file));
-    return `[ -f ${script} ] || exit 0; exec ${shellQuote(node)} ${script}`;
-  };
-  return {
-    status: cmd('status-hook.js'),
-    permission: cmd('permission-hook.js'),
-    usage: cmd('usage-hook.js'),
-    toolDetail,
-  };
+/** Why a chat model turn failed, in the user's terms. */
+function chatFailure(result: { result?: string; stderrTail?: string; exitCode: number | null }): string {
+  const said = result.result?.trim() || result.stderrTail?.split('\n').pop()?.trim();
+  if (said) return said.slice(0, 200);
+  return result.exitCode === null ? 'it timed out or could not start' : `claude exited with code ${result.exitCode}`;
 }
 
 async function runHooks(args: string[], binDir: string): Promise<number> {
@@ -246,112 +240,86 @@ export async function run(argv: string[], binDir: string): Promise<number> {
         spinner,
       };
       try {
+        const board = readBoardLayout();
         return await runChatSetup({
           io: chatIo,
-          board: readBoardLayout(),
+          board,
+          readBoard: () => readBoardLayout(),
+          catalog: readForeignCatalog(defaultProfilesDir()),
           paintCoord: paintCoordByRow,
           claudeAvailable: () => commandOnPath('claude'),
           ask: async (prompt) => {
-            const result = await runClaude({ prompt, appendSystemPrompt: SETUP_SYSTEM }, () => {});
-            return result.isError || !result.result ? null : result.result;
+            // A pure text run: no tools, no MCP servers, nothing saved to the session list, and the
+            // permission hook skips it (headless runs fire PermissionRequest since Claude Code 2.1.268).
+            const result = await runClaude(
+              {
+                prompt,
+                appendSystemPrompt: SETUP_SYSTEM,
+                model: 'sonnet',
+                tools: '',
+                strictMcpConfig: true,
+                noSessionPersistence: true,
+                cwd: tmpdir(),
+                env: { JETSTREAM_SKIP_DECK: '1' },
+              },
+              () => {},
+            );
+            if (!result.isError && result.result) return result.result;
+            return { error: chatFailure(result) };
           },
-          // After the fleet is written, build the whole deck layout in the same conversation:
-          // pick a deck, generate the importable .streamDeckProfile, and open it — so `chat`
-          // is a full talk-to-set-up flow, not just projects.json.
+          // First board for a fleet with no board yet: the ready-made profile.
           onWritten: async (projects) => {
             chatIo.say('');
             const profilePath = await offerProfile(chatIo, projects, defaultOpenFile());
             chatIo.say(
               profilePath
-                ? `Next: double-click ${profilePath} to import it (installs as a new profile — nothing is overwritten).`
+                ? `Next: confirm the import of ${profilePath} in Stream Deck.`
                 : 'Next: drag a Fleet + Attention key onto your deck.',
             );
           },
-          // When the model designed a full key layout ("open telegram at a8"), apply it. Slots go
-          // LIVE (retargeted in place on the running plugin — no profile, no import); anything
-          // structural (a project/native key, or the plugin being down) falls back to generating an
-          // importable .streamDeckProfile.
-          onLayout: async (layout) => {
-            const slotEdits = layout.placements.filter((p) => p.uuid === 'gg.pim.jetstream.slot');
-            const structural = layout.placements.filter((p) => p.uuid !== 'gg.pim.jetstream.slot');
-            // Run keys are opt-in — flag it at creation so a new one isn't a silent no-op on press.
-            const runNote = layout.placements.some((p) => (p.settings as { kind?: string } | null)?.kind === 'run')
-              ? '\n(Run keys are off by default. Enable them with "allowRunKeys": true in the\n' +
-                '"settings" block of your projects.json, then restart the Stream Deck app.)'
-              : '';
-            const alive = structural.length === 0 && slotEdits.length > 0 ? await pluginAlive() : false;
-            // The plugin being down is a DIFFERENT problem from a coordinate having no key, and it
-            // used to fall through with no explanation at all — indistinguishable from "that key
-            // type needs an import", which does get one.
-            if (structural.length === 0 && slotEdits.length > 0 && !alive) {
+          onLayout: async (placements, { deck, board: current }) => {
+            const outcome = await applyLayout(placements, {
+              say: chatIo.say,
+              confirm: async (question) => {
+                const answer = (await chatIo.ask(`\n${question} [y/N] `)).trim().toLowerCase();
+                return answer === 'y' || answer === 'yes';
+              },
+              board: current,
+              boardOnScreen: () => readBoardLayout(),
+              pluginAlive,
+              sendSlot,
+              writeInPlace:
+                process.platform === 'darwin'
+                  ? (profileDir, edits, pageId) =>
+                      writeInPlace(profileDir, edits, {
+                        ...(pageId ? { pageId } : {}),
+                        jetstreamVersion: pluginVersion(binDir).replace('unknown', '0.0.0.0'),
+                        // Clear the copies older chat imports left behind, keeping the board just written.
+                        whileQuit: () =>
+                          pruneCustomProfiles(defaultProfilesDir(), [
+                            ...activeProfileUuids(),
+                            basename(profileDir).replace(/\.sdProfile$/i, '').toLowerCase(),
+                          ]),
+                      })
+                  : undefined,
+              importProfile: (edits) => {
+                const merged = mergeBoard(current, edits);
+                const outPath = join(homedir(), 'Downloads', 'Jetstream-Custom.streamDeckProfile');
+                mkdirSync(dirname(outPath), { recursive: true });
+                rmSync(outPath, { force: true }); // never write THROUGH a symlink left at this path
+                writeFileSync(outPath, renderProfileArchive(buildLayoutProfile(deck, merged, detectDeviceModel(deck))));
+                defaultOpenFile()?.(outPath);
+                return outPath;
+              },
+            });
+            // Run keys are opt-in, so say so when one was just placed, instead of a silent no-op press.
+            if (placements.some((p) => (p.settings as { kind?: string } | null)?.kind === 'run')) {
               chatIo.say(
-                "\n(the Jetstream plugin isn't answering — is the Stream Deck app running? — so this\n" +
-                  'can\'t be applied live; generating an importable profile instead.)',
+                '(Run keys are off by default. Enable them with "allowRunKeys": true in the "settings" block of\n' +
+                  'your projects.json, then restart the Stream Deck app.)',
               );
             }
-            if (alive) {
-              const results = await Promise.all(
-                slotEdits.map(async (p) => {
-                  const coord = coordLabel(p.column, p.row);
-                  // KEEP the status. Collapsing it to a boolean reported every failure — a 401, a
-                  // 500, a connection timeout, an old plugin with no /slot endpoint — as "that
-                  // coordinate has no key", sending the user to fix the wrong thing.
-                  const status = await sendSlot({ coord, ...(p.settings ?? {}) });
-                  return { coord, ok: status === 200, status };
-                }),
-              );
-              const failed = results.filter((r) => !r.ok);
-              if (failed.length === 0) {
-                chatIo.say(
-                  `\n✓ Applied live to your board — no import needed ` +
-                    `(${slotEdits.length} key${slotEdits.length > 1 ? 's' : ''}: ${results.map((r) => r.coord).join(', ')}).` +
-                    runNote,
-                );
-                return;
-              }
-              // Say WHY and what happens next. "Not on your profile" reads like a failure; the
-              // real cause is that a live edit can only retarget a key that already exists (the
-              // Stream Deck API cannot create one), and the profile below genuinely fixes it —
-              // it merges your current board with the new keys, so nothing is lost.
-              // Name the actual cause per status; only 404 means "no key there".
-              const reason = (status: number): string => {
-                if (status === 404) return 'has no key yet (a live edit can only change a key that already exists)';
-                if (status === 401) return 'was refused by the plugin (token mismatch) — restart the Stream Deck app';
-                if (status === -1) return "didn't get a confirmation from the plugin (it may have applied anyway)";
-                return `was rejected by the plugin (HTTP ${status})`;
-              };
-              for (const f of failed) chatIo.say(`\n(${f.coord} ${reason(f.status)}.)`);
-              chatIo.say(
-                'Generating an importable profile instead — it keeps your current board and adds ' +
-                  'these; double-click it to apply.',
-              );
-            }
-            // Fallback: rebuild + import the whole board (structural change, plugin down, or a live miss).
-            const placements = mergeBoard(readBoardLayout(), layout.placements);
-            const outPath = join(homedir(), 'Downloads', 'Jetstream-Custom.streamDeckProfile');
-            mkdirSync(dirname(outPath), { recursive: true });
-            writeFileSync(
-              outPath,
-              renderProfileArchive(buildLayoutProfile(layout.deck, placements, detectDeviceModel(layout.deck))),
-            );
-            defaultOpenFile()?.(outPath);
-            // Auto-clean: drop any redundant older "Jetstream Custom" copies from the store (keeps the
-            // real board), so imports can't pile up. Stream Deck's in-memory list settles on next restart.
-            const pruned = pruneCustomProfiles();
-            // Say WHY a copy was still needed, so it never looks like a silent fallback: native
-            // Elgato action types (launch/approve/nav/text/…) can't be placed live — only a profile
-            // import can add them — while slot kinds (apps, repos, folded keys) normally apply live.
-            const nativeNames = [...new Set(structural.map((p) => p.name))].join(', ');
-            const why =
-              structural.length > 0
-                ? ` — ${structural.length} native Stream Deck ${structural.length > 1 ? 'keys' : 'key'} (${nativeNames}) can only be added by import`
-                : '';
-            chatIo.say(
-              `\nWrote a ${placements.length}-key layout (${layout.placements.length} changed) to ${outPath}${why}.\n` +
-                'Double-click it to import (installs as a new profile — nothing is overwritten).' +
-                (pruned.length ? `\n(Cleaned up ${pruned.length} old duplicate profile${pruned.length > 1 ? 's' : ''}.)` : '') +
-                runNote,
-            );
+            return outcome;
           },
         });
       } catch (error) {
@@ -359,10 +327,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
         // profile, so a later failure (an unwritable ~/Downloads, a TCC denial) used to print
         // "nothing written" one line after "Wrote 3 project(s)" — a false claim, the wrong cause,
         // and the only diagnostic thrown away. `init`'s twin already says "nothing FURTHER".
-        const aborted =
-          (error as { code?: string })?.code === 'ABORT_ERR' ||
-          (error instanceof Error && error.message === 'input closed');
-        if (aborted) {
+        if (isInputAbort(error)) {
           console.error('\nAborted — nothing further was written.');
           return 130;
         }

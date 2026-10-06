@@ -8,7 +8,7 @@ import { board } from '../state';
 import { config, type JetstreamConfig } from '../config';
 import { commandOnPath, defaultDoctorIO, runDoctor, type CheckResult } from '../doctor';
 import { expandHome, handleFleetMessage, scanForGitRepos, writeFleetFile } from '../fleet';
-import { hookCommands } from '../cli';
+import { hookCommands } from '../hooks-install';
 import { isListenerBound } from '../listener-status';
 import { installHooks } from '../hooks-install';
 import { defaultOpenFile } from '../open-file';

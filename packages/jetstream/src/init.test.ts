@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstallResult } from './hooks-install';
 import { expandHome, renderProjectsJson, scanForGitRepos, slugId } from './fleet';
-import { runInit } from './init';
+import { isInputAbort, offerProfile, runInit } from './init';
 import { DECK_MODELS } from './profile';
 import { parseProjectsConfig, parseSettingsPreset } from './projects-config';
 
@@ -241,6 +241,10 @@ describe('runInit', () => {
     expect(parseProjectsConfig(readFileSync(configPath, 'utf8'))).toEqual([
       { id: 'fresh', name: 'fresh', path: repo },
     ]);
+    // The replaced fleet survives as a timestamped backup, like every other fleet writer.
+    const backups = readdirSync(cfgDir).filter((f) => f.startsWith('projects.json.') && f.endsWith('.bak'));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(cfgDir, backups[0]!), 'utf8')).toContain('"old"');
   });
 
   it('a root path gets a usable fallback name instead of aborting the wizard', async () => {
@@ -454,3 +458,22 @@ describe('init helpers', () => {
     expect(parseSettingsPreset(some)).toEqual({ theme: 'highContrast' });
   });
 });
+
+describe('offerProfile input aborts', () => {
+  it('Ctrl-D at a prompt propagates as an abort instead of a "could not write" failure', async () => {
+    const downloads = makeTmp();
+    writeFileSync(join(downloads, 'Jetstream.streamDeckProfile'), 'x'); // forces the replace prompt
+    const said: string[] = [];
+    const io = {
+      ask: async (q: string): Promise<string> => {
+        if (q.includes('replace it?')) throw new Error('input closed');
+        return '1'; // pick the first deck
+      },
+      say: (line: string) => void said.push(line),
+    };
+    const err = await offerProfile(io, [], undefined, downloads, () => DECK_MODELS[0]).catch((e: unknown) => e);
+    expect(isInputAbort(err)).toBe(true);
+    expect(said.join('\n')).not.toContain('Could not write the layout');
+  });
+});
+

@@ -76,12 +76,33 @@ describe('hasJetstreamHooks / checkHooksPresent', () => {
   const installed = {
     hooks: {
       Stop: [{ hooks: [{ type: 'command', command: '"/usr/bin/node" "/x/bin/status-hook.js"' }] }],
+      PreToolUse: [{ hooks: [{ type: 'command', command: '"/usr/bin/node" "/x/bin/stop-gate.js"' }] }],
     },
   };
 
   it('detects an installed jetstream hook by file basename', () => {
     expect(hasJetstreamHooks(installed)).toBe(true);
     expect(checkHooksPresent(JSON.stringify(installed)).status).toBe('ok');
+  });
+
+  it('warns when the stop gate is missing, since stop keys then cannot stop a turn', () => {
+    const noGate = { hooks: { Stop: installed.hooks.Stop } };
+    const result = checkHooksPresent(JSON.stringify(noGate));
+    expect(result).toMatchObject({ status: 'warn', fixId: 'hooks' });
+    expect(result.message).toContain('stop-gate.js');
+  });
+
+  it('warns when disableAllHooks silences every hook', () => {
+    const result = checkHooksPresent(JSON.stringify({ ...installed, disableAllHooks: true }));
+    expect(result.status).toBe('warn');
+    expect(result.message).toContain('disableAllHooks');
+  });
+
+  it('reports an unreadable settings file as unreadable, not missing', () => {
+    const result = checkHooksPresent({ error: 'EACCES' });
+    expect(result.status).toBe('warn');
+    expect(result.message).toContain('EACCES');
+    expect(result.fixId).toBeUndefined(); // reinstalling would hit the same permission error
   });
 
   it('warns (with an in-app hooks fix) when no jetstream hook is present', () => {
@@ -228,6 +249,7 @@ describe('usageStatuslineWired', () => {
 describe('checkBoardKeys', () => {
   const board = (uuids: string[]): BoardLayout => ({
     profileName: 'My Board',
+    profileDir: '/store/board.sdProfile',
     deck: DECK_MODELS[0]!,
     keys: new Map(uuids.map((uuid, i) => [`${i},0`, { uuid, settings: null, label: '' }])),
     allUuids: uuids,
@@ -306,6 +328,7 @@ describe('checkListenerToken', () => {
 describe('checkOrphanedKeys', () => {
   const board = (uuids: Record<string, string>): BoardLayout => ({
     profileName: 'Jetstream',
+    profileDir: '/store/board.sdProfile',
     deck: DECK_MODELS[0]!,
     keys: new Map(
       Object.entries(uuids).map(([coord, uuid]) => [coord, { uuid, settings: null, label: '' }]),

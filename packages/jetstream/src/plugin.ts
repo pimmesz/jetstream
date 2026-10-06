@@ -225,6 +225,8 @@ const hookHandlers: HookServerHandlers = {
   // Live board edits from `jetstream chat`: retarget the slot at a coordinate (setSettings + repaint),
   // so a layout change lands on the deck instantly with no profile re-import.
   onSlot: (raw) => slotKey.assign(raw),
+  onError: (endpoint, error) =>
+    streamDeck.logger.error(`Jetstream ${endpoint} handler failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`),
 };
 // Bind with retries: an orphaned prior plugin process (the kill→respawn hazard) can still hold the
 // port, and giving up early would leave the board permanently dark — no hook event ever arrives.

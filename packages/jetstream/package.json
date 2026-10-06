@@ -51,14 +51,18 @@
   ],
   "devDependencies": {
     "@elgato/cli": "^1.8.0",
-    "@elgato/streamdeck": "^2.1.0",
+    "@elgato/streamdeck": "^3.0.1",
     "@pimmesz/jetstream-claude": "workspace:*",
     "@pimmesz/jetstream-status": "workspace:*",
     "@pimmesz/jetstream-usage": "workspace:*",
-    "@types/node": "^25.9.5",
-    "esbuild": "^0.25.12",
-    "tsup": "^8.5.1",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "tsdown": "^0.23.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
+  },
+  "tsdown": {
+    "fixedExtension": false,
+    "hash": false
   }
 }

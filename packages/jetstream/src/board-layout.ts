@@ -2,9 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { coordLabel } from './actions/coord';
+import { coordLabel } from './slot-command';
 import type { Placement } from './layout';
 import { DECK_MODELS, type DeckModel } from './profile';
+import { readCurrentPage } from './profile-store';
+import { describeCatalog, foreignKey, type ForeignAction } from './plugin-catalog';
 
 export interface BoardKey {
   uuid: string;
@@ -14,8 +16,12 @@ export interface BoardKey {
 
 export interface BoardLayout {
   profileName: string;
+  /** The .sdProfile directory this board was read from (the in-place writer's target). */
+  profileDir: string;
+  /** The page `keys` came from, so an in-place write lands on that same page. */
+  pageId?: string;
   deck: DeckModel;
-  /** `${col},${row}` → the placed key. FIRST page wins per coordinate. */
+  /** `${col},${row}` → the placed key on the page the deck shows (`Pages.Current`). */
   keys: Map<string, BoardKey>;
   /** Every action UUID on every page, undeduplicated — so a health check can see a key `keys`
    * hides (a dead key on page 2 sitting behind a live one at the same coordinate on page 1). */
@@ -117,7 +123,7 @@ export function labelForAction(uuid: string, settings: unknown): string {
   return seg;
 }
 
-function defaultProfilesDir(): string {
+export function defaultProfilesDir(): string {
   return join(homedir(), 'Library', 'Application Support', 'com.elgato.StreamDeck', 'ProfilesV3');
 }
 
@@ -129,6 +135,7 @@ function readProfileActions(profileDir: string): {
    * coordinate — right for "what does the board look like", wrong for "is anything broken
    * anywhere", since a dead key on page 2 hides behind a live one on page 1. */
   allUuids: string[];
+  pageId?: string;
 } | null {
   let device: { Device?: { Model?: unknown } };
   try {
@@ -139,6 +146,14 @@ function readProfileActions(profileDir: string): {
   const model = typeof device.Device?.Model === 'string' ? device.Device.Model : '';
   const actions: Record<string, { UUID?: unknown; Settings?: unknown }> = {};
   const allUuids: string[] = [];
+  // The board is the page the deck shows. Merging every page in directory order (the old way) mixed
+  // keys from other pages into the board chat edits.
+  const current = readCurrentPage(profileDir);
+  if (current) {
+    for (const [coord, act] of Object.entries(current.actions)) {
+      actions[coord] = act as { UUID?: unknown; Settings?: unknown };
+    }
+  }
   const pagesDir = join(profileDir, 'Profiles');
   if (existsSync(pagesDir)) {
     for (const page of readdirSync(pagesDir)) {
@@ -152,7 +167,7 @@ function readProfileActions(profileDir: string): {
           for (const [coord, act] of Object.entries(controller.Actions ?? {})) {
             const uuid = (act as { UUID?: unknown }).UUID;
             if (typeof uuid === 'string') allUuids.push(uuid);
-            if (!(coord in actions)) actions[coord] = act as { UUID?: unknown; Settings?: unknown };
+            if (!current && !(coord in actions)) actions[coord] = act as { UUID?: unknown; Settings?: unknown };
           }
         }
       } catch {
@@ -160,12 +175,12 @@ function readProfileActions(profileDir: string): {
       }
     }
   }
-  return { model, actions, allUuids };
+  return { model, actions, allUuids, ...(current ? { pageId: current.pageId } : {}) };
 }
 
 /** UUIDs Stream Deck currently marks as the preferred/active profile (per device), lowercased. macOS
  * only (reads the app's prefs); [] elsewhere or on failure — the caller then falls back to mtime. */
-function activeProfileUuids(): string[] {
+export function activeProfileUuids(): string[] {
   if (process.platform !== 'darwin') return [];
   try {
     const out = execFileSync('defaults', ['read', 'com.elgato.StreamDeck'], { encoding: 'utf8', timeout: 3000 });
@@ -311,7 +326,14 @@ export function readBoardLayout(
     const score =
       (active.has(uuid) && jetstreamKeys > 0 ? 1_000_000 : 0) + configured + (jetstreamKeys > 0 ? 1 : 0);
     if (score > bestScore) {
-      best = { profileName: name, deck, keys, allUuids: read.allUuids };
+      best = {
+        profileName: name,
+        profileDir,
+        ...(read.pageId ? { pageId: read.pageId } : {}),
+        deck,
+        keys,
+        allUuids: read.allUuids,
+      };
       bestScore = score;
     }
   }
@@ -350,9 +372,11 @@ export function renderBoardMap(
   return lines.join('\n');
 }
 
-/** Convert a native Elgato open/website key into the equivalent plugin-owned slot, so a rebuilt or
- * imported board becomes fully plugin-owned (hence live-editable). Returns null for anything already
- * a Jetstream key, or a native type we don't migrate (e.g. text). Pure. */
+/** Convert a native key into the equivalent plugin-owned slot, so a rebuilt board becomes
+ * plugin-owned (hence live-editable): Elgato open/website keys, and the older standalone Jetstream
+ * project, fleet and build actions. Returns null for a slot already, a project key with no path (the
+ * bundled default board), a type with no slot kind (e.g. text), and the standalone stop-all key: the
+ * slot `stopall` kind is inert until `allowStopKeys`, so migrating it would disable a working key. Pure. */
 export function toSlotKey(
   uuid: string,
   settings: unknown,
@@ -366,7 +390,37 @@ export function toSlotKey(
     const url = asStr(s.path);
     return url ? { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'url', url } } : null;
   }
+  if (uuid === 'gg.pim.jetstream.project') {
+    const path = asStr(s.path);
+    if (!path) return null;
+    const name = asStr(s.name);
+    return { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'project', path, ...(name ? { name } : {}) } };
+  }
+  const folded: Record<string, string> = {
+    'gg.pim.jetstream.fleet': 'fleet',
+    'gg.pim.jetstream.build': 'build',
+  };
+  if (folded[uuid]) return { uuid: 'gg.pim.jetstream.slot', settings: { kind: folded[uuid] } };
   return null;
+}
+
+/** The board's keys that `toSlotKey` would migrate, as placements. An in-place write folds these in,
+ * so after one restart every later edit to them applies live. */
+export function legacyMigrations(board: BoardLayout): Placement[] {
+  const out: Placement[] = [];
+  for (const [coord, k] of board.keys) {
+    const migrated = toSlotKey(k.uuid, k.settings);
+    if (!migrated) continue;
+    const [cs, rs] = coord.split(',');
+    out.push({
+      column: Number(cs),
+      row: Number(rs),
+      uuid: migrated.uuid,
+      name: labelForAction(migrated.uuid, migrated.settings),
+      settings: migrated.settings,
+    });
+  }
+  return out;
 }
 
 /** Overlay the chat's edits onto the current board: keep every existing key (migrating native
@@ -395,7 +449,7 @@ export function mergeBoard(board: BoardLayout | null, edits: Placement[]): Place
 /** A re-emittable, one-per-line description of a configured key for the chat model: its chat `type`
  * + identifying fields + any cosmetic overrides already set — enough that the model can reproduce the
  * key (to tweak or move it) without dropping its target or existing styling. `'empty'` for a blank slot. */
-export function describeKeyForModel(k: BoardKey): string {
+export function describeKeyForModel(k: BoardKey, catalogRef?: (k: BoardKey) => string | undefined): string {
   const s = (k.settings ?? {}) as Record<string, unknown>;
   // Round-trip EVERY behaviour + cosmetic field, so re-emitting a key to tweak/move it never drops
   // its args, cwd, or custom icon (a full setSettings would otherwise wipe them).
@@ -436,15 +490,30 @@ export function describeKeyForModel(k: BoardKey): string {
   }
   if (k.uuid === 'gg.pim.jetstream.permission') return s.decision === 'deny' ? 'deny' : 'approve';
   if (k.uuid === 'gg.pim.jetstream.nav') return 'nav';
-  return k.label; // other Jetstream keys: the label IS the chat type name (fleet/usage/…)
+  // The chat type name, not the short board label ('attn', 'cfg', 'stop'), so the model can re-emit it.
+  const typeName: Record<string, string> = {
+    'gg.pim.jetstream.attention': 'attention',
+    'gg.pim.jetstream.settings': 'settings',
+    'gg.pim.jetstream.interruptall': 'stop-all',
+    'gg.pim.jetstream.usage': 'usage',
+    'gg.pim.jetstream.fleet': 'fleet',
+    'gg.pim.jetstream.build': 'build',
+    'gg.pim.jetstream.micmute': 'micmute',
+  };
+  if (typeName[k.uuid]) return typeName[k.uuid]!;
+  const ref = catalogRef?.(k);
+  if (ref) return `plugin ref="${ref}"`;
+  return `${k.label} (cannot be moved by chat)`;
 }
 
 /** A description of the board for the chat model so it can add, replace, TWEAK, or MOVE keys by
  * coordinate against what's already there — each configured key shown with enough to reproduce it. */
-export function boardContext(board: BoardLayout): string {
+export function boardContext(board: BoardLayout, catalog: ForeignAction[] = []): string {
+  const byKey = new Map(catalog.map((c) => [foreignKey(c.uuid, c.settings), c.ref]));
+  const refOf = (k: BoardKey): string | undefined => byKey.get(foreignKey(k.uuid, k.settings));
   const rows: string[] = [];
   for (const [coord, k] of board.keys) {
-    const desc = describeKeyForModel(k);
+    const desc = describeKeyForModel(k, refOf);
     if (desc === 'empty') continue;
     const [cs, rs] = coord.split(',');
     rows.push(`  ${coordLabel(Number(cs), Number(rs))}: ${desc}`);
@@ -454,5 +523,11 @@ export function boardContext(board: BoardLayout): string {
     ...rows,
     `Propose a "layout" (deck="${board.deck.key}") whose "keys" are ONLY the coordinates to add, replace, or tweak — the rest of the board is preserved.`,
     `To TWEAK an existing key (colour / rename / subtitle / emoji), re-emit that SAME key using its type + fields above PLUS your change. To MOVE a key, emit it at the new coordinate and also emit {"coord":"<old>","type":"slot"} to clear the old spot.`,
+    ...(catalog.length > 0
+      ? [
+          'Keys from other Stream Deck plugins the user already has, placeable as {"type":"plugin","ref":"<ref>"}:',
+          ...describeCatalog(catalog),
+        ]
+      : ['The user has no keys from other Stream Deck plugins yet.']),
   ].join('\n');
 }

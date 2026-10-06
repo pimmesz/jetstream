@@ -2,12 +2,9 @@ import streamDeck, { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyDownEvent, WillAppearEvent } from '@elgato/streamdeck';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
+import { coordLabel } from '../slot-command';
 
-/** The chessboard-style label for a key at (column,row), both 0-indexed: row = letter (a = top),
- * column = number (1 = left). So the top-right key of an XL (col 7, row 0) is "a8". Pure. */
-export function coordLabel(column: number, row: number): string {
-  return `${String.fromCharCode(97 + row)}${column + 1}`;
-}
+export { coordLabel };
 
 /**
  * A grid-reference key: renders its OWN "a8"-style coordinate (the SDK hands each key its

@@ -7,7 +7,7 @@ import { parseProjectsConfig, resolveProjectsConfigPath } from './projects-confi
 import { pluginAlive } from './slot-client';
 import { PLUGIN_VERSION, resolvedPort } from './server';
 import { readBoardLayout, type BoardLayout } from './board-layout';
-import { coordLabel } from './actions/coord';
+import { coordLabel } from './slot-command';
 import {
   ENFORCE_TOKEN,
   listenerTokenPaths,
@@ -45,7 +45,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * matches on these basenames, NOT the exact command string — that embeds an absolute node
  * path + install location that differs per machine, so an exact match would nearly always
  * fail after the plugin is installed somewhere new. */
-const JETSTREAM_HOOK_FILES = ['status-hook.js', 'permission-hook.js', 'usage-hook.js'];
+const JETSTREAM_HOOK_FILES = ['status-hook.js', 'permission-hook.js', 'usage-hook.js', 'stop-gate.js'];
+
+/** A config file as read from disk: its text, `undefined` when absent, or why it could not be read
+ * (EACCES, EISDIR, ...) so a permissions problem is not reported as "missing". */
+export type RawRead = string | undefined | { error: string };
 
 /** Whether a parsed `~/.claude/settings.json` contains any Jetstream hook command. Pure. */
 export function hasJetstreamHooks(settings: unknown): boolean {
@@ -81,6 +85,11 @@ export function hasJetstreamHooks(settings: unknown): boolean {
  * Only `status-hook.js`, under `hooks`, produces the events the board is made of.
  */
 export function hasStatusHook(settings: unknown): boolean {
+  return hasHookScript(settings, 'status-hook.js');
+}
+
+/** Whether any hook under `hooks` runs the given bundled script. Pure. */
+function hasHookScript(settings: unknown, file: string): boolean {
   const hooks = asRecord(asRecord(settings)?.hooks);
   if (!hooks) return false;
   for (const value of Object.values(hooks)) {
@@ -90,7 +99,7 @@ export function hasStatusHook(settings: unknown): boolean {
       if (!Array.isArray(entryHooks)) continue;
       for (const hook of entryHooks) {
         const command = asRecord(hook)?.command;
-        if (typeof command === 'string' && command.includes('status-hook.js')) return true;
+        if (typeof command === 'string' && command.includes(file)) return true;
       }
     }
   }
@@ -122,7 +131,10 @@ export function checkAnthropicEnv(env: NodeJS.ProcessEnv): CheckResult {
  * (`undefined` when the file is absent). Distinguishes absent, present-but-corrupt, and
  * valid — so a corrupt settings.json isn't misreported as "hooks not found" (which would
  * send the user to `hooks install`, where the same parse then fails). Pure. */
-export function checkHooksPresent(raw: string | undefined): CheckResult {
+export function checkHooksPresent(raw: RawRead): CheckResult {
+  if (typeof raw === 'object') {
+    return { status: 'warn', message: `Claude's settings.json exists but cannot be read (${raw.error}); fix its permissions` };
+  }
   if (raw === undefined) {
     return {
       status: 'warn',
@@ -144,7 +156,22 @@ export function checkHooksPresent(raw: string | undefined): CheckResult {
   // usage statusline or only the permission hook satisfies "some Jetstream hook exists" while no
   // lifecycle event can ever arrive — doctor used to call that healthy and leave the user staring
   // at a dark board with an all-green checklist.
+  // `disableAllHooks` silences every hook, ours included: the board stays dark with hooks "present".
+  if (asRecord(parsed)?.disableAllHooks === true) {
+    return {
+      status: 'warn',
+      message: '"disableAllHooks": true in Claude\'s settings.json, so Claude runs no hooks and the board cannot light up',
+    };
+  }
   if (hasStatusHook(parsed)) {
+    // Without the PreToolUse stop gate, a stop key has no way to end a turn.
+    if (!hasHookScript(parsed, 'stop-gate.js')) {
+      return {
+        status: 'warn',
+        message: 'the stop gate (stop-gate.js) is not wired, so stop keys cannot stop a turn; run `jetstream hooks install`',
+        fixId: 'hooks',
+      };
+    }
     return { status: 'ok', message: 'Jetstream hooks present in ~/.claude/settings.json' };
   }
   return hasJetstreamHooks(parsed)
@@ -182,7 +209,9 @@ export function usageStatuslineWired(raw: string | undefined): boolean {
   );
 }
 
-export function checkUsageStatusline(raw: string | undefined): CheckResult {
+export function checkUsageStatusline(read: RawRead): CheckResult {
+  // An unreadable settings.json is already reported by the hooks check.
+  const raw = typeof read === 'object' ? undefined : read;
   let parsed: unknown;
   try {
     parsed = raw === undefined ? undefined : JSON.parse(raw);
@@ -288,7 +317,10 @@ export function checkOrphanedKeys(board: BoardLayout | null, declared: string[])
 
 /** Whether `projects.json` (if present) is parseable. `undefined` means the file is absent,
  * which is fine — it's optional. Pure. */
-export function checkProjectsConfig(raw: string | undefined): CheckResult {
+export function checkProjectsConfig(raw: RawRead): CheckResult {
+  if (typeof raw === 'object') {
+    return { status: 'warn', message: `projects.json exists but cannot be read (${raw.error}); fix its permissions` };
+  }
   if (raw === undefined) {
     return { status: 'ok', message: 'no projects.json (optional) — projects come from placed keys' };
   }
@@ -349,11 +381,12 @@ export function commandOnPath(command: string, env: NodeJS.ProcessEnv = process.
   return false;
 }
 
-function readIfPresent(path: string): string | undefined {
+function readIfPresent(path: string): RawRead {
   try {
     return readFileSync(path, 'utf8');
-  } catch {
-    return undefined;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' ? undefined : { error: code ?? String(error) };
   }
 }
 
@@ -362,8 +395,8 @@ function readIfPresent(path: string): string | undefined {
 export interface DoctorIO {
   env: NodeJS.ProcessEnv;
   claudeOnPath: () => boolean;
-  settingsRaw: () => string | undefined;
-  projectsRaw: () => string | undefined;
+  settingsRaw: () => RawRead;
+  projectsRaw: () => RawRead;
   /** Is the plugin's hook listener answering on the loopback port? Injected for tests. */
   listenerAlive: () => Promise<boolean>;
   /** The detected Jetstream board (or null when none), for the "no keys placed" check. Injected for tests. */

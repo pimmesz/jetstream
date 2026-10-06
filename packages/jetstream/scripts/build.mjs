@@ -10,10 +10,10 @@
 // 2. A createRequire banner: bundling CJS deps into ESM output leaves `require()`
 //    shims that throw "Dynamic require is not supported" at runtime without it.
 import { build } from 'esbuild';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const pkg = join(dirname(fileURLToPath(import.meta.url)), '..');
 const bin = join(pkg, 'gg.pim.jetstream.sdPlugin', 'bin');
@@ -28,27 +28,53 @@ const BUILD_ID = `${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHou
 // an `update` over a still-running old plugin can't report success before the new build loads.
 const PKG_VERSION = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version;
 
-await build({
+const bundle = await build({
   absWorkingDir: tmpdir(),
+  metafile: true,
   entryPoints: {
     plugin: join(pkg, 'src', 'plugin.ts'),
     jetstream: join(pkg, 'src', 'bin', 'jetstream-cli.ts'),
     'hooks-install': join(pkg, 'src', 'bin', 'hooks-install-cli.ts'),
     'status-hook': join(pkg, '..', 'status', 'src', 'hook.ts'),
     'permission-hook': join(pkg, '..', 'status', 'src', 'permission-hook.ts'),
+    'stop-gate': join(pkg, '..', 'status', 'src', 'stop-gate.ts'),
     'usage-hook': join(pkg, '..', 'usage', 'src', 'hook.ts'),
   },
   outdir: bin,
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node20',
+  target: 'node24',
   define: { __BUILD_ID__: JSON.stringify(BUILD_ID), __PKG_VERSION__: JSON.stringify(PKG_VERSION) },
   banner: {
     js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
   },
   logLevel: 'info',
 });
+
+// The bundle inlines third-party code (MIT and similar), whose licences require their notices to
+// travel with it. Collect each bundled package's own LICENSE into one file inside the plugin.
+const bundled = new Map();
+for (const input of Object.keys(bundle.metafile.inputs)) {
+  const abs = resolve(tmpdir(), input);
+  const match = /^(.*\/node_modules\/((?:@[^/]+\/)?[^/]+))\//.exec(abs);
+  if (!match) continue;
+  const [, dir, name] = match;
+  if (name.startsWith('@pimmesz/') || bundled.has(name)) continue;
+  bundled.set(name, dir);
+}
+const notices = [...bundled.entries()]
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([name, dir]) => {
+    const { version, license } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+    const file = readdirSync(dir).find((f) => /^(licen[cs]e|copying)(\..*)?$/i.test(f));
+    if (!file) throw new Error(`${name} is bundled but ships no LICENSE file; add its notice by hand`);
+    return `${name}@${version} (${license})\n\n${readFileSync(join(dir, file), 'utf8').trim()}\n`;
+  });
+writeFileSync(
+  join(bin, 'THIRD_PARTY_LICENSES.txt'),
+  `Third-party software bundled into the Jetstream plugin, with each package's licence.\n\n${notices.join(`\n${'-'.repeat(72)}\n\n`)}`,
+);
 
 // The .sdPlugin folder has no package.json, so mark bin/ as ESM.
 writeFileSync(join(bin, 'package.json'), `${JSON.stringify({ type: 'module' }, null, 2)}\n`);
@@ -66,7 +92,7 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node20',
+  target: 'node24',
   logLevel: 'silent',
 });
 const {

@@ -8,7 +8,7 @@ to it** (`jetstream chat`) — live, no re-import. See [SPEC.md](./packages/jets
 
 ## Install (CLI-first — macOS)
 
-Requires macOS 12+ and the Stream Deck app 6.9+. Windows isn't supported yet (the plugin manifest is macOS-only).
+Requires macOS 12+ and the Stream Deck app 7.1+. Windows isn't supported yet (the plugin manifest is macOS-only).
 
 1. **Claude Code**, logged in with your subscription (`claude` → `/login`). Leave
    `ANTHROPIC_API_KEY` unset: Jetstream strips it from anything it spawns so a keypress
@@ -36,7 +36,11 @@ Requires macOS 12+ and the Stream Deck app 6.9+. Windows isn't supported yet (th
    ```
 
    `chat` lets you describe repos AND arrange keys in plain English (add app/URL/run shortcuts,
-   recolour, rename, set emoji/logo icons), applied live.
+   recolour, rename, set emoji/logo icons, ask what is on a key). It shows each key it will change
+   before you apply, and stays open for the next request. Edits to Jetstream keys apply live. A key
+   from another plugin (a Philips Hue toggle you already placed somewhere, say) is copied by chat, and
+   anything that cannot go live is written into your current board while Stream Deck restarts for a
+   few seconds, after a backup to `~/.config/jetstream/profile-backups/`. No extra profile is created.
 
    `init` asks for your repos (or scans a folder), your theme and timings, writes
    `projects.json` (see below), wires the hooks — and can **prebuild a ready-made key

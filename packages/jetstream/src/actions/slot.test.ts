@@ -4,8 +4,9 @@ import { stopFace } from './interrupt-all';
 import { config } from '../config';
 import { board } from '../state';
 
-vi.mock('../switchto'); // spy interruptPids — a stopall press must SIGINT the fleet ONLY when enabled
-import { interruptPids } from '../switchto';
+vi.mock('../switchto');
+vi.mock('../stop-session'); // spy stopSessions: a stopall press must stop the fleet ONLY when enabled
+import { stopSessions } from '../stop-session';
 vi.mock('../output-volume'); // spy the volume-key presses
 import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
 // Keep execPlan real (it builds the plan we assert on) but spy runPlan so no real process spawns.
@@ -201,7 +202,7 @@ describe('SlotKey.onKeyDown run gate', () => {
 });
 
 describe('folded slot kinds: build + stopall', () => {
-  beforeEach(() => vi.mocked(interruptPids).mockReset());
+  beforeEach(() => vi.mocked(stopSessions).mockReset());
 
   it('build → the compile-time stamp face (a static kind, no board/timer)', () => {
     const f = slotFace({ kind: 'build' });
@@ -286,7 +287,7 @@ describe('folded slot kinds: build + stopall', () => {
     expect(action.showOk).not.toHaveBeenCalled();
   });
 
-  it('stopall is INERT until allowStopKeys — a planted fleet-SIGINT can never fire from /slot', async () => {
+  it('stopall is INERT until allowStopKeys: a planted fleet stop can never fire from /slot', async () => {
     const setImage = vi.fn(async (_img: string) => {});
     const showOk = vi.fn(async () => {});
     const action = {
@@ -300,12 +301,12 @@ describe('folded slot kinds: build + stopall', () => {
     const ev = { payload: { settings: { kind: 'stopall' } }, action };
     await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
     expect(decodeURIComponent(setImage.mock.calls.at(-1)?.[0] ?? '')).toContain('stop off'); // the gated-off notice, by content
-    expect(interruptPids).not.toHaveBeenCalled(); // never SIGINTs the fleet while disabled
+    expect(stopSessions).not.toHaveBeenCalled(); // never stops the fleet while disabled
     expect(showOk).not.toHaveBeenCalled();
   });
 
-  it('stopall SIGINTs the fleet on press once allowStopKeys is enabled', async () => {
-    vi.mocked(interruptPids).mockReturnValue(2); // pretend two sessions were signalled
+  it('stopall stops the fleet on press once allowStopKeys is enabled', async () => {
+    vi.mocked(stopSessions).mockReturnValue(2); // pretend two sessions were stopped
     config.set({ allowStopKeys: true });
     try {
       const showOk = vi.fn(async () => {});
@@ -319,7 +320,7 @@ describe('folded slot kinds: build + stopall', () => {
       };
       const ev = { payload: { settings: { kind: 'stopall' } }, action };
       await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
-      expect(interruptPids).toHaveBeenCalled();
+      expect(stopSessions).toHaveBeenCalled();
       expect(showOk).toHaveBeenCalled(); // sent > 0 → ack
     } finally {
       config.set(undefined); // restore defaults so sibling tests see allowStopKeys=false

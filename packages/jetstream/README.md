@@ -28,7 +28,7 @@ Updating? `jetstream update` — fetches the latest published package from npmjs
 plugin in one step, so a bare `npm i -g` behind a stale mirror can't strand you on an old version (override
 the registry with `JETSTREAM_REGISTRY`).
 
-Requires **macOS 12+** and the **Stream Deck app 6.9+**. You also need **Claude Code**, logged in
+Requires **macOS 12+** and the **Stream Deck app 7.1+**. You also need **Claude Code**, logged in
 with your subscription (`claude` → `/login`). Leave `ANTHROPIC_API_KEY` unset: Jetstream strips it
 from anything it spawns, so a keypress can never silently bill the metered API.
 

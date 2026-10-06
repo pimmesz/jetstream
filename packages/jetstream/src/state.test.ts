@@ -137,9 +137,8 @@ describe('Board', () => {
 
       expect(after.byProject()['falcon']).toEqual({ status: 'working', since: 1 }); // survived by cwd
       expect(after.byProject()['osprey']).toEqual({ status: 'none' }); // no live session → gray
-      // interrupt targets the LIVE pid, never the stale/recycled 4242
-      expect(after.pidsForProject('falcon')).toEqual([9999]);
-      expect(after.pidsForProject('osprey')).toEqual([]);
+      expect(after.activeSessionsForProject('falcon')).toEqual(['s-alive']);
+      expect(after.activeSessionsForProject('osprey')).toEqual([]);
     });
 
     it('restores a failed session instead of silently dropping it', async () => {
@@ -192,7 +191,7 @@ describe('Board', () => {
         return [{ pid: 9, cwd: '/Users/me/falcon', active: true }];
       });
       expect(after.byProject()['falcon']).toEqual({ status: 'none' }); // gray, not resurrected 'working'
-      expect(after.pidsForProject('falcon')).toEqual([]); // no stale PID for interrupt to target
+      expect(after.activeSessionsForProject('falcon')).toEqual([]); // nothing left for a stop to target
     });
 
     it('keeps a still-live checkpoint session when a DIFFERENT session in the repo emits mid-scan', async () => {
@@ -266,8 +265,8 @@ describe('Board', () => {
       expect(board.byProject()['k-alive']).toEqual({ status: 'working', since: 1 });
       // The reaped session goes gray instead of pinning a stuck NEEDS-YOU forever.
       expect(board.byProject()['k-dead']).toEqual({ status: 'none' });
-      expect(board.pidsForProject('k-dead')).toEqual([]); // no stale pid for interrupt to target
-      expect(board.pidsForProject('k-alive')).toEqual([100]);
+      expect(board.activeSessionsForProject('k-dead')).toEqual([]); // nothing stale for a stop to target
+      expect(board.activeSessionsForProject('k-alive')).toEqual(['s-alive']);
     });
 
     it("does NOT reap on an inconclusive 'unknown' probe — a ps failure must not erase a live needsInput", () => {

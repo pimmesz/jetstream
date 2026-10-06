@@ -49,13 +49,16 @@ export function darkReason(): string {
  * a glance. When the board is DARK (no live sessions) it becomes a self-diagnosis: it names
  * the likely reason (empty fleet / hooks not wired) and a press explains it on the face.
  */
+/** This key keeps no per-key settings (SDK 3 requires the settings type to be named). */
+type NoSettings = Record<string, never>;
+
 @action({ UUID: 'gg.pim.jetstream.fleet' })
-export class FleetKey extends SingletonAction {
+export class FleetKey extends SingletonAction<NoSettings> {
   override onWillAppear(): void {
     void this.renderAll();
   }
 
-  override async onKeyDown(ev: KeyDownEvent): Promise<void> {
+  override async onKeyDown(ev: KeyDownEvent<NoSettings>): Promise<void> {
     // Board lit → a simple ack blip. Board dark → press-to-doctor: paint the top reason for a
     // moment, then revert. The reason (add repos / wire hooks) is exactly what the in-app
     // checklist would fix, but on the key itself so a dark board isn't a dead end.
@@ -76,7 +79,7 @@ export class FleetKey extends SingletonAction {
     }
   }
 
-  private async renderOne(a: KeyAction): Promise<void> {
+  private async renderOne(a: KeyAction<NoSettings>): Promise<void> {
     await a.setTitle('');
     await paintKey(a, keyFace(fleetFace()));
   }

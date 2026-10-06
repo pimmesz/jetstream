@@ -172,7 +172,11 @@ describe('autoWireHooks (first-launch onboarding)', () => {
         settingsPath: `/s.json?${options.commands.toolDetail}`,
       }),
     );
-    vi.doMock('./hooks-install', () => ({ installHooks: installSpy }));
+    // hookCommands lives in the same module, so keep the real one and swap only installHooks.
+    vi.doMock('./hooks-install', async (orig) => ({
+      ...(await orig<typeof import('./hooks-install')>()),
+      installHooks: installSpy,
+    }));
     const { autoWireHooks: wired } = await import('./auto-setup');
 
     await wired({ binDir: BIN, logger: makeLogger(), markerPath: makeMarkerPath() });
@@ -194,6 +198,8 @@ describe('WIRE_VERSION tracks the hook set', () => {
       2: ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
       3: ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
       4: ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'StopFailure', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
+      // v5 kept the status events and added the PreToolUse stop gate (a separate command).
+      5: ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'StopFailure', 'SessionEnd', 'SubagentStart', 'SubagentStop'],
     } as const;
     const expected = WIRED_AT[WIRE_VERSION as keyof typeof WIRED_AT];
     expect(

@@ -66,6 +66,7 @@ describe('hookCommands', () => {
     );
     expect(cmds.permission).toContain('permission-hook.js');
     expect(cmds.usage).toContain('usage-hook.js');
+    expect(cmds.stopGate).toContain('stop-gate.js');
     expect(cmds.toolDetail).toBe(false);
   });
 });

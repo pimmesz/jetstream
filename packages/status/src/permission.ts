@@ -53,10 +53,14 @@ export function parsePermissionRequest(raw: unknown, id: string): PendingPermiss
 
 /** The exact stdout the `PermissionRequest` hook prints to allow/deny (verified
  * against the Claude Code hooks reference). */
-export function permissionDecisionJson(behavior: PermissionBehavior): string {
-  return JSON.stringify({
-    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior } },
-  });
+export function permissionDecisionJson(behavior: PermissionBehavior, interrupt = false): string {
+  // A deny with `interrupt` also stops Claude's turn: the deck's stop key on a session that is
+  // waiting at a permission prompt.
+  const decision =
+    behavior === 'deny' && interrupt
+      ? { behavior, message: 'Stopped from the Stream Deck.', interrupt: true }
+      : { behavior };
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } });
 }
 
 /**
@@ -66,8 +70,9 @@ export function permissionDecisionJson(behavior: PermissionBehavior): string {
  * Claude treats the PermissionRequest hook's stdout as the AUTHORITATIVE answer, so echoing the
  * response verbatim would make whoever holds the port the decision oracle for every session on the
  * machine (a process that binds it before Stream Deck starts could auto-approve every tool call).
- * Passing only `behavior` through this funnel means an attacker can at most choose allow/deny for a
- * prompt the user is already looking at, never inject arbitrary hook output. Anything unrecognised
+ * Passing only `behavior` (and the deny-only `interrupt` flag) through this funnel means an attacker
+ * can at most choose allow/deny for a prompt the user is already looking at, never inject arbitrary
+ * hook output. Anything unrecognised
  * returns undefined → the hook prints nothing → Claude falls back to its own dialog. Pure.
  */
 export function parsePermissionDecision(raw: string): string | undefined {
@@ -79,7 +84,8 @@ export function parsePermissionDecision(raw: string): string | undefined {
   }
   const output = asRecord(asRecord(parsed)?.hookSpecificOutput);
   if (output?.hookEventName !== 'PermissionRequest') return undefined;
-  const behavior = asRecord(output.decision)?.behavior;
+  const decision = asRecord(output.decision);
+  const behavior = decision?.behavior;
   if (behavior !== 'allow' && behavior !== 'deny') return undefined;
-  return permissionDecisionJson(behavior);
+  return permissionDecisionJson(behavior, decision?.interrupt === true);
 }

@@ -15,7 +15,8 @@ import { readDiffStat, type DiffStat } from '../diffstat';
 import { heldMs } from '../press';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
-import { openProject, interruptPids } from '../switchto';
+import { openProject } from '../switchto';
+import { stopSessions } from '../stop-session';
 import { projectFace } from './project-face';
 
 /** Per-key settings, edited in the property inspector. `path` is the project root
@@ -44,14 +45,14 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
     board.removeProject(ev.action.id);
   }
 
-  // Short press → open the project in your editor. Long press → interrupt (SIGINT) the Claude
-  // session(s) there — but ONLY when the project is actually `working`, and only after a
+  // Short press → open the project in your editor. Long press → stop the running Claude turn(s)
+  // there (the session stays open), but ONLY when the project is actually `working`, and only after a
   // deliberate hold: past the threshold the key flips to a "release to interrupt" warning so a
   // too-long "jump to project" press can be released to cancel. Measured key-down → key-up.
   private pressAt = new Map<string, number>();
   private holdWarn = new Map<string, ReturnType<typeof setTimeout>>();
 
-  /** SIGINT kills the current turn, so interrupt needs a longer, deliberate hold than the
+  /** A stop cuts the current turn short, so it needs a longer, deliberate hold than the
    * generic long-press — and the face warns before it commits. */
   private static readonly INTERRUPT_HOLD_MS = 1500;
 
@@ -72,7 +73,7 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
         void paintKey(
           ev.action,
           keyFace({
-            color: '#e5484d', // danger red — this press is about to SIGINT the session
+            color: '#e5484d', // danger red: this press is about to stop the turn
             label: board.project(ev.action.id)?.name ?? 'project',
             glyph: '✕',
             sub: 'release to interrupt',
@@ -88,7 +89,7 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
     const status = board.byProject()[ev.action.id]?.status ?? 'none';
 
     if (shouldInterrupt(status, held, ProjectKey.INTERRUPT_HOLD_MS)) {
-      const sent = interruptPids(board.pidsForProject(ev.action.id));
+      const sent = stopSessions(board.activeSessionsForProject(ev.action.id));
       await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
     } else {
       const project = board.project(ev.action.id);
@@ -177,7 +178,7 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
 }
 
 /** Interrupt only a genuinely-working session, and only after a deliberate hold — so a
- * mistimed "jump to project" press can never SIGINT an idle / done / waiting session. Pure. */
+ * mistimed "jump to project" press can never stop an idle / done / waiting session. Pure. */
 export function shouldInterrupt(
   status: ProjectStatus,
   held: number,

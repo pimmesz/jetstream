@@ -6,6 +6,7 @@ import {
   reduce,
   statusByProject,
   needsAttention,
+  activeSessions,
   matchProject,
   type HookEvent,
   type ProjectConfig,
@@ -85,8 +86,8 @@ export class Board {
     this.emit();
   }
 
-  /** Remember a session's process (the hook's parent PID) so interrupt can SIGINT it —
-   * and so a restart can reconcile persisted state against live processes. */
+  /** Remember a session's process (the hook's parent PID) so a restart can reconcile persisted
+   * state against live processes, and the reaper can drop sessions whose process is gone. */
   notePid(sessionId: string, pid: number, cwd: string): void {
     if (sessionId && Number.isInteger(pid) && pid > 1) {
       // In-place set keeps insertion order stable (reapDeadSessions round-robins over it). Bound the
@@ -278,17 +279,14 @@ export class Board {
     }
   }
 
-  /** PIDs of the sessions running under a given project key (for interrupt). */
-  pidsForProject(actionId: string): number[] {
-    const projects = this.projects();
-    return [...this.sessions.values()]
-      .filter((s) => matchProject(s.cwd, projects) === actionId)
-      .map((s) => s.pid);
+  /** Sessions with a turn in progress under a project key (what a long-press stop acts on). */
+  activeSessionsForProject(actionId: string): string[] {
+    return activeSessions(this.state, this.projects(), actionId);
   }
 
-  /** Every known session PID across the whole fleet (for the interrupt-all panic key). */
-  allPids(): number[] {
-    return [...this.sessions.values()].map((s) => s.pid);
+  /** Every session with a turn in progress, fleet-wide (the stop-all key). */
+  allActiveSessions(): string[] {
+    return activeSessions(this.state, this.projects());
   }
 
   setProject(actionId: string, entry: ProjectEntry): void {

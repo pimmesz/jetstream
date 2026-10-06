@@ -16,6 +16,7 @@ export type HookEventName =
   | 'UserPromptSubmit'
   | 'PreToolUse'
   | 'PostToolUse'
+  | 'PostToolUseFailure'
   | 'Notification'
   | 'Stop'
   | 'SessionEnd'
@@ -28,6 +29,7 @@ const HOOK_EVENTS: readonly HookEventName[] = [
   'UserPromptSubmit',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Notification',
   'Stop',
   'SessionEnd',
@@ -49,6 +51,11 @@ export interface HookEvent {
   /** WHICH kind of notification, on a `Notification` event (`idle_prompt`, `agent_needs_input`,
    * `worker_permission_prompt`, `elicitation_*`, …). Absent on older Claude builds. */
   notificationType?: string;
+  /** How a `SessionStart` began (`startup`, `resume`, `clear`, `compact`, `fork`). */
+  source?: string;
+  /** On `Stop`/`SubagentStop`: how many background tasks the parent session still has in flight.
+   * Absent on older Claude builds, where only the in-flight heuristic applies. */
+  backgroundTasks?: number;
 }
 
 /**
@@ -71,11 +78,20 @@ const BLOCKING_NOTIFICATIONS: ReadonlySet<string> = new Set([
   'worker_permission_prompt', // "<agent> needs permission for <tool>" (a subagent asking)
   'agent_needs_input',
   'elicitation_dialog', // an MCP server is ASKING; _complete/_response are its ANSWERS
+  'elicitation_url_dialog', // an MCP server asks you to open a browser URL
+  'quota_auto_resume_stale', // a usage limit reset during sleep: Claude waits for Enter
 ]);
+
+/** Usage-limit waits that end WITHOUT a human: the task continues, or the wait gives up. */
+const QUOTA_RESUME: Readonly<Record<string, ProjectStatus>> = {
+  quota_auto_resume_fired: 'working',
+  quota_auto_resume_disabled: 'failed',
+};
 
 export function notificationStatus(type: string | undefined): ProjectStatus | undefined {
   if (type === undefined) return 'needsInput'; // pre-notification_type Claude — unchanged
-  return BLOCKING_NOTIFICATIONS.has(type) ? 'needsInput' : undefined;
+  if (BLOCKING_NOTIFICATIONS.has(type)) return 'needsInput';
+  return QUOTA_RESUME[type];
   // Everything else is informational and leaves the status ALONE — idle_prompt (the 60s nudge),
   // auth_success, agent_completed, elicitation_complete, elicitation_response.
   //
@@ -85,9 +101,10 @@ export function notificationStatus(type: string | undefined): ProjectStatus | un
   // `agent_completed` deliberately does not map to 'done' either: it fires for a SUBAGENT finishing
   // inside a possibly-still-running parent turn, so it would paint a busy repo green.
   //
-  // The full vocabulary, per Claude's own hook matcher metadata: permission_prompt, idle_prompt,
-  // auth_success, elicitation_dialog, elicitation_complete, elicitation_response,
-  // agent_needs_input, agent_completed — plus worker_permission_prompt for subagents.
+  // The full vocabulary, per the Claude Code hooks reference (2.1.289): permission_prompt,
+  // idle_prompt, auth_success, elicitation_dialog, elicitation_url_dialog, elicitation_complete,
+  // elicitation_response, agent_needs_input, agent_completed, quota_auto_resume_fired,
+  // quota_auto_resume_stale, quota_auto_resume_disabled, plus worker_permission_prompt for subagents.
 }
 
 /** A configured project key: an id, a display name, and the filesystem path whose
@@ -130,6 +147,9 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
   const rawKind = r?.notification_type;
   const notificationType =
     typeof rawKind === 'string' && rawKind.length <= 64 ? rawKind : undefined;
+  const rawSource = r?.source;
+  const source = typeof rawSource === 'string' && rawSource.length <= 32 ? rawSource : undefined;
+  const backgroundTasks = Array.isArray(r?.background_tasks) ? r.background_tasks.length : undefined;
   return {
     event,
     cwd,
@@ -138,6 +158,8 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
     ...(toolName ? { toolName } : {}),
     ...(agentId ? { agentId } : {}),
     ...(notificationType ? { notificationType } : {}),
+    ...(source ? { source } : {}),
+    ...(backgroundTasks !== undefined ? { backgroundTasks } : {}),
   };
 }
 
@@ -210,13 +232,19 @@ export function initialState(): StatusState {
  * (they move the in-flight set, not the base status). */
 type LifecycleEvent = Exclude<HookEventName, 'SubagentStart' | 'SubagentStop'>;
 
-function statusForEvent(event: LifecycleEvent, notificationType?: string): ProjectStatus | 'remove' | undefined {
+function statusForEvent(
+  event: LifecycleEvent,
+  notificationType?: string,
+  source?: string,
+): ProjectStatus | 'remove' | undefined {
   switch (event) {
     case 'SessionStart':
-      return 'idle';
+      // Compaction re-fires SessionStart mid-turn; reading it as 'idle' flipped a working key slate.
+      return source === 'compact' ? undefined : 'idle';
     case 'UserPromptSubmit':
     case 'PreToolUse':
     case 'PostToolUse':
+    case 'PostToolUseFailure':
       return 'working';
     case 'Notification':
       return notificationStatus(notificationType);
@@ -256,14 +284,18 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   const next: Record<string, SessionState> = { ...state.sessions };
   const prev = next[event.sessionId];
 
-  // Tombstone guard: once a SessionEnd removes a session, its id is dead — Claude session ids are
-  // unique and never reused — so a later event for it is a straggler from reordered, independent
-  // hook POSTs. Reducing it would re-create a ghost key that no future SessionEnd will ever clear.
-  // Presence (not `at` order) is what's decisive here; `at` only ages the tombstone out so the
-  // list stays bounded. A duplicate SessionEnd is a harmless no-op, so it needn't be exempted.
-  if (state.ended?.some((t) => t.id === event.sessionId && event.at - t.at < INFLIGHT_TTL_MS)) {
-    return state;
+  // Tombstone guard: once a SessionEnd removes a session, a later event for its id is usually a
+  // straggler from reordered, independent hook POSTs; reducing it would re-create a ghost key that
+  // no future SessionEnd will ever clear. The exception is a RESUME: `--resume`, `--continue` and
+  // `/resume` reuse the session id, so their SessionStart revives it. Any other SessionStart (a
+  // `startup` always gets a new id) for a tombstoned id is a straggler. `at` is receipt time, so it
+  // only ages the tombstone out and cannot order the two.
+  let ended = state.ended;
+  if (ended?.some((t) => t.id === event.sessionId && event.at - t.at < INFLIGHT_TTL_MS)) {
+    if (event.event !== 'SessionStart' || event.source !== 'resume') return state;
+    ended = ended.filter((t) => t.id !== event.sessionId);
   }
+  const keepEnded = ended?.length ? { ended } : {};
 
   if (event.event === 'SubagentStart' || event.event === 'SubagentStop') {
     // A SubagentStop for a session we don't know (its SessionEnd already fired, or it was lost
@@ -271,7 +303,9 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
     if (!prev && event.event === 'SubagentStop') return state;
     // Prune both lists by TTL as they pass through — bounded state, pure (event time, not wall clock).
     const fresh = (a: InflightAgent): boolean => event.at - a.at < INFLIGHT_TTL_MS;
-    let inflight = (prev?.inflight ?? []).filter(fresh);
+    // An empty background_tasks list is Claude saying nothing is in flight for the parent: drop
+    // every entry, including teammates and agents whose SubagentStop was lost.
+    let inflight = event.backgroundTasks === 0 ? [] : (prev?.inflight ?? []).filter(fresh);
     let stopped = (prev?.stopped ?? []).filter(fresh);
     if (event.agentId) {
       const id = event.agentId;
@@ -306,23 +340,23 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
       ...(stopped.length ? { stopped } : {}),
     };
     capSessions(next); // untrusted key → bound the map on the subagent path too (mirrors the base path)
-    return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
+    return { sessions: next, ...keepEnded };
   }
 
-  const status = statusForEvent(event.event, event.notificationType);
+  const status = statusForEvent(event.event, event.notificationType, event.source);
   // undefined = "this event says nothing about the status" (an informational Notification such as
   // the idle nudge). Leave the session exactly as it is rather than inventing a transition.
   if (status === undefined) {
-    return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
+    return { sessions: next, ...keepEnded };
   }
   if (status === 'remove') {
     delete next[event.sessionId]; // SessionEnd forgets the session AND its in-flight set
     // Tombstone the id (TTL-pruned + capped at 64) so a reordered straggler can't resurrect it.
-    const ended = [
-      ...(state.ended ?? []).filter((t) => t.id !== event.sessionId && event.at - t.at < INFLIGHT_TTL_MS),
+    const tombstones = [
+      ...(ended ?? []).filter((t) => t.id !== event.sessionId && event.at - t.at < INFLIGHT_TTL_MS),
       { id: event.sessionId, at: event.at },
     ].slice(-64);
-    return { sessions: next, ended };
+    return { sessions: next, ended: tombstones };
   }
   const session: SessionState = { cwd: event.cwd, status, since: event.at };
   // Show the tool only during its own PreToolUse→PostToolUse window; every other
@@ -332,11 +366,12 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   // yields to a running workflow stays 'working', and a NEW user turn doesn't forget a workflow
   // still running from the previous one. A lost SubagentStop can't pin the key forever — entries
   // age out after INFLIGHT_TTL_MS (see effectiveStatus), the self-heal a hard clear used to provide.
-  if (prev?.inflight?.length) session.inflight = prev.inflight;
+  // An empty background_tasks list on Stop is authoritative: nothing will wake this session.
+  if (prev?.inflight?.length && event.backgroundTasks !== 0) session.inflight = prev.inflight;
   if (prev?.stopped?.length) session.stopped = prev.stopped;
   next[event.sessionId] = session;
   capSessions(next); // untrusted key → bound the map (and therefore the persisted state)
-  return { sessions: next, ...(state.ended ? { ended: state.ended } : {}) };
+  return { sessions: next, ...keepEnded };
 }
 
 const RANK: Record<ProjectStatus, number> = {
@@ -396,6 +431,23 @@ export function statusByProject(
     }
   }
   return acc;
+}
+
+/** Session ids with a turn in progress (working, or blocked on a prompt), optionally limited to one
+ * project: what a deck stop can act on. Pure given `now`. */
+export function activeSessions(
+  state: StatusState,
+  projects: ProjectConfig[],
+  projectId?: string,
+  now: number = Date.now(),
+): string[] {
+  return Object.entries(state.sessions)
+    .filter(([, session]) => {
+      const status = effectiveStatus(session, now);
+      if (status !== 'working' && status !== 'needsInput') return false;
+      return projectId === undefined || matchProject(session.cwd, projects) === projectId;
+    })
+    .map(([id]) => id);
 }
 
 /** Project ids currently waiting on you (for a single "attention" key / doorbell). */
@@ -518,3 +570,4 @@ export type {
   PendingPermission,
 } from './permission';
 export { parsePermissionRequest, permissionDecisionJson, summarizeTool } from './permission';
+export { STOP_FLAG_TTL_MS, stopFlagDir, stopFlagPath, takeStopFlag } from './stop-flag';

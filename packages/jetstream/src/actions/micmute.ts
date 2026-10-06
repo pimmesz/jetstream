@@ -17,8 +17,11 @@ export function micFace(muted: boolean, available: boolean): Face {
  * it. Deck-worthy because there is no physical control for the mic and you often want it hands-free.
  * The face shows the live/muted state (repainted on the board tick so an external mute still reflects).
  */
+/** This key keeps no per-key settings (SDK 3 requires the settings type to be named). */
+type NoSettings = Record<string, never>;
+
 @action({ UUID: 'gg.pim.jetstream.micmute' })
-export class MicMuteKey extends SingletonAction {
+export class MicMuteKey extends SingletonAction<NoSettings> {
   /** Level to restore on unmute — captured at the moment of muting (default 75 if unknown). */
   private restoreLevel = 75;
   /** A press reads-then-writes the volume via two osascript calls; a second press landing between them
@@ -29,12 +32,12 @@ export class MicMuteKey extends SingletonAction {
    * a burst of events can't pile up overlapping subprocesses — the next tick just repaints. */
   private refreshing = false;
 
-  override async onWillAppear(ev: WillAppearEvent): Promise<void> {
+  override async onWillAppear(ev: WillAppearEvent<NoSettings>): Promise<void> {
     if (!ev.action.isKey()) return;
     await this.render(ev.action);
   }
 
-  override async onKeyDown(ev: KeyDownEvent): Promise<void> {
+  override async onKeyDown(ev: KeyDownEvent<NoSettings>): Promise<void> {
     if (this.toggling) return;
     this.toggling = true;
     try {
@@ -65,7 +68,7 @@ export class MicMuteKey extends SingletonAction {
     }
   }
 
-  private async render(a: KeyAction): Promise<void> {
+  private async render(a: KeyAction<NoSettings>): Promise<void> {
     const level = await readInputVolume();
     await a.setTitle('');
     await paintKey(a, keyFace(micFace(level === 0, level !== undefined)));

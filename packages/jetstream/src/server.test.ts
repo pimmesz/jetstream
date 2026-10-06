@@ -38,6 +38,25 @@ describe('startHookServer', () => {
     expect(seen).toEqual([{ hook_event_name: 'Stop', cwd: '/p', session_id: 's' }]);
   });
 
+  it('reports a handler failure instead of dropping it as "not JSON"', async () => {
+    const errors: string[] = [];
+    server = await startHookServer(0, {
+      onPayload: () => {
+        throw new Error('reducer bug');
+      },
+      onSlot: async () => {
+        throw new Error('render timeout');
+      },
+      onError: (endpoint, error) => void errors.push(`${endpoint}: ${(error as Error).message}`),
+    });
+    const hook = await fetch(`http://127.0.0.1:${port(server)}/hook`, { method: 'POST', body: '{"a":1}' });
+    expect(hook.status).toBe(204); // the hook still gets its normal answer
+    const slot = await fetch(`http://127.0.0.1:${port(server)}/slot`, { method: 'POST', body: '{"coord":"a1"}' });
+    expect(slot.status).toBe(500);
+    expect(await slot.json()).toHaveProperty('error');
+    expect(errors).toEqual(['/hook: reducer bug', '/slot: render timeout']);
+  });
+
   it('drops non-JSON bodies without crashing and 404s other routes', async () => {
     const seen: unknown[] = [];
     server = await startHookServer(0, { onPayload: (raw) => seen.push(raw) });

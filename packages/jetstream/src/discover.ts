@@ -46,7 +46,12 @@ export function isClaudeCommand(args: string): boolean {
   const tokens = args.trim().split(/\s+/);
   const exe = tokens[0] ?? '';
   const base = (exe.split('/').pop() ?? '').toLowerCase();
+  // The background-session supervisor (argv0 "claude bg-pty-host") hosts a terminal, not a session.
+  if (tokens.includes('--bg-pty-host')) return false;
   if (base === 'claude') return true; // the `claude` bin/shim (the common install)
+  // Background sessions run the native binary straight from its versions dir, so the basename is
+  // the version number (~/.local/share/claude/versions/2.1.281).
+  if (/\/claude\/versions\/\d+\.\d+\.\d+[^/]*$/.test(exe)) return true;
   if (/^(node|bun|deno|npx)$/.test(base)) {
     // node/bun running the CLI script: a path token that names claude / claude-code.
     return tokens.slice(1).some((t) => t.includes('/') && /(^|\/)claude(-code)?(\/|\.|$)/i.test(t));

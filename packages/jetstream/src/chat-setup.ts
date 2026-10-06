@@ -5,6 +5,8 @@ import { projectsConfigPath, readConfigFile , resolveProjectsConfigPath } from '
 import { DECK_MODELS, type DeckModel } from './profile';
 import { NO_SETTINGS_TYPE_NAMES, resolvePlacements, type Placement } from './layout';
 import { boardContext, renderBoardMap, type BoardLayout } from './board-layout';
+import { describePlan, planLayout, type ApplyOutcome } from './chat-apply';
+import type { ForeignAction } from './plugin-catalog';
 
 /**
  * `jetstream chat` — a CONVERSATIONAL alternative to the step-by-step `init` wizard: describe
@@ -21,7 +23,7 @@ export const SETUP_SYSTEM = [
   'live Claude Code status per project (working / needs you / done), plus usage and approval keys.',
   'Help the user build their fleet AND, when they ask, lay out their Stream Deck keys.',
   '',
-  'Reply with EXACTLY ONE of:',
+  'Reply with EXACTLY ONE of these three:',
   '(a) A JSON object — no markdown, no prose — of this shape:',
   '    {"projects":[{"name":"Display name","path":"/absolute/repo/path"}],',
   '     "settings":{"theme":"default"|"highContrast","longPressMs":200-3000,',
@@ -34,7 +36,8 @@ export const SETUP_SYSTEM = [
   '  columns are numbers 1..N left→right. XL is 8 cols × 4 rows, standard 5×3, mini 3×2.',
   '  Each key needs "coord" + "type". "type" is one of:',
   '    open-app {app:"/Applications/X.app"} · open-url {url:"https://…"} · run {command, args?} · slot (clear/empty)',
-  '    text {text:"…"} · project {path, name?} · approve · deny · nav {target:"board"|"ops"}',
+  '    text {text:"…"} · project {path, name?} · approve · deny · nav {target:"board"|"ops"} · logo',
+  '    plugin {ref} (a copy of another Stream Deck plugin\'s key; refs are listed with the board)',
   `    ${NO_SETTINGS_TYPE_NAMES.join(' · ')}`,
   '  "icon" is the key\'s MAIN picture. An open-app key already auto-shows the app\'s own logo — do NOT set',
   '  "icon" to match it. Set "icon" only to REPLACE the picture: an image path ("icon":"/path/x.png") OR an',
@@ -49,14 +52,15 @@ export const SETUP_SYSTEM = [
   '    coordinate, which of several keys they mean, or WHAT a key should do ("a selector" is unclear).',
   '    Prefer ONE focused question; you MAY ask a follow-up on a later turn. Do NOT ask about trivial',
   '    defaults you can reasonably infer (an exact colour shade, an obvious label) — pick a sensible one.',
+  '(c) ANSWER a question about the board or setup that changes nothing (prefix "ANSWER: ").',
   '',
-  "Another Stream Deck plugin's action (Philips Hue, Spotify, OBS, Home Assistant, or any hardware /",
-  'service integration) is NOT in the type list and you CANNOT place it — Jetstream only arranges its',
-  'own keys plus the Elgato Text action. Do NOT dead-end by only asking for a command: reply with a',
-  'QUESTION that (1) names the Stream Deck plugin for it and says to install it from the Elgato',
-  "Marketplace and drag its action onto the coordinate, and (2) offers a `run` (a CLI/command) or",
-  '`open-url` key there as the fallback if they have one. Place a `run` key only once they give the',
-  'exact command (run keys are opt-in via "allowRunKeys").',
+  'Keys from other Stream Deck plugins (Philips Hue, Spotify, OBS, Focusrite, ...): place a COPY of one',
+  'the user already has with {"coord":"d6","type":"plugin","ref":"<ref>"}, using only refs from the',
+  'list given with the board. Never invent a ref, uuid or settings. If that list has no key from the',
+  'plugin, you cannot place it: reply with a QUESTION that names the Stream Deck plugin, says to place',
+  'one of its keys once in the Stream Deck app (after that you can copy and move it), and offers a',
+  '`run` or `open-url` key as a fallback. Place a `run` key only once they give the exact command',
+  '(run keys are opt-in via "allowRunKeys").',
   'Never invent paths. Keep a home-relative path (~/dev/x) as the user gave it. Prefer their exact names.',
 ].join('\n');
 
@@ -70,26 +74,35 @@ export interface ChatIo {
   spinner?: (label: string) => () => void;
 }
 
+/** One model turn: the reply text, or why there is none (`null` when the cause is unknown). */
+export type ModelReply = string | { error: string } | null;
+
 export interface ChatDeps {
   io: ChatIo;
-  /** Send a full prompt to the model, get its reply text — or null on an agent error (e.g.
-   * `claude` not installed). Injected so tests never spawn a real model. */
-  ask: (prompt: string) => Promise<string | null>;
+  /** Send a full prompt to the model. A failed turn is reported and the conversation continues.
+   * Injected so tests never spawn a real model. */
+  ask: (prompt: string) => Promise<ModelReply>;
   configPath?: string;
   /** Injected in tests; defaults to the atomic projects.json writer. */
   write?: (projects: ProjectConfig[], settings: Partial<JetstreamConfig>) => void;
-  /** Optional post-write hook (e.g. offer to generate the importable fleet profile). */
+  /** After a fleet change when there is no board yet: offer a first, ready-made board. */
   onWritten?: (projects: ProjectConfig[]) => Promise<void>;
-  /** Optional hook when the model designed a full key layout: generate the importable profile. */
-  onLayout?: (layout: NonNullable<Proposal['layout']>) => Promise<void>;
-  /** The user's current board — shown at start + given to the model so it can edit by coordinate. */
+  /** Apply an approved layout (live, or by an in-place profile write) to the board and deck the user
+   * previewed it against, never one re-read later (the deck may have switched page meanwhile). */
+  onLayout?: (
+    placements: Placement[],
+    target: { deck: DeckModel; board: BoardLayout | null },
+  ) => Promise<ApplyOutcome | void>;
+  /** The user's current board, shown at start and given to the model so it can edit by coordinate. */
   board?: BoardLayout | null;
+  /** Re-read the board after an apply, so the next request edits what is really there. */
+  readBoard?: () => BoardLayout | null;
+  /** Copies of other plugins' keys the model may place (see plugin-catalog.ts). */
+  catalog?: ForeignAction[];
   /** Optional coordinate painter for the board map (e.g. colour by row); identity when absent. */
   paintCoord?: (coord: string, row: number) => string;
   /** Preflight: is `claude` available on PATH? When it returns false, chat fails fast with an
-   * actionable hint BEFORE the first typed turn, instead of only discovering it after a full
-   * round-trip. Injected (cli passes commandOnPath) so this module stays free of PATH/exec deps;
-   * absent → skip the check (keeps the pure tests unchanged). */
+   * actionable hint BEFORE the first typed turn. Absent: skip the check. */
   claudeAvailable?: () => boolean;
 }
 
@@ -129,7 +142,11 @@ function normalizeDecision(d: string): 'apply' | 'refine' | 'cancel' {
  * (bad JSON, no projects). Paths run through addToFleet so they're canonicalized, deduped,
  * and named exactly like the wizard and PI paths — the model can't smuggle in a malformed
  * entry. Settings are type-checked here; ranges are clamped at plugin load (mergeConfig). */
-export function parseProposal(reply: string, defaultDeck?: DeckModel): Proposal | null {
+export function parseProposal(
+  reply: string,
+  defaultDeck?: DeckModel,
+  catalog: ForeignAction[] = [],
+): Proposal | null {
   const parsed = parseJsonObject(reply);
   if (parsed === null) return null;
   const raw = parsed as { projects?: unknown; settings?: unknown; layout?: unknown };
@@ -146,7 +163,7 @@ export function parseProposal(reply: string, defaultDeck?: DeckModel): Proposal 
       }).projects;
     }
   }
-  const layout = extractLayout(raw.layout, defaultDeck);
+  const layout = extractLayout(raw.layout, defaultDeck, catalog);
   const settings = extractSettings(raw.settings);
   // Nothing usable — no fleet, no layout, no settings — so it isn't a proposal. SETTINGS COUNT:
   // "turn on high contrast" is a flow SETUP_SYSTEM explicitly advertises, and it legitimately comes
@@ -178,13 +195,13 @@ function parseJsonObject(reply: string): Record<string, unknown> | null {
 /** Resolve the model's proposed `layout` ({deck, keys:[{coord,type,…}]}) into VALIDATED placements,
  * or undefined when there's no usable layout — mirrors extractSettings' whitelist stance
  * (resolvePlacements drops anything malformed; the model can't smuggle a bad key onto the deck). */
-function extractLayout(raw: unknown, defaultDeck?: DeckModel): Proposal['layout'] {
+function extractLayout(raw: unknown, defaultDeck?: DeckModel, catalog: ForeignAction[] = []): Proposal['layout'] {
   if (typeof raw !== 'object' || raw === null) return undefined;
   const l = raw as { deck?: unknown; keys?: unknown };
   // Fall back to the current board's deck when the model omits or mistypes "deck".
   const deck = DECK_MODELS.find((d) => d.key === l.deck) ?? defaultDeck;
   if (!deck) return undefined;
-  const { placements, warnings } = resolvePlacements(deck, l.keys);
+  const { placements, warnings } = resolvePlacements(deck, l.keys, catalog);
   // Count keys resolvePlacements refused. Not all drops warn (a non-object entry is skipped silently),
   // so derive it from the input count, not warnings.length.
   const inputCount = Array.isArray(l.keys) ? l.keys.length : 0;
@@ -208,7 +225,16 @@ function extractSettings(raw: unknown): Partial<JetstreamConfig> {
   return out;
 }
 
-const MAX_TURNS = 12; // a bound so a non-converging conversation can't loop forever
+/** A bound on model calls per session, so a conversation that never converges cannot loop forever. */
+const MAX_MODEL_TURNS = 20;
+
+/** Model text shown to the user: control characters stripped, so a reply cannot rewrite the terminal. */
+const printable = (text: string): string => text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim();
+
+/** A plain answer from the model: the ANSWER: prefix, or any reply that is neither JSON nor a question. */
+function plainAnswer(reply: string): string {
+  return printable(reply.replace(/^\s*ANSWER:\s*/i, ''));
+}
 
 /** Run the conversational setup. Returns a process exit code. */
 export async function runChatSetup(deps: ChatDeps): Promise<number> {
@@ -224,142 +250,161 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
   }
   const configPath = deps.configPath ?? resolveProjectsConfigPath();
   const write = deps.write ?? ((p, s) => writeFleetFile(configPath, p, s));
+  const catalog = deps.catalog ?? [];
+  let board = deps.board ?? null;
 
-  io.say('Jetstream chat setup — describe your repos to build your fleet, or arrange your deck by coordinate.');
-  io.say('  e.g. "3 repos in ~/dev: falcon, api, web"  ·  "add an open-Telegram key at a8"  ·  "move usage to b1"');
-  io.say('  (type "cancel" to quit)');
-  if (deps.board) {
-    io.say(`\nYour current board (${deps.board.deck.label}):`);
-    io.say(renderBoardMap(deps.board, deps.paintCoord));
+  io.say('Jetstream chat: describe your repos to build your fleet, or arrange your deck by coordinate.');
+  io.say('  e.g. "3 repos in ~/dev: falcon, api, web"  ·  "add an open-Telegram key at a8"  ·  "what is on c3?"');
+  io.say('  (type "quit" when you are done)');
+  if (board) {
+    io.say(`\nYour current board (${board.deck.label}):`);
+    io.say(renderBoardMap(board, deps.paintCoord));
     io.say('  Refer to keys by coordinate, e.g. "replace a8 with an open-Telegram key".');
   }
 
   let transcript = '';
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const message = (await io.ask('\nyou: ')).trim();
-    if (message === '') {
-      io.say('(nothing entered — describe your repos, or type "cancel")');
-      continue;
+  let changed = false;
+  let correction: string | null = null; // a rejected-keys note sent back to the model once
+  let corrected = false;
+  for (let modelTurns = 0; modelTurns < MAX_MODEL_TURNS; ) {
+    let message: string;
+    if (correction) {
+      message = correction;
+      correction = null;
+    } else {
+      corrected = false;
+      message = (await io.ask('\nyou: ')).trim();
+      if (message === '') {
+        io.say('(nothing entered: describe a change, ask a question, or type "quit")');
+        continue;
+      }
+      if (/^(cancel|quit|exit|done)$/i.test(message)) {
+        io.say(changed ? 'Done.' : 'Nothing written.');
+        return 0;
+      }
     }
-    if (/^(cancel|quit|exit)$/i.test(message)) {
-      io.say('Cancelled — nothing written.');
-      return 0;
-    }
+    modelTurns++;
 
-    const firstCtx = deps.board ? `${boardContext(deps.board)}\n\n` : '';
-    const prompt = transcript ? `${transcript}\nUser: ${message}` : `${firstCtx}${message}`;
+    const context = board ? `${boardContext(board, catalog)}\n\n` : '';
+    const prompt = transcript ? `${transcript}\nUser: ${message}` : `${context}${message}`;
     const stopThinking = startThinking(io);
-    let reply: string | null;
+    let reply: ModelReply;
     try {
       reply = await deps.ask(prompt);
     } finally {
       stopThinking();
     }
-    if (reply === null) {
-      io.say('The assistant is unavailable — is `claude` installed and logged in? Try `jetstream init` instead.');
-      return 1;
+    if (reply === null || typeof reply === 'object') {
+      // The model call failed (rate limit, timeout, not logged in). Keep the conversation: the user
+      // can retry the same request without retyping the rest.
+      const reason = reply?.error ?? 'no reply';
+      io.say(`The assistant could not answer (${printable(reason)}). Try again, or type "quit".`);
+      continue;
     }
     transcript = `${prompt}\nAssistant: ${reply}`;
 
     const question = clarifyingQuestion(reply);
     if (question) {
-      io.say(`\n${question}`);
+      io.say(`\n${printable(question)}`);
       continue;
     }
 
-    const proposal = parseProposal(reply, deps.board?.deck);
-    if (
-      !proposal ||
-      (proposal.projects.length === 0 &&
-        !proposal.layout &&
-        Object.keys(proposal.settings).length === 0)
-    ) {
-      io.say("\n(couldn't read a fleet or layout from that — give me repo paths, or which keys go where.)");
+    const proposal = parseProposal(reply, board?.deck, catalog);
+    if (!proposal) {
+      const answer = plainAnswer(reply);
+      io.say(answer ? `\n${answer}` : "\n(no answer came back; try rephrasing)");
       continue;
     }
 
+    // Keys the resolver refused go back to the model once, so it can correct its own mistake instead
+    // of the user having to translate a warning.
+    if (proposal.layout && proposal.layout.dropped > 0) {
+      if (!corrected) {
+        corrected = true;
+        correction = `System: these keys could not be placed: ${proposal.layout.warnings.join('; ')}. Send the corrected layout.`;
+        io.say(`(${proposal.layout.dropped} key(s) were not valid; asking the assistant to correct them)`);
+        continue;
+      }
+      io.say(
+        `\n${proposal.layout.dropped} key(s) still could not be placed, so nothing was applied (a partial move ` +
+          'can delete the keys it cannot relocate). Tell me a corrected version, or a supported key type.',
+      );
+      for (const w of proposal.layout.warnings) io.say(`  ⚠ ${w}`);
+      continue;
+    }
+
+    const plan = proposal.layout ? planLayout(board, proposal.layout.placements) : [];
+    const keyLines = describePlan(plan);
+    const fleetOrSettings = proposal.projects.length > 0 || Object.keys(proposal.settings).length > 0;
+    if (!fleetOrSettings && keyLines.length === 0) {
+      io.say('\nAlready set, nothing to change.');
+      continue;
+    }
     if (proposal.projects.length > 0) {
       io.say('\nProposed fleet:');
-      for (const project of proposal.projects) io.say(`  • ${project.name} — ${project.path}`);
+      for (const project of proposal.projects) io.say(`  • ${project.name}: ${project.path}`);
     }
-    if (Object.keys(proposal.settings).length > 0) {
-      io.say(`  settings: ${JSON.stringify(proposal.settings)}`);
-    }
-    if (proposal.layout) {
-      io.say(`  layout: ${proposal.layout.placements.length} key(s) on the ${proposal.layout.deck.label}`);
-      for (const w of proposal.layout.warnings) io.say(`    ⚠ ${w}`);
-    }
-    // Refuse a PARTIAL layout. Applying it is destructive: a move whose destination key was dropped
-    // still clears/overwrites its source, silently DELETING it (how a "move micmute to d2" that the
-    // build couldn't place ended up erasing micmute). Loop for a corrected instruction instead.
-    if (proposal.layout && proposal.layout.dropped > 0) {
-      io.say(
-        `\n⚠ ${proposal.layout.dropped} key(s) couldn't be placed — NOT applying, since a partial move ` +
-          `can delete the keys it can't relocate. Tell me a corrected version (or a supported key type).`,
-      );
-      continue;
+    if (Object.keys(proposal.settings).length > 0) io.say(`  settings: ${JSON.stringify(proposal.settings)}`);
+    if (keyLines.length > 0) {
+      io.say(`\nKeys on the ${proposal.layout!.deck.label}:`);
+      for (const line of keyLines) io.say(line);
     }
 
     const decision = io.select
       ? await io.select('Apply this?', [
           { label: 'Apply', hint: 'write it to your deck', value: 'apply' as const },
           { label: 'Refine', hint: 'describe a change', value: 'refine' as const },
-          { label: 'Cancel', hint: 'discard', value: 'cancel' as const },
+          { label: 'Discard', hint: 'drop this proposal', value: 'cancel' as const },
         ])
-      : normalizeDecision((await io.ask('\nApply? [y = write · r = refine · n = cancel]: ')).trim().toLowerCase());
+      : normalizeDecision((await io.ask('\nApply? [y = write · r = refine · n = discard]: ')).trim().toLowerCase());
     if (decision === 'cancel') {
-      io.say('Cancelled — nothing written.');
-      return 0;
+      io.say('Discarded. Anything else? (or "quit")');
+      continue;
     }
-    if (decision === 'apply') {
-      let applied = 0;
-      let wroteSettings = false;
-      let fleet = proposal.projects;
+    if (decision === 'refine') {
+      io.say('OK, tell me what to change.');
+      continue;
+    }
+
+    let fleet = proposal.projects;
+    if (fleetOrSettings) {
       try {
         // MERGE with what is already on disk. The model is shown the board, not the fleet, and is
-        // told to include only what the user asked for — so "add /repo/new" arrives as a
-        // one-project proposal. Writing it verbatim replaced the whole fleet, silently turning an
-        // add into a wipe. Absence is the model's shorthand, never a removal.
+        // told to include only what the user asked for, so "add /repo/new" arrives as a one-project
+        // proposal. Writing it verbatim replaced the whole fleet. Absence is never a removal.
         const current = readConfigFile(configPath);
-        // NEVER write over a fleet we failed to read. `corrupt` means the file EXISTS but could not
-        // be parsed, so `current.projects` is [] — not because the fleet is empty, but because we
-        // could not see it. Merging into that and writing would replace a populated projects.json
-        // with whatever the proposal held (for a settings-only proposal: nothing at all).
+        // NEVER write over a fleet we failed to read: `corrupt` means the file exists but could not be
+        // parsed, so `current.projects` is [] only because we could not see it.
         if (current.corrupt) {
-          io.say(
-            `\n${configPath} exists but could not be parsed, so nothing was written — fix or remove it first.`,
-          );
+          io.say(`\n${configPath} exists but could not be parsed, so nothing was written; fix or remove it first.`);
           return 1;
         }
-        if (proposal.projects.length > 0 || Object.keys(proposal.settings).length > 0) {
-          const merged = mergeFleet(current.projects, proposal.projects);
-          // Settings MERGE over what's on disk. renderProjectsJson writes the settings block
-          // wholesale, so passing only the proposal's keys erased every setting the model didn't
-          // happen to re-emit — and gating the write on `projects.length > 0` meant settings the
-          // user had just approved were shown, confirmed, and silently dropped.
-          write(merged, { ...current.settings, ...proposal.settings });
-          applied = merged.length;
-          fleet = merged;
-          wroteSettings = Object.keys(proposal.settings).length > 0;
-        }
+        const merged = mergeFleet(current.projects, proposal.projects);
+        // Settings MERGE over what is on disk: renderProjectsJson writes the block wholesale.
+        write(merged, { ...current.settings, ...proposal.settings });
+        fleet = merged;
       } catch (error) {
         io.say(`Couldn't write the config: ${error instanceof Error ? error.message : String(error)}`);
         return 1;
       }
-      if (applied > 0) io.say(`\nWrote ${applied} project(s) to ${configPath}.`);
-      else if (wroteSettings) io.say(`\nUpdated settings in ${configPath}.`);
-      // A designed layout → generate the importable profile; otherwise the fleet path offers the
-      // ready-made board layout, falling back to the drag-keys hint.
-      if (proposal.layout && deps.onLayout) await deps.onLayout(proposal.layout);
-      // The MERGED fleet, not just the proposal — otherwise the generated profile carries keys for
-      // only the repo that was added and silently omits the seven already there.
+      if (proposal.projects.length > 0) io.say(`\nWrote ${fleet.length} project(s) to ${configPath}.`);
+      else io.say(`\nUpdated settings in ${configPath}.`);
+      changed = true;
+    }
+    if (proposal.layout && deps.onLayout) {
+      const outcome = await deps.onLayout(proposal.layout.placements, { deck: proposal.layout.deck, board });
+      if (outcome !== 'declined' && outcome !== 'failed' && outcome !== 'unchanged') changed = true;
+    } else if (proposal.projects.length > 0) {
+      // With a board already there, a fleet change needs no new profile: a repo gets a key on request.
+      // A fresh fleet-only profile would drop every custom key if imported.
+      if (board) io.say(`To give a repo a key, ask e.g. "put ${proposal.projects[0]!.name} at an empty spot".`);
       else if (deps.onWritten) await deps.onWritten(fleet);
       else io.say('Next: drag a Fleet + Attention key onto your deck.');
-      return 0;
     }
-    // Anything else = refine: loop, the transcript carries the last proposal.
-    io.say('OK — tell me what to change.');
+    if (deps.readBoard) board = deps.readBoard() ?? board;
+    if (board) transcript += `\nSystem: applied. The board now:\n${boardContext(board, catalog)}`;
+    io.say('\nAnything else? (or "quit")');
   }
-  io.say("Setup didn't converge — run `jetstream init` for the step-by-step wizard.");
+  io.say('That is the limit for one session; run `jetstream chat` again to continue.');
   return 0;
 }

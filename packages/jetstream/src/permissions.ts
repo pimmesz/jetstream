@@ -25,6 +25,10 @@ interface Entry {
  * or sockets; excess requests defer to Claude's own dialog immediately. */
 const MAX_PENDING = 32;
 
+/** Tools whose prompt is a question for the user, not a yes/no: Claude ignores an "allow" without
+ * the answer in updatedInput, so a deck Approve would do nothing. Leave them to Claude's own dialog. */
+const NOT_DECK_ANSWERABLE: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode']);
+
 export class Permissions {
   private queue: Entry[] = [];
   private seq = 0;
@@ -44,7 +48,7 @@ export class Permissions {
 
   request(raw: unknown, timeoutMs = 90_000): Promise<string | undefined> {
     const perm = parsePermissionRequest(raw, `perm-${++this.seq}`);
-    if (!perm) return Promise.resolve(undefined);
+    if (!perm || NOT_DECK_ANSWERABLE.has(perm.toolName)) return Promise.resolve(undefined);
     // Always-Allow: an armed session+tool auto-approves with no keypress. A non-empty sessionId is
     // required to match, so the '' parse-fallback can never be armed into a wildcard.
     if (perm.sessionId && this.allowRules.has(this.ruleKey(perm.sessionId, perm.toolName))) {
@@ -110,6 +114,15 @@ export class Permissions {
     }
     this.settleId(entry.perm.id, permissionDecisionJson('allow'));
     return true;
+  }
+
+  /** Deny every request this session is blocked on AND stop its turn (the deck stop key).
+   * Returns whether anything was pending. */
+  denyAndInterrupt(sessionId: string): boolean {
+    if (!sessionId) return false;
+    const ids = this.queue.filter((e) => e.perm.sessionId === sessionId).map((e) => e.perm.id);
+    for (const id of ids) this.settleId(id, permissionDecisionJson('deny', true));
+    return ids.length > 0;
   }
 
   /** Forget a session's armed rules when it ends, so the set doesn't accumulate dead entries over a

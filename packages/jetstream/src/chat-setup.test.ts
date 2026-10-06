@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { clarifyingQuestion, parseProposal, runChatSetup, SETUP_SYSTEM } from './chat-setup';
-import { KEY_TYPE_NAMES } from './layout';
-import { DECK_MODELS } from './profile';
+import { KEY_TYPE_NAMES, type Placement } from './layout';
+import { DECK_MODELS, type DeckModel } from './profile';
+import type { BoardLayout } from './board-layout';
 
 describe('clarifyingQuestion', () => {
   it('extracts a QUESTION reply, else null', () => {
@@ -105,16 +106,14 @@ describe('SETUP_SYSTEM ↔ KEY_TYPES coverage', () => {
     expect(advertised.filter((name) => !KEY_TYPE_NAMES.includes(name))).toEqual([]);
   });
 
-  // Third-party integrations (Hue / Spotify / OBS / …) are NOT placeable — Jetstream can't put another
-  // plugin's action on the deck. The prompt must tell the model to NAME the plugin and point at the
-  // Marketplace, not dead-end on "give me a command". Guards that instruction against silent removal.
-  it('tells the model it cannot place another plugin action, and how to respond instead', () => {
-    expect(SETUP_SYSTEM).toMatch(/another Stream Deck plugin/i);
-    expect(SETUP_SYSTEM.toLowerCase()).toContain('cannot');
-    expect(SETUP_SYSTEM).toMatch(/QUESTION/); // reply with a question, not a dead-end
-    expect(SETUP_SYSTEM).toMatch(/Marketplace/); // install the plugin from the Marketplace
-    expect(SETUP_SYSTEM).toMatch(/drag/i); // and drag its action onto the coordinate
-    expect(SETUP_SYSTEM).toMatch(/`run`|open-url/); // offer the run / open-url fallback
+  // Third-party keys (Hue / Spotify / OBS / ...) are placed as COPIES of keys the user already has, by
+  // catalogue ref only. The prompt must say so, and must still give an honest route when no copy exists.
+  it('tells the model to place third-party keys by catalogue ref, and what to do without one', () => {
+    expect(SETUP_SYSTEM).toMatch(/other Stream Deck plugins/i);
+    expect(SETUP_SYSTEM).toMatch(/"type":"plugin","ref"/);
+    expect(SETUP_SYSTEM).toMatch(/Never invent a ref/);
+    expect(SETUP_SYSTEM).toMatch(/QUESTION/); // no copy available: a question, not a dead end
+    expect(SETUP_SYSTEM).toMatch(/`run`|open-url/); // with the run / open-url fallback
   });
 });
 
@@ -143,7 +142,8 @@ describe('runChatSetup preflight', () => {
 function makeIo(answers: string[]): { io: { ask: (q: string) => Promise<string>; say: (l: string) => void }; said: string[] } {
   const said: string[] = [];
   let i = 0;
-  return { io: { ask: async () => answers[i++] ?? '', say: (l) => said.push(l) }, said };
+  // Out of scripted answers means the user leaves, as EOF does on a real terminal.
+  return { io: { ask: async () => answers[i++] ?? 'quit', say: (l) => said.push(l) }, said };
 }
 
 describe('runChatSetup', () => {
@@ -158,16 +158,40 @@ describe('runChatSetup', () => {
     expect(write.mock.calls[0]![0]).toHaveLength(1);
   });
 
-  it('a third-party-plugin request (Hue) surfaces the QUESTION and writes nothing', async () => {
-    const { io, said } = makeIo(['add a hue toggle to d6', 'cancel']);
+  it('places a copy of a catalogued third-party key (Hue) with the settings from disk', async () => {
+    const { io, said } = makeIo(['make d6 toggle my hue light', 'y']);
+    const catalog = [
+      {
+        ref: 'philips-hue-power-1',
+        uuid: 'com.elgato.philipshue.power',
+        title: 'Philips Hue power',
+        target: 'Desk lamp',
+        settings: { bridge: 'b1', id: 'light-1', type: 'light' },
+        plugin: { Name: 'Philips Hue', UUID: 'com.elgato.philipshue', Version: '2.2.1.15' },
+        states: [{}, {}],
+      },
+    ];
+    const onLayout = vi.fn(async (_p: Placement[], _t: { deck: DeckModel; board: BoardLayout | null }) => 'restarted' as const);
+    const ask = async () => '{"layout":{"deck":"xl","keys":[{"coord":"d6","type":"plugin","ref":"philips-hue-power-1"}]}}';
+    await runChatSetup({ io, ask, onLayout, catalog, configPath: '/x' });
+    expect(onLayout).toHaveBeenCalledTimes(1);
+    const placed = onLayout.mock.calls[0]![0][0]!;
+    expect(placed).toMatchObject({ column: 5, row: 3, uuid: 'com.elgato.philipshue.power' });
+    expect(placed.settings).toEqual({ bridge: 'b1', id: 'light-1', type: 'light' });
+    // The proposal's deck travels with it, so a first board is built for the right model.
+    expect(onLayout.mock.calls[0]![1]).toMatchObject({ deck: { key: 'xl' }, board: null });
+    expect(said.some((l) => /d6: Philips Hue power/.test(l))).toBe(true); // shown in the plan first
+  });
+
+  it('a third-party request with no copy available gets the QUESTION and writes nothing', async () => {
+    const { io, said } = makeIo(['add a spotify key to d6']);
     const write = vi.fn();
     const ask = async () =>
-      'QUESTION: That is the Philips Hue Stream Deck plugin — install it from the Elgato Marketplace and drag its Toggle action onto d6. Or give me a Hue command and I will wire a run key there.';
+      'QUESTION: That needs the Spotify Stream Deck plugin. Place one Spotify key once in the Stream Deck app, then I can copy and move it. Or give me a command for a run key.';
     const code = await runChatSetup({ io, ask, write, configPath: '/tmp/p.json', claudeAvailable: () => true });
     expect(code).toBe(0);
-    expect(said.some((l) => /Philips Hue Stream Deck plugin/.test(l))).toBe(true);
-    expect(said.some((l) => /Marketplace/.test(l))).toBe(true);
-    expect(write).not.toHaveBeenCalled(); // a question is not a proposal — nothing is written
+    expect(said.some((l) => /Spotify Stream Deck plugin/.test(l))).toBe(true);
+    expect(write).not.toHaveBeenCalled(); // a question is not a proposal
   });
 
   it('runs onWritten with the written fleet after applying (the layout hook)', async () => {
@@ -187,17 +211,63 @@ describe('runChatSetup', () => {
   });
 
   it('refuses a PARTIAL layout instead of applying a destructive move (a dropped key would delete a source)', async () => {
-    const { io, said } = makeIo(['move things around', 'cancel']);
+    const { io, said } = makeIo(['move things around']);
     const onLayout = vi.fn(async () => {});
     // usage resolves at d1, but the unknown "nope" at d2 is dropped → applying would clear/overwrite
     // without placing everything the model intended. The flow must refuse, not apply the remainder.
     const reply = '{"layout":{"deck":"xl","keys":[{"coord":"d2","type":"nope"},{"coord":"d1","type":"usage"}]}}';
-    let r = 0;
-    const replies = [reply];
-    const code = await runChatSetup({ io, ask: async () => replies[r++] ?? null, onLayout, configPath: '/x' });
+    const prompts: string[] = [];
+    const code = await runChatSetup({
+      io,
+      ask: async (prompt) => {
+        prompts.push(prompt);
+        return reply; // the model repeats the same mistake after the correction
+      },
+      onLayout,
+      configPath: '/x',
+    });
     expect(code).toBe(0);
     expect(onLayout).not.toHaveBeenCalled(); // a partial layout is never applied
-    expect(said.some((l) => /NOT applying/.test(l))).toBe(true);
+    // The rejected key went back to the model once, automatically, before the user was told.
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toMatch(/could not be placed: skipped nope at d2: unknown key type/);
+    expect(said.some((l) => /nothing was applied/.test(l))).toBe(true);
+  });
+
+  it('stays open after an apply, so a second change needs no new session', async () => {
+    const { io } = makeIo(['add falcon', 'y', 'add api', 'y']);
+    const replies = ['{"projects":[{"path":"/dev/falcon"}]}', '{"projects":[{"path":"/dev/api"}]}'];
+    let r = 0;
+    const write = vi.fn();
+    await runChatSetup({ io, ask: async () => replies[r++] ?? null, write, configPath: '/x' });
+    expect(write).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a plain answer instead of calling it unreadable', async () => {
+    const { io, said } = makeIo(['what is on c3?']);
+    await runChatSetup({ io, ask: async () => 'ANSWER: c3 opens Telegram.', configPath: '/x' });
+    expect(said).toContain('\nc3 opens Telegram.');
+  });
+
+  it('says a layout that is already in place changes nothing', async () => {
+    const board = {
+      profileName: 'Jetstream',
+      profileDir: '/store/b.sdProfile',
+      deck: DECK_MODELS.find((d) => d.key === 'xl')!,
+      keys: new Map([['0,0', { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'app', app: '/A.app' }, label: 'A' }]]),
+      allUuids: [],
+    };
+    const { io, said } = makeIo(['put A at a1']);
+    const onLayout = vi.fn(async () => {});
+    await runChatSetup({
+      io,
+      board,
+      ask: async () => '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-app","app":"/A.app"}]}}',
+      onLayout,
+      configPath: '/x',
+    });
+    expect(onLayout).not.toHaveBeenCalled();
+    expect(said.some((l) => /Already set, nothing to change/.test(l))).toBe(true);
   });
 
   it('a clarifying question loops, then applies on the next turn', async () => {
@@ -232,13 +302,15 @@ describe('runChatSetup', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it('an unavailable agent exits 1 without writing', async () => {
-    const { io, said } = makeIo(['describe my repos']);
+  it('a failed model turn names the cause and keeps the conversation open', async () => {
+    const { io, said } = makeIo(['describe my repos', 'describe my repos', 'y']);
+    const replies = [{ error: 'usage limit reached' }, '{"projects":[{"path":"/a"}]}'];
+    let r = 0;
     const write = vi.fn();
-    const code = await runChatSetup({ io, ask: async () => null, write });
-    expect(code).toBe(1);
-    expect(write).not.toHaveBeenCalled();
-    expect(said.some((l) => /claude.*installed/i.test(l))).toBe(true);
+    const code = await runChatSetup({ io, ask: async () => replies[r++] ?? null, write, configPath: '/x' });
+    expect(code).toBe(0);
+    expect(said.some((l) => /could not answer \(usage limit reached\)/.test(l))).toBe(true);
+    expect(write).toHaveBeenCalledTimes(1); // the retry went through
   });
 
   it('surfaces a write failure as exit 1', async () => {

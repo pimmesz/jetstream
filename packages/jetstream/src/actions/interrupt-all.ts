@@ -1,7 +1,7 @@
 import { action, SingletonAction } from '@elgato/streamdeck';
 import type { KeyDownEvent } from '@elgato/streamdeck';
 import { board } from '../state';
-import { interruptPids } from '../switchto';
+import { stopSessions } from '../stop-session';
 import type { Face } from '../render';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
@@ -17,8 +17,8 @@ export function stopFace(working: number): Face {
 }
 
 /**
- * Panic key: one press SIGINTs every running Claude session across the whole fleet — the
- * fleet-wide sibling of the Project key's long-press interrupt. The face shows how many
+ * Panic key: one press stops the running turn of every Claude session across the whole fleet (the
+ * sessions stay open): the fleet-wide sibling of the Project key's long-press interrupt. The face shows how many
  * projects are currently working so it reads as "N running · press to stop".
  */
 @action({ UUID: 'gg.pim.jetstream.interruptall' })
@@ -28,15 +28,13 @@ export class InterruptAllKey extends SingletonAction {
   }
 
   override async onKeyDown(ev: KeyDownEvent): Promise<void> {
-    const sent = interruptPids(board.allPids());
-    // Repaint before the confirmation glyph. The board only learns a session stopped on the next
-    // hook event or the 5s poll, so without this the key still reads "3 working" straight after a
-    // successful press — which looks like nothing happened, and invites the mash that the cooldown
-    // in interruptPids then has to absorb. Through paintKey, never setImage: a raw upload leaves
-    // the paint cache holding a stale face and strands the key on its next genuine repaint.
-    // Swallow a failed repaint: paintKey propagates a rejected setImage, and a transient SDK
-    // hiccup must not cost the user the confirmation for a press that DID signal the sessions.
-    if (sent > 0) await paintKey(ev.action, keyFace(stopFace(0))).catch(() => {});
+    const sent = stopSessions(board.allActiveSessions());
+    // Repaint before the confirmation glyph, so the press visibly did something. "stopping", not
+    // "idle": each session stops at its next tool call, which can be a while into a long reply.
+    // Through paintKey, never setImage: a raw upload leaves the paint cache holding a stale face and
+    // strands the key on its next genuine repaint. Swallow a failed repaint: a transient SDK hiccup
+    // must not cost the user the confirmation for a press that DID stop the sessions.
+    if (sent > 0) await paintKey(ev.action, keyFace({ ...stopFace(sent), sub: 'stopping' })).catch(() => {});
     await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
   }
 

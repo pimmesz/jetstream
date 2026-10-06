@@ -1,5 +1,6 @@
 import { request } from 'node:http';
 import { tokenHeader } from './listener-token';
+import { clearStopFlagOnTurnEnd } from './stop-flag';
 
 /**
  * Claude Code lifecycle-hook entry (install for SessionStart / UserPromptSubmit /
@@ -64,7 +65,9 @@ async function main(): Promise<void> {
     return;
   }
   if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
-    (payload as Record<string, unknown>)._pid = process.ppid;
+    const fields = payload as Record<string, unknown>;
+    clearStopFlagOnTurnEnd(fields.hook_event_name, fields.session_id);
+    fields._pid = process.ppid;
     await post(JSON.stringify(payload));
   } else {
     await post(body);

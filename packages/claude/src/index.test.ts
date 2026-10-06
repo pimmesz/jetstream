@@ -330,3 +330,32 @@ describe('runClaude', () => {
     expect(kills).toEqual([]); // the watchdog was cleared on close — nothing killed
   });
 });
+
+describe('chat-mode run options', () => {
+  it('locks the run down: no tools, no user MCP servers, no saved session', () => {
+    const args = buildArgs({ prompt: 'x', tools: '', strictMcpConfig: true, noSessionPersistence: true });
+    expect(args).toEqual(expect.arrayContaining(['--tools', '', '--strict-mcp-config', '--no-session-persistence']));
+    expect(buildArgs({ prompt: 'x' })).not.toContain('--tools');
+  });
+
+  it('passes extra env to the child and keeps a stderr tail for the failure reason', async () => {
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const proc = new EventEmitter();
+    let seenEnv: NodeJS.ProcessEnv | undefined;
+    const child = { stdout, stderr, stdin: { end() {} }, on: proc.on.bind(proc) } as unknown as SpawnLike;
+    const pending = runClaude({ prompt: 'x', env: { JETSTREAM_SKIP_DECK: '1' } }, () => {}, {
+      spawnFn: (_c, _a, o) => {
+        seenEnv = o.env;
+        return child;
+      },
+      env: { ANTHROPIC_API_KEY: 'k' },
+    });
+    stderr.emit('data', 'Error: not logged in\n');
+    proc.emit('close', 1);
+    const result = await pending;
+    expect(seenEnv).toEqual({ JETSTREAM_SKIP_DECK: '1' });
+    expect(result).toMatchObject({ isError: true, exitCode: 1, stderrTail: 'Error: not logged in' });
+  });
+});
+

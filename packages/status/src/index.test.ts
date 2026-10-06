@@ -310,7 +310,7 @@ describe('subagent tracking (a running workflow keeps a key working)', () => {
   it('the tombstone is per-session — a brand-new session still registers on its first event', () => {
     let s = reduce(initialState(), ev({ event: 'PostToolUse', sessionId: 'h1', at: 1 }));
     s = reduce(s, ev({ event: 'SessionEnd', sessionId: 'h1', at: 2 })); // h1 tombstoned
-    // A DIFFERENT session in the same repo must be unaffected (ids never repeat, so only h1 is dead).
+    // A DIFFERENT session in the same repo must be unaffected (only h1 is tombstoned).
     s = reduce(s, ev({ event: 'Stop', sessionId: 'h2', at: 3 }));
     expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('done');
   });
@@ -512,9 +512,16 @@ describe('Notification triage', () => {
 // easy here and both are silent: missing `permission_prompt` kills the doorbell for every user who
 // has NOT bypassed permissions, and matching `elicitation_` by prefix catches the dialog's own
 // completion events and flips a finished key back to "needs you".
-describe('Notification vocabulary (verified against Claude 2.1.216)', () => {
+describe('Notification vocabulary (verified against the Claude Code 2.1.289 hooks reference)', () => {
   it('every blocking type rings, including the plain permission_prompt', () => {
-    for (const type of ['permission_prompt', 'worker_permission_prompt', 'agent_needs_input', 'elicitation_dialog']) {
+    for (const type of [
+      'permission_prompt',
+      'worker_permission_prompt',
+      'agent_needs_input',
+      'elicitation_dialog',
+      'elicitation_url_dialog',
+      'quota_auto_resume_stale',
+    ]) {
       expect(notificationStatus(type), type).toBe('needsInput');
     }
   });
@@ -528,5 +535,74 @@ describe('Notification vocabulary (verified against Claude 2.1.216)', () => {
     let s = reduce(initialState(), ev({ event: 'Stop', sessionId: 'h1', at: 1 }));
     s = reduce(s, ev({ event: 'Notification', sessionId: 'h1', at: 2, notificationType: 'permission_prompt' }));
     expect(statusByProject(s, PROJECTS).falcon?.status).toBe('needsInput');
+  });
+});
+
+describe('Claude Code 2.1.289 contract', () => {
+  it('a resumed session (same id, SessionStart) comes back after SessionEnd', () => {
+    let s = reduce(initialState(), ev({ event: 'Stop', sessionId: 'r1', at: 1 }));
+    s = reduce(s, ev({ event: 'SessionEnd', sessionId: 'r1', at: 2 }));
+    // `claude --continue` reuses the id; without lifting the tombstone the key stayed dark 30 min.
+    s = reduce(s, ev({ event: 'SessionStart', sessionId: 'r1', at: 3, source: 'resume' }));
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'r1', at: 4 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('working');
+    expect(s.ended ?? []).toEqual([]);
+  });
+
+  it('a reordered startup SessionStart after its SessionEnd does not revive a ghost', () => {
+    let s = reduce(initialState(), ev({ event: 'SessionEnd', sessionId: 'g1', at: 2 }));
+    s = reduce(s, ev({ event: 'SessionStart', sessionId: 'g1', at: 3, source: 'startup' }));
+    expect(s.sessions.g1).toBeUndefined();
+  });
+
+  it('compaction mid-turn does not flip a working key to idle', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'c1', at: 1 }));
+    s = reduce(s, ev({ event: 'SessionStart', sessionId: 'c1', at: 2, source: 'compact' }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('working');
+    // A plain startup still reads idle.
+    s = reduce(s, ev({ event: 'SessionStart', sessionId: 'c2', at: 3, source: 'startup' }));
+    expect(s.sessions.c2?.status).toBe('idle');
+  });
+
+  it('usage-limit auto-resume: fired means working again, disabled means the wait gave up', () => {
+    expect(notificationStatus('quota_auto_resume_fired')).toBe('working');
+    expect(notificationStatus('quota_auto_resume_disabled')).toBe('failed');
+  });
+
+  it('a failed tool call keeps the session working and clears the tool label', () => {
+    let s = reduce(initialState(), ev({ event: 'PreToolUse', sessionId: 't1', at: 1, toolName: 'Bash' }));
+    s = reduce(s, ev({ event: 'PostToolUseFailure', sessionId: 't1', at: 2 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon).toEqual({ status: 'working', since: 2 });
+  });
+
+  it('an empty background_tasks list on Stop clears every in-flight agent (teammates included)', () => {
+    let s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'b1', at: 1, agentId: 'teammate-1' }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'b1', at: 2, backgroundTasks: 0 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('done');
+  });
+
+  it('a non-empty background_tasks list keeps the in-flight agents (work will wake the session)', () => {
+    let s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'b2', at: 1, agentId: 'w1' }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'b2', at: 2, backgroundTasks: 1 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('working');
+  });
+
+  it('an empty background_tasks list on SubagentStop clears the rest too', () => {
+    let s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'b3', at: 1, agentId: 'w1' }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b3', at: 1, agentId: 'teammate-9' }));
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'b3', at: 2, agentId: 'w1', backgroundTasks: 0 }));
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('idle');
+  });
+
+  it('parses source and background_tasks from the raw payload', () => {
+    const parsed = parseHookPayload(
+      { hook_event_name: 'Stop', cwd: '/x', session_id: 's', background_tasks: [{ id: 'a' }, { id: 'b' }] },
+      5,
+    );
+    expect(parsed?.backgroundTasks).toBe(2);
+    expect(parseHookPayload({ hook_event_name: 'SessionStart', cwd: '/x', session_id: 's', source: 'resume' }, 5)?.source).toBe(
+      'resume',
+    );
+    expect(parseHookPayload({ hook_event_name: 'Stop', cwd: '/x', session_id: 's' }, 5)?.backgroundTasks).toBeUndefined();
   });
 });

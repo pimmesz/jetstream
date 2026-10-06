@@ -80,32 +80,12 @@ export function buildOpenCommand(
     : { cmd: 'xdg-open', args: [path] };
 }
 
-/** Is `pid` a live Claude Code CLI process? Guards interrupt against PID reuse and against a
- * hook parent that turned out to be a shell wrapper — we only SIGINT something that actually IS
- * the Claude session. Uses the same strict classifier as {@link probeClaudeProcess}: a substring
- * match here would authorise SIGINT against any process whose command line merely mentions
- * claude (`vim claude-notes.md`, a checkout under a path containing "claude"), which on a kill
- * path is the wrong side of "any doubt is don't". macOS/Linux only. */
-export function isClaudeProcess(pid: number, platform: NodeJS.Platform = process.platform): boolean {
-  if (platform === 'win32' || !Number.isInteger(pid) || pid <= 1) return false;
-  try {
-    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
-      encoding: 'utf8',
-      timeout: 2000,
-    });
-    return isClaudeCommand(out);
-  } catch {
-    return false; // no such process, or ps unavailable → don't kill
-  }
-}
-
 export type ProcessProbe = 'alive' | 'dead' | 'unknown';
 
 /**
  * Probe a recorded session pid, distinguishing a CONCLUSIVE "gone" from an inconclusive probe
  * FAILURE — so the session reaper never erases a live session just because `ps` couldn't run
- * (EMFILE under load, a timeout). Unlike {@link isClaudeProcess} (a kill guard where any doubt is
- * "don't"), the reaper needs to tell "definitely dead" from "couldn't tell":
+ * (EMFILE under load, a timeout). The reaper needs to tell "definitely dead" from "couldn't tell":
  * - `alive`   — `ps` ran and the pid is a live Claude process.
  * - `dead`    — `ps` ran and the pid is absent (exit 1) OR belongs to a non-Claude process (its
  *               Claude session ended; the pid may have been reused) → the session is gone.
@@ -124,65 +104,6 @@ export function probeClaudeProcess(pid: number, platform: NodeJS.Platform = proc
     // (ENOENT, or a 2s timeout that SIGTERMs ps → status null) is inconclusive — never call it dead.
     return (err as { status?: number | null }).status === 1 ? 'dead' : 'unknown';
   }
-}
-
-/**
- * How long a PID is left alone after being SIGINTed. The board does not repaint until the next
- * hook event or the 5s discovery poll, so a press can look like it did nothing and invite another
- * — and Claude Code escalates a second Ctrl-C within about a second from "interrupt this turn" to
- * "end the session", losing the user's context. Re-signalling a process that got one 200ms ago
- * cannot help under either behaviour, so the cooldown is right without needing to know which.
- */
-const INTERRUPT_COOLDOWN_MS = 2_000;
-const lastInterrupt = new Map<number, number>();
-
-/**
- * SIGINT the given PIDs that are verified to still be Claude sessions, skipping any signalled
- * within the cooldown. Returns how many sessions are now being interrupted — freshly signalled
- * PLUS those still inside their cooldown, so a second press on a session that is already stopping
- * reports success rather than flashing "nothing to interrupt" at a user who did nothing wrong.
- * 0 means exactly that: nothing safe to interrupt.
- *
- * The cooldown lives HERE rather than in the key handlers so every caller gets it — the stop-all
- * key, the slot `stopall` kind, and both long-press interrupts.
- */
-/** Seams for testing — the cooldown is unreachable otherwise, since `isClaudeProcess` is false for
- * every PID a test can safely use and a real `kill` would signal the test runner. */
-export interface InterruptDeps {
-  isClaude?: (pid: number, platform: NodeJS.Platform) => boolean;
-  kill?: (pid: number) => void;
-  now?: () => number;
-}
-
-export function interruptPids(
-  pids: number[],
-  platform: NodeJS.Platform = process.platform,
-  deps: InterruptDeps = {},
-): number {
-  const isClaude = deps.isClaude ?? isClaudeProcess;
-  const kill = deps.kill ?? ((pid: number): void => void process.kill(pid, 'SIGINT'));
-  const now = (deps.now ?? Date.now)();
-  // Drop expired entries first, so the map stays bounded by "PIDs signalled in the last 2s"
-  // instead of growing with every session the fleet has ever run.
-  for (const [pid, at] of lastInterrupt) {
-    if (now - at >= INTERRUPT_COOLDOWN_MS) lastInterrupt.delete(pid);
-  }
-  let sent = 0;
-  for (const pid of pids) {
-    if (!isClaude(pid, platform)) continue;
-    if (lastInterrupt.has(pid)) {
-      sent += 1; // already interrupting — count it, but do not signal again
-      continue;
-    }
-    try {
-      kill(pid);
-      lastInterrupt.set(pid, now);
-      sent += 1;
-    } catch {
-      /* process exited between the check and the signal */
-    }
-  }
-  return sent;
 }
 
 /** Fire the open command, detached so the editor outlives the plugin process. PATH is

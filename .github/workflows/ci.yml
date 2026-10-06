@@ -50,6 +50,25 @@ jobs:
         run: npm pack --dry-run
         working-directory: packages/jetstream
 
+      # Both shipped artifacts are gitignored and reach the tarball only through `files`, so
+      # assert they are in it, then run the bin the way a user would. --version is answered by the
+      # package itself (--help forwards to the installed plugin, which a runner does not have).
+      - name: Assert the tarball contents and run the bin
+        working-directory: packages/jetstream
+        run: |
+          # prepack's own log lines go to stdout, so list the (already built) contents separately.
+          npm pack --dry-run --json --ignore-scripts > "$RUNNER_TEMP/pack.json"
+          for f in dist/npm-cli-entry.js assets/gg.pim.jetstream.streamDeckPlugin; do
+            jq -e --arg f "$f" '.[0].files | map(.path) | index($f)' "$RUNNER_TEMP/pack.json" > /dev/null \
+              || { echo "::error::$f is missing from the npm tarball"; exit 1; }
+          done
+          expected="@pimmesz/jetstream $(jq -r .version package.json)"
+          actual="$(node dist/npm-cli-entry.js --version | head -n 1)"
+          case "$actual" in
+            "$expected"*) echo "bin ok: $actual" ;;
+            *) echo "::error::bin printed '$actual', expected it to start with '$expected'"; exit 1 ;;
+          esac
+
   changes:
     name: Detect published-file changes
     # Only the release path cares; PRs never bump.
@@ -293,6 +312,8 @@ jobs:
         with:
           ref: ${{ needs.bump-version.outputs.commit }}
           persist-credentials: false
+          # Full history and tags, so the release notes can list the commits since the last tag.
+          fetch-depth: 0
 
       - name: Create tag and GitHub Release
         env:
@@ -308,5 +329,20 @@ jobs:
             echo "release $TAG already exists; skipping"
             exit 0
           fi
+          # --generate-notes builds from merged PRs, and this repo ships straight from main, so
+          # every release body came out empty. List the commits since the previous tag instead.
+          PREV="$(git describe --tags --abbrev=0 "${TARGET}^" 2>/dev/null || true)"
+          RANGE="${PREV:+${PREV}..}${TARGET}"
+          # Captured, not `grep -q`: an early grep exit SIGPIPEs git log, which pipefail reads as no match.
+          BREAKING="$(git log --format='%B' "$RANGE" | grep '^BREAKING CHANGE:' | sed 's/^BREAKING CHANGE: */- /' || true)"
+          {
+            if [ -n "$BREAKING" ]; then
+              echo '## Breaking changes'
+              echo "$BREAKING"
+              echo
+            fi
+            echo '## Changes'
+            git log --no-merges --format='- %s (%h)' "$RANGE" | grep -v '^- chore(release)' || true
+          } > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --target "$TARGET" --title "$TAG" --generate-notes
+            --target "$TARGET" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

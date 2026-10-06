@@ -11,12 +11,12 @@
   "Icon": "imgs/plugin",
   "CodePath": "bin/plugin.js",
   "Nodejs": {
-    "Version": "20",
+    "Version": "24",
     "Debug": "disabled"
   },
   "SDKVersion": 3,
   "Software": {
-    "MinimumVersion": "6.9"
+    "MinimumVersion": "7.1"
   },
   "OS": [
     {

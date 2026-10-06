@@ -43,16 +43,7 @@ run('node', [join(pkgDir, 'scripts', 'build.mjs')]);
 // 3. The `jetstream` bin this package puts on PATH (installer + passthrough). Separate from
 //    the plugin bundle: this one runs from node_modules, the plugin runs inside Stream Deck.
 console.log('prepack: building the npm CLI…');
-run('pnpm', [
-  'exec',
-  'tsup',
-  'src/bin/npm-cli-entry.ts',
-  '--format',
-  'esm',
-  '--clean',
-  '--out-dir',
-  'dist',
-]);
+run('pnpm', ['exec', 'tsdown', 'src/bin/npm-cli-entry.ts', '--format', 'esm', '--out-dir', 'dist']);
 
 // 4. Pack the installable, overwriting any stale copy. --no-update-check keeps it
 //    offline/deterministic. validate first: a plugin that fails Elgato's own checks must
@@ -74,7 +65,12 @@ run('pnpm', [
 
 // 5. Assert every shipped artifact exists. Without this, a silently-empty build would ship a
 //    tarball whose `jetstream install` fails on the user's machine instead of in CI.
-const required = [artifact, join(pkgDir, 'dist', 'npm-cli-entry.js')];
+const required = [
+  artifact,
+  join(pkgDir, 'dist', 'npm-cli-entry.js'),
+  // The bundled third-party licence notices travel inside the packed plugin.
+  join(pkgDir, 'gg.pim.jetstream.sdPlugin', 'bin', 'THIRD_PARTY_LICENSES.txt'),
+];
 for (const file of required) {
   if (!existsSync(file)) throw new Error(`prepack: expected artifact missing — ${file}`);
 }

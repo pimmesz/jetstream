@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -13,8 +14,8 @@ export const HOOK_EVENTS = [
   'UserPromptSubmit',
   'Notification',
   'Stop',
-  // A turn the API kills (overloaded / rate_limit / billing_error / authentication_failed) fires
-  // StopFailure INSTEAD of Stop — without this hook the session stays pinned 'working' and the
+  // A turn the API kills (rate_limit, overloaded, billing_error, authentication_failed and the rest
+  // of the hooks reference's error list) fires StopFailure INSTEAD of Stop. Without this hook the session stays pinned 'working' and the
   // board can't tell "finished" from "died", the one distinction it exists to make.
   'StopFailure',
   'SessionEnd',
@@ -119,8 +120,9 @@ function upsertHook(hooks: Record<string, unknown>, event: string, command: stri
 }
 
 /** The higher-overhead tool-detail events (a hook process per tool call), wired only
- * with the opt-in `--tool-detail` flag. */
-export const TOOL_DETAIL_EVENTS = ['PreToolUse', 'PostToolUse'] as const;
+ * with the opt-in `--tool-detail` flag. A failing tool fires PostToolUseFailure, not PostToolUse,
+ * so without it the tool label stuck after every failed call. */
+export const TOOL_DETAIL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'] as const;
 
 export interface HookCommands {
   /** The silent lifecycle hook (status board), added to HOOK_EVENTS. */
@@ -132,6 +134,34 @@ export interface HookCommands {
   /** Opt-in: also wire the status hook to PreToolUse/PostToolUse so keys show the
    * active tool. Higher overhead — off unless the user asks. */
   toolDetail?: boolean;
+  /** The PreToolUse stop gate: ends the turn when a deck stop key flagged this session. Reads one
+   * local file, no network. */
+  stopGate?: string;
+}
+
+/** POSIX-single-quote a path for embedding in the hook command string. Single quotes neutralize
+ * every shell metacharacter ($, backticks, ", \), so an install path containing them can't break
+ * out of the command; an embedded single quote uses the standard '\'' dance. */
+const shellQuote = (path: string): string => `'${path.replace(/'/g, `'\\''`)}'`;
+
+/** Build the node-quoted hook commands pointing at the sibling bundled hook scripts, so
+ * they install with correct absolute paths wherever the .sdPlugin lives. */
+export function hookCommands(binDir: string, toolDetail: boolean): HookCommands {
+  // Stable node symlink survives a Homebrew upgrade; fall back to the installing node.
+  const node = existsSync('/opt/homebrew/bin/node') ? '/opt/homebrew/bin/node' : process.execPath;
+  // Skip cleanly if the script is missing (e.g. mid-rebuild), otherwise exec node so
+  // its real exit code and errors still surface.
+  const cmd = (file: string): string => {
+    const script = shellQuote(join(binDir, file));
+    return `[ -f ${script} ] || exit 0; exec ${shellQuote(node)} ${script}`;
+  };
+  return {
+    status: cmd('status-hook.js'),
+    permission: cmd('permission-hook.js'),
+    usage: cmd('usage-hook.js'),
+    stopGate: cmd('stop-gate.js'),
+    toolDetail,
+  };
 }
 
 /**
@@ -165,6 +195,7 @@ export function mergeHooks(
   if (commands.permission && upsertHook(hooks, 'PermissionRequest', commands.permission)) {
     changed = true;
   }
+  if (commands.stopGate && upsertHook(hooks, 'PreToolUse', commands.stopGate)) changed = true;
   next.hooks = hooks;
 
   let statuslineBlocked = false;
@@ -210,8 +241,10 @@ export interface InstallResult {
   statuslineBlocked?: boolean;
 }
 
-export function defaultSettingsPath(home = homedir()): string {
-  return join(home, '.claude', 'settings.json');
+/** Claude Code reads its user settings from CLAUDE_CONFIG_DIR when set, else ~/.claude. */
+export function defaultSettingsPath(home = homedir(), env: NodeJS.ProcessEnv = process.env): string {
+  const configDir = env.CLAUDE_CONFIG_DIR?.trim();
+  return join(configDir || join(home, '.claude'), 'settings.json');
 }
 
 /** Read the settings file; a missing file starts empty, any OTHER read failure

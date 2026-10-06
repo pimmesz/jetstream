@@ -111,3 +111,27 @@ describe('permissionDecisionJson', () => {
     );
   });
 });
+
+describe('deny with interrupt (the deck stop on a session blocked at a prompt)', () => {
+  it('carries interrupt and a reason only on deny', () => {
+    expect(JSON.parse(permissionDecisionJson('deny', true)).hookSpecificOutput.decision).toEqual({
+      behavior: 'deny',
+      message: 'Stopped from the Stream Deck.',
+      interrupt: true,
+    });
+    expect(JSON.parse(permissionDecisionJson('allow', true)).hookSpecificOutput.decision).toEqual({
+      behavior: 'allow',
+    });
+  });
+
+  it('the loopback funnel rebuilds interrupt from a boolean and nothing else', () => {
+    const wire = (decision: unknown): string =>
+      JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } });
+    expect(parsePermissionDecision(wire({ behavior: 'deny', interrupt: true }))).toBe(permissionDecisionJson('deny', true));
+    expect(parsePermissionDecision(wire({ behavior: 'deny', interrupt: 'yes', message: 'x' }))).toBe(
+      permissionDecisionJson('deny'),
+    );
+    expect(parsePermissionDecision(wire({ behavior: 'allow', interrupt: true }))).toBe(permissionDecisionJson('allow'));
+  });
+});
+

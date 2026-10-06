@@ -12,7 +12,8 @@ import { board } from '../state';
 import { config } from '../config';
 import { dialFeedback, scrubIndex } from '../encoder';
 import { heldMs } from '../press';
-import { interruptPids, openProject } from '../switchto';
+import { openProject } from '../switchto';
+import { stopSessions } from '../stop-session';
 
 /**
  * The Fleet dial (Stream Deck + encoder): one dial to scan the whole fleet without a key
@@ -24,49 +25,52 @@ import { interruptPids, openProject } from '../switchto';
  * Thin by design (like every action here): the index math + touchscreen content live in
  * the tested `encoder.ts`; this file is SDK glue.
  */
+/** This key keeps no per-key settings (SDK 3 requires the settings type to be named). */
+type NoSettings = Record<string, never>;
+
 @action({ UUID: 'gg.pim.jetstream.dial' })
-export class FleetDialKey extends SingletonAction {
+export class FleetDialKey extends SingletonAction<NoSettings> {
   /** Selected fleet index, per dial instance (an action can be placed more than once). */
   private index = new Map<string, number>();
   /** Press-start timestamp, per dial instance, for long-press detection. */
   private pressAt = new Map<string, number>();
 
-  override onWillAppear(ev: WillAppearEvent): void {
+  override onWillAppear(ev: WillAppearEvent<NoSettings>): void {
     if (!this.index.has(ev.action.id)) this.index.set(ev.action.id, 0);
     void this.renderAll();
   }
 
-  override onDialRotate(ev: DialRotateEvent): void {
+  override onDialRotate(ev: DialRotateEvent<NoSettings>): void {
     const len = board.projects().length;
     const next = scrubIndex(len, this.index.get(ev.action.id) ?? 0, ev.payload.ticks);
     this.index.set(ev.action.id, next);
     void this.renderId(ev.action.id);
   }
 
-  override onDialDown(ev: DialDownEvent): void {
+  override onDialDown(ev: DialDownEvent<NoSettings>): void {
     this.pressAt.set(ev.action.id, Date.now());
   }
 
-  override async onDialUp(ev: DialUpEvent): Promise<void> {
+  override async onDialUp(ev: DialUpEvent<NoSettings>): Promise<void> {
     const held = heldMs(this.pressAt, ev.action.id);
     const project = this.selected(ev.action.id);
     if (!project) return;
 
     if (held >= config.get().longPressMs) {
-      const sent = interruptPids(board.pidsForProject(project.id));
+      const sent = stopSessions(board.activeSessionsForProject(project.id));
       if (sent === 0) await ev.action.showAlert();
       return;
     }
     if (!project.path || !openProject(project.path)) await ev.action.showAlert();
   }
 
-  override async onTouchTap(ev: TouchTapEvent): Promise<void> {
+  override async onTouchTap(ev: TouchTapEvent<NoSettings>): Promise<void> {
     const project = this.selected(ev.action.id);
     if (!project) return;
     // A held touch interrupts (matches the touchscreen's LongTouch hint + the long dial-push);
     // a plain tap opens. The SDK delivers a long touch as one touchTap with hold=true.
     if (ev.payload.hold) {
-      const sent = interruptPids(board.pidsForProject(project.id));
+      const sent = stopSessions(board.activeSessionsForProject(project.id));
       if (sent === 0) await ev.action.showAlert();
       return;
     }
@@ -93,7 +97,7 @@ export class FleetDialKey extends SingletonAction {
     }
   }
 
-  private async paint(dial: DialAction, now: number): Promise<void> {
+  private async paint(dial: DialAction<NoSettings>, now: number): Promise<void> {
     const projects = board.projects();
     const i = scrubIndex(projects.length, this.index.get(dial.id) ?? 0, 0);
     const project = projects[i];

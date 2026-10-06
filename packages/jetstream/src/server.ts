@@ -35,6 +35,9 @@ export interface HookServerHandlers {
    * probe the installer needs before a token can exist, and it discloses only the version.
    * Omit to leave everything open (tests). */
   authorize?: (headers: IncomingMessage['headers'], endpoint: 'status' | 'sensitive') => boolean;
+  /** Where a handler failure is reported. A request still gets its normal answer, but the cause is
+   * logged instead of vanishing. Omit to drop it (tests). */
+  onError?: (endpoint: string, error: unknown) => void;
 }
 
 function readBody(req: IncomingMessage, onDone: (body: string | undefined) => void): void {
@@ -94,10 +97,20 @@ export function startHookServer(port: number, handlers: HookServerHandlers): Pro
       if (req.method === 'POST' && req.url === '/hook') {
         readBody(req, (body) => {
           if (body !== undefined) {
+            let payload: unknown;
             try {
-              handlers.onPayload(JSON.parse(body));
+              payload = JSON.parse(body);
             } catch {
-              /* not JSON — drop */
+              payload = undefined; // not JSON: drop it
+            }
+            // Only the parse is expected to fail. A throw from the board itself is a bug, and it
+            // used to be swallowed here as "not JSON".
+            if (payload !== undefined) {
+              try {
+                handlers.onPayload(payload);
+              } catch (error) {
+                handlers.onError?.('/hook', error);
+              }
             }
           }
           res.writeHead(204);
@@ -158,9 +171,10 @@ export function startHookServer(port: number, handlers: HookServerHandlers): Pro
               res.writeHead(status, { 'content-type': 'application/json' });
               res.end(out);
             })
-            .catch(() => {
-              res.writeHead(500);
-              res.end();
+            .catch((error: unknown) => {
+              handlers.onError?.('/slot', error);
+              res.writeHead(500, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'the plugin failed to apply this key; see the Stream Deck plugin log' }));
             });
         });
         return;

@@ -56,7 +56,7 @@ export class NavKey extends SingletonAction<NavSettings> {
     }
   }
 
-  private async renderOne(a: KeyAction, settings: NavSettings): Promise<void> {
+  private async renderOne(a: KeyAction<NavSettings>, settings: NavSettings): Promise<void> {
     const target = settings.target ?? 'ops';
     await a.setTitle('');
     await paintKey(

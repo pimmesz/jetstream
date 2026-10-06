@@ -13,6 +13,15 @@ describe('isClaudeCommand', () => {
     expect(isClaudeCommand('grep -r claude .')).toBe(false);
     expect(isClaudeCommand('/bin/zsh -c echo claudexyz')).toBe(false);
   });
+
+  it('matches background sessions run from the versions dir, not their pty supervisor', () => {
+    expect(isClaudeCommand('/Users/me/.local/share/claude/versions/2.1.281 --bg-spare /tmp/d')).toBe(true);
+    expect(
+      isClaudeCommand('claude bg-pty-host --bg-pty-host 3 -- /Users/me/.local/share/claude/versions/2.1.281 --bg-spare d'),
+    ).toBe(false);
+    // A file that merely lives under a versions dir with a non-version name is not a session.
+    expect(isClaudeCommand('/Users/me/.local/share/claude/versions/notes.txt')).toBe(false);
+  });
 });
 
 describe('parseClaudeProcs', () => {

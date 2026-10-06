@@ -56,6 +56,9 @@ function requestDecision(body: string): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  // `jetstream chat` runs its own `claude -p` with this marker: its prompts are not the user's to
+  // answer on the deck (headless runs fire PermissionRequest since Claude Code 2.1.268).
+  if (process.env.JETSTREAM_SKIP_DECK === '1') return;
   const body = await readStdin();
   if (!body.trim()) return;
   const decision = await requestDecision(body);

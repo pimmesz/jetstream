@@ -95,7 +95,7 @@ sell the concept, a real deck sells that it's real.
 
 ## Release notes (paste into the Console's notes field per version)
 
-### v1.0.0 — first release
+### First Marketplace release (use the current manifest Version)
 Jetstream turns your Stream Deck into a live cockpit for Claude Code.
 - Live status board — every project glows with its real state: working, needs you, done.
 - Attention doorbell + deck approve/deny for Claude permission prompts.

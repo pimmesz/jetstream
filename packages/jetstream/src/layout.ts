@@ -1,6 +1,7 @@
 import { normalizeColor } from './slot-color';
 import { isHttpUrl } from './slot-command';
 import type { DeckModel } from './profile';
+import type { ForeignAction } from './plugin-catalog';
 
 /**
  * The chat layout designer's whitelist: the key TYPES the model may place, and how each turns
@@ -172,10 +173,14 @@ export const KEY_TYPES: Record<string, KeyType> = {
   volmute: { uuid: 'gg.pim.jetstream.slot', name: 'Mute output', build: (f) => ({ settings: { kind: 'volmute', ...slotCosmetics(f) } }) },
   // Opens `jetstream chat` in a terminal — the board builder needs an interactive TTY.
   chat: { uuid: 'gg.pim.jetstream.slot', name: 'Build by chat', build: (f) => ({ settings: { kind: 'chat', ...slotCosmetics(f) } }) },
+  logo: { uuid: 'gg.pim.jetstream.slot', name: 'Jetstream logo', build: (f) => ({ settings: { kind: 'logo', ...slotCosmetics(f) } }) },
 };
 
+/** The chat type for a copy of a third-party key; resolved against the catalogue, not KEY_TYPES. */
+export const PLUGIN_TYPE = 'plugin';
+
 /** The placeable type names, for the model prompt + "unknown type" messages. */
-export const KEY_TYPE_NAMES: readonly string[] = Object.keys(KEY_TYPES);
+export const KEY_TYPE_NAMES: readonly string[] = [...Object.keys(KEY_TYPES), PLUGIN_TYPE];
 
 /** "a8" → { column, row } — row = letter (a = top), column = 1-indexed number — validated against
  * the deck's grid. Null for an unparseable or off-board coordinate. Inverse of `coordLabel`. */
@@ -194,6 +199,8 @@ export interface Placement {
   uuid: string;
   name: string;
   settings: Record<string, unknown> | null;
+  /** For a copied third-party key: the plugin block and title states of the key it was copied from. */
+  source?: { plugin: unknown; states: unknown };
 }
 
 export interface ResolvedLayout {
@@ -206,7 +213,7 @@ export interface ResolvedLayout {
 /** Validate + build the model's proposed keys into concrete placements. Never throws: an unknown
  * type, bad coordinate, missing required settings, or a duplicate coordinate is DROPPED with a
  * warning, so the model can't smuggle a malformed key onto the deck. */
-export function resolvePlacements(deck: DeckModel, keys: unknown): ResolvedLayout {
+export function resolvePlacements(deck: DeckModel, keys: unknown, catalog: ForeignAction[] = []): ResolvedLayout {
   const placements: Placement[] = [];
   const warnings: string[] = [];
   const taken = new Set<string>();
@@ -217,6 +224,29 @@ export function resolvePlacements(deck: DeckModel, keys: unknown): ResolvedLayou
     const coordLabel = typeof k.coord === 'string' ? k.coord : '';
     const typeName = typeof k.type === 'string' ? k.type.toLowerCase() : '';
     const at = coordLabel || '(no coord)';
+    if (typeName === PLUGIN_TYPE) {
+      // Only a ref from the catalogue: the copy's uuid, settings and plugin block come from disk.
+      const entry = catalog.find((c) => c.ref === k.ref);
+      const coord = parseCoord(coordLabel, deck);
+      if (!entry) {
+        warnings.push(`skipped plugin at ${at}: unknown ref ${JSON.stringify(k.ref ?? '')}`);
+      } else if (!coord) {
+        warnings.push(`skipped plugin at ${at}: off the ${deck.key} board (${deck.cols}×${deck.rows})`);
+      } else if (taken.has(`${coord.column},${coord.row}`)) {
+        warnings.push(`skipped plugin at ${coordLabel}: ${coordLabel} is already taken`);
+      } else {
+        taken.add(`${coord.column},${coord.row}`);
+        placements.push({
+          column: coord.column,
+          row: coord.row,
+          uuid: entry.uuid,
+          name: entry.title,
+          settings: entry.settings ? structuredClone(entry.settings) : null,
+          source: { plugin: entry.plugin, states: entry.states },
+        });
+      }
+      continue;
+    }
     const type = KEY_TYPES[typeName];
     if (!type) {
       warnings.push(`skipped ${typeName || '(no type)'} at ${at}: unknown key type`);

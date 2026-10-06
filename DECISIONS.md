@@ -5,6 +5,85 @@ Newest first. A decision here is settled — re-open it only against its stated 
 
 ---
 
+## 2026-10-05: Claude Code 2.1.289 contract round
+
+Jetstream's hook assumptions were last checked against Claude Code 2.1.216. This round re-checked
+them against the 2.1.289 hooks reference and changelog.
+
+### Deck stop keys stop the TURN through a hook, never with SIGINT (supersedes the 2-second cooldown)
+
+An external SIGINT now runs Claude Code's graceful shutdown (changelog 2.1.132), and a single
+SIGINT ended a test session within 4 seconds on 2.1.281. The project long-press, the dial, the
+stop-all key and the slot `stopall` kind were ending sessions while claiming to interrupt them.
+
+**Decided:** a press writes `~/.config/jetstream/stop/<session-id>`. A `stop-gate.js` hook on
+`PreToolUse`, installed by default, consumes the flag and prints `{"continue": false}`, which ends
+the turn and keeps the session (verified against a real headless run). A session the deck holds at
+a permission prompt is answered deny with `interrupt: true` at once. `Stop`, `StopFailure` and
+`SessionEnd` delete a leftover flag, and a flag older than 10 minutes is ignored, so a stop can
+never cut the next turn short. The flag path ignores XDG and `CLAUDE_CONFIG_DIR` on purpose: the
+plugin (GUI environment) and the hook (shell environment) must agree on it.
+
+**Accepted trade:** a turn that is only generating text stops at its next tool call or ends on its
+own; there is no mid-sentence stop. The gate costs one node start-up per tool call, with no network.
+
+**Rejected:** sending Esc to the terminal (needs Accessibility permission and can hit the wrong
+window), and relabelling the keys "end session" (removes the feature).
+
+**TRIGGER to reopen:** Claude Code ships a supported external "interrupt this turn" signal or CLI.
+
+### Chat writes structural edits into the board in place, never as an import
+
+Every structural chat edit used to write `~/Downloads/Jetstream-Custom.streamDeckProfile` and open it,
+and Stream Deck imports always ADD a profile: "Jetstream Custom", "copy", "copy 1" piled up, and the
+prune ran before the import landed so it could not catch them.
+
+**Decided:** `profile-store.ts` backs up the board's `.sdProfile` directory, quits Stream Deck (it
+rewrites its profiles on quit, so a write while it runs is lost), rewrites only the changed keys on the
+page the deck shows (`Pages.Current`), keeps every unchanged key's `ActionID`, title style and states,
+relaunches, and while the app is down removes the leftover "Jetstream Custom" copies. Edits to
+Jetstream slots still go live with no restart; the same restart migrates the older standalone
+project/fleet/build keys to slots so their later edits go live too. The standalone stop-all key is
+left as it is: the slot `stopall` kind is inert until `allowStopKeys`, so migrating it would quietly
+disable a working key. The writer refuses any
+profile that is not the Version 3.0 shape seen on Stream Deck 7.5. The import file remains only for a
+first board, or a platform without the writer.
+
+**Accepted trade:** a structural edit restarts Stream Deck for about five seconds, behind a confirm.
+
+**TRIGGER to reopen:** Elgato documents a supported way to replace a profile, or a Stream Deck release
+changes the ProfilesV3 shape (the writer then refuses, and chat falls back to the import file).
+
+### Third-party keys (Philips Hue and the rest) are copied, not reimplemented
+
+Chat told users it could not place a Hue key and sent them to the Marketplace, although the plugin was
+installed and its key was already on their board. **Decided:** `plugin-catalog.ts` lists every
+distinct third-party key already on the user's profiles; the model may place a copy by catalogue ref
+only, and the uuid, settings, plugin block and states come from disk. **Rejected:** a native Jetstream
+Hue kind (bridge pairing, a stored secret, an HTTPS surface, and it would hit the same macOS Local
+Network block as Elgato's own Hue plugin, which was the real cause of the user's dead Hue key).
+
+**TRIGGER to reopen:** a user needs a third-party key they have never placed anywhere.
+
+### A page switch in the middle of a live chat apply is an accepted race
+
+Chat plans against the page it previewed, and `applyLayout` refuses when the board reader sees
+another profile or page at apply time (it cannot see a switch to a profile it skips, such as Ops).
+Live edits still land on whatever key sits at that coordinate on the page on screen (`POST /slot`
+matches visible keys), so a page switch while an apply's requests are in flight can change a key on
+the new page. That window covers each request's render (an app-icon lookup can take about 500 ms)
+and, after a failure, the rollback writes behind a 2-second request timeout.
+
+**Accepted:** it needs a page-switch press during the second or two after the user confirmed the
+apply. **Rejected for now:** a compare-and-swap on `/slot` (the client sends the settings it expects
+at the key). It compares the plugin's settings with the profile read from disk, and if Stream Deck
+flushes live edits to disk late, a later edit to a key whose disk copy is stale would be refused and
+fall back to a restart.
+
+**TRIGGER to reopen:** a user reports a chat edit that changed a key on a page they did not preview.
+
+---
+
 ## 2026-08-09 — `1.1.1` stays untagged, and the guard that let it hide
 
 Two calls from the first monthly supply-chain review.

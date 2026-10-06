@@ -1,9 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { DEFAULTS, LIMITS, type JetstreamConfig } from './config';
-import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos } from './fleet';
+import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos, writeFleetFile } from './fleet';
 import { installHooks, type HookCommands, type InstallResult } from './hooks-install';
 import { defaultOpenFile } from './open-file';
 import { DECK_MODELS, type DeckModel, writeProfileFile } from './profile';
@@ -226,11 +226,21 @@ export async function offerProfile(
     }
     return outPath;
   } catch (error) {
+    // Ctrl-D or Ctrl-C at one of the prompts above is the user leaving, not a failed write.
+    if (isInputAbort(error)) throw error;
     io.say(
       `Could not write the layout (${error instanceof Error ? error.message : String(error)}) — drag keys by hand instead.`,
     );
     return undefined;
   }
+}
+
+/** Whether a readline error means the user closed the input (Ctrl-C or Ctrl-D). */
+export function isInputAbort(error: unknown): boolean {
+  return (
+    (error as { code?: string } | null)?.code === 'ABORT_ERR' ||
+    (error instanceof Error && error.message === 'input closed')
+  );
 }
 
 async function collectSettings(io: InitIo): Promise<Partial<JetstreamConfig>> {
@@ -304,12 +314,8 @@ export async function runInit(deps: InitDeps): Promise<number> {
   }
   if (write) {
     try {
-      mkdirSync(dirname(configPath), { recursive: true });
-      // Atomic swap (temp-per-pid + rename), mirroring fleet.ts writeFleetFile — a crash mid-write
-      // can't truncate an existing projects.json.
-      const tmp = `${configPath}.jetstream-tmp-${process.pid}`;
-      writeFileSync(tmp, rendered);
-      renameSync(tmp, configPath);
+      // The shared writer: atomic, and it keeps a timestamped .bak of the fleet being replaced.
+      writeFleetFile(configPath, projects, settings);
       io.say(
         `Wrote ${configPath} (${projects.length} project${projects.length === 1 ? '' : 's'}).`,
       );

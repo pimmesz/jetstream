@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
-import { buildOpenCommand, isClaudeProcess, interruptPids, probeClaudeProcess } from './switchto';
+import { buildOpenCommand, probeClaudeProcess } from './switchto';
 
 /**
  * A REAL live process whose `ps` command line contains the substring "claude" while not being the
@@ -13,7 +13,7 @@ function spawnClaudeLookalike(): { pid: number; stop: () => void } {
     stdio: 'ignore',
   });
   const pid = child.pid as number;
-  // ps must actually see it, or the guard would read false for the boring reason (no such process).
+  // ps must actually see it, or the probe would read 'dead' for the boring reason (no such process).
   const deadline = Date.now() + 5000;
   let seen = '';
   while (Date.now() < deadline) {
@@ -27,6 +27,17 @@ function spawnClaudeLookalike(): { pid: number; stop: () => void } {
   expect(seen, 'ps must show the lookalike with "claude" in its command line').toMatch(/claude/i);
   return { pid, stop: () => void child.kill('SIGKILL') };
 }
+
+describe('probeClaudeProcess uses the strict classifier', () => {
+  it('reads a live process that merely MENTIONS claude as not a Claude session', () => {
+    const lookalike = spawnClaudeLookalike();
+    try {
+      expect(probeClaudeProcess(lookalike.pid)).toBe('dead');
+    } finally {
+      lookalike.stop();
+    }
+  });
+});
 
 describe('buildOpenCommand — open the project folder, no terminal, no claude', () => {
   it('macOS: opens the folder in the first present editor app via `open -a`', () => {
@@ -74,65 +85,6 @@ describe('buildOpenCommand — open the project folder, no terminal, no claude',
       cmd: 'explorer',
       args: ['C:\\proj'],
     });
-  });
-});
-
-describe('interrupt guards (never signal a non-claude process)', () => {
-  it('isClaudeProcess is false for this test runner, win32, and bad pids', () => {
-    // The test runner is node/vitest, not "claude", so this must be false.
-    expect(isClaudeProcess(process.pid)).toBe(false);
-    expect(isClaudeProcess(2, 'win32')).toBe(false);
-    expect(isClaudeProcess(-1)).toBe(false);
-  });
-
-  it('interruptPids signals nothing when no PID is a verified claude process', () => {
-    expect(interruptPids([process.pid, 999999])).toBe(0);
-  });
-
-  it('rejects a live process that merely MENTIONS claude in its command line', () => {
-    // Regression: the guard used to be /claude/i.test(ps_output). Under that rule any process
-    // whose command line contains the substring — an editor on claude-notes.md, a checkout under
-    // a path containing "claude" — was classified killable. It also SIGINTed vitest's own fork
-    // worker whenever the repo sat on such a path, which reported as 12 skipped tests and 0
-    // failures rather than as a failure.
-    const lookalike = spawnClaudeLookalike();
-    try {
-      expect(isClaudeProcess(lookalike.pid)).toBe(false);
-    } finally {
-      lookalike.stop();
-    }
-  });
-
-  it('interruptPids does not SIGINT a claude-lookalike, using the real default kill', () => {
-    // No `kill` seam: the default `process.kill(pid, "SIGINT")` is exactly what must not fire, so
-    // stubbing it would test the stub. The child survives iff the guard held.
-    const lookalike = spawnClaudeLookalike();
-    try {
-      expect(interruptPids([lookalike.pid])).toBe(0);
-      const still = execFileSync('ps', ['-p', String(lookalike.pid), '-o', 'command='], { encoding: 'utf8' });
-      expect(still, 'the lookalike must still be alive — nothing may have signalled it').toMatch(/claude/i);
-    } finally {
-      lookalike.stop();
-    }
-  });
-
-  it('does not re-signal a PID inside the cooldown, but still reports it as interrupting', () => {
-    // Claude Code escalates a second Ctrl-C within about a second from "interrupt this turn" to
-    // "end the session", and the board does not repaint until the next hook event — so a user who
-    // sees nothing happen and presses again would lose their session. The repeat must not signal.
-    const killed: number[] = [];
-    const deps = { isClaude: () => true, kill: (pid: number) => void killed.push(pid), now: () => 1000 };
-    expect(interruptPids([4242], 'darwin', deps)).toBe(1);
-    expect(interruptPids([4242], 'darwin', { ...deps, now: () => 1500 })).toBe(1); // counted, not re-sent
-    expect(killed).toEqual([4242]);
-  });
-
-  it('signals again once the cooldown has passed', () => {
-    const killed: number[] = [];
-    const deps = { isClaude: () => true, kill: (pid: number) => void killed.push(pid) };
-    interruptPids([4243], 'darwin', { ...deps, now: () => 1000 });
-    interruptPids([4243], 'darwin', { ...deps, now: () => 9000 });
-    expect(killed).toEqual([4243, 4243]);
   });
 });
 

@@ -17,7 +17,8 @@ import { board } from '../state';
 import { permissions } from '../permissions';
 import { readDiffStat, type DiffStat } from '../diffstat';
 import { heldMs } from '../press';
-import { interruptPids, openProject } from '../switchto';
+import { openProject } from '../switchto';
+import { stopSessions } from '../stop-session';
 import { execPlan, runPlan } from '../slot-exec';
 import { parseSlotCommand } from '../slot-command';
 import { forgetIcon, imageMime, resolveSlotIcon } from '../slot-icon';
@@ -30,8 +31,8 @@ import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
 import { openInTerminal } from '../exec-terminal';
 
 // FOLDED structural keys + volume keys: rendered + handled here so `jetstream chat` retargets them LIVE
-// (POST /slot) instead of re-importing a profile. 'build' is a static stamp; 'stopall' (gated) SIGINTs
-// the fleet; 'fleet' is the live roll-up; 'volup'/'voldown'/
+// (POST /slot) instead of re-importing a profile. 'build' is a static stamp; 'stopall' (gated) stops
+// every running turn; 'fleet' is the live roll-up; 'volup'/'voldown'/
 // 'volmute' adjust the macOS OUTPUT volume; 'project' is a live per-repo status light (colour/glyph/
 // diff/long-press-interrupt) — the standalone ProjectKey action folded in so a repo add/move applies
 // live with no profile re-import. Only 'project' carries per-key settings (path/name). See
@@ -211,13 +212,13 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   override async onKeyDown(ev: KeyDownEvent<SlotSettings>): Promise<void> {
     const settings = ev.payload.settings;
     // 'project' is press-and-hold: arm the interrupt warning now, act on key-UP (short = open the repo,
-    // long = SIGINT a working session). Every other kind acts on key-down, below.
+    // long = stop a working session's turn). Every other kind acts on key-down, below.
     if (settings.kind === 'project') {
       this.projectKeyDown(ev.action);
       return;
     }
-    // `stopall` SIGINTs the whole fleet — destructive, so (like the run gate) it stays inert until
-    // opted in, so a webpage that plants it via the unauthenticated /slot endpoint can't fire it.
+    // `stopall` stops every running turn in the fleet. It is disruptive, so (like the run gate) it stays
+    // inert until opted in, so a webpage that plants it via the unauthenticated /slot endpoint can't fire it.
     if (settings.kind === 'stopall') {
       if (!config.get().allowStopKeys) {
         this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
@@ -225,7 +226,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
         setTimeout(() => void this.repaint(ev.action), 2600);
         return;
       }
-      const sent = interruptPids(board.allPids());
+      const sent = stopSessions(board.allActiveSessions());
       await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
       return;
     }
@@ -304,21 +305,21 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   }
 
   // ── 'project' slot kind: per-id press + done-diff state (mirrors the standalone ProjectKey) ──
-  // Short press → open the repo; long press → SIGINT its working session(s), but ONLY when working
+  // Short press → open the repo; long press → stop its working turn(s), but ONLY when working
   // and only after a deliberate hold (the face warns first). Measured key-down → key-up.
   private pressAt = new Map<string, number>();
   private holdWarn = new Map<string, ReturnType<typeof setTimeout>>();
   /** Key id → epoch ms until which a transient notice ("run off", "why dark?") owns the key and
    * must not be repainted over by a routine board render. */
   private noticeUntil = new Map<string, number>();
-  /** SIGINT kills the current turn, so interrupt needs a longer, deliberate hold than a generic press. */
+  /** A stop cuts the current turn short, so it needs a longer, deliberate hold than a generic press. */
   private static readonly INTERRUPT_HOLD_MS = 1500;
   // Per-project done-diff, fetched ONCE per done-episode off the render path and cached; cleared when
   // the project leaves 'done' or the key is re-pointed.
   private diffStats = new Map<string, DiffStat | null>();
   private diffPending = new Set<string>();
 
-  private projectKeyDown(a: KeyAction): void {
+  private projectKeyDown(a: KeyAction<SlotSettings>): void {
     this.pressAt.set(a.id, Date.now());
     // Only a working session can be interrupted — arm the warning only then. Past the hold threshold,
     // flip the face so the press is visibly "about to interrupt" (still releasable to cancel).
@@ -333,7 +334,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
         void paintKey(
           a,
           keyFace({
-            color: '#e5484d', // danger red — this press is about to SIGINT the session
+            color: '#e5484d', // danger red: this press is about to stop the turn
             label: board.project(a.id)?.name ?? 'project',
             glyph: '✕',
             sub: 'release to interrupt',
@@ -343,12 +344,12 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     );
   }
 
-  private async projectKeyUp(a: KeyAction, settings: SlotSettings): Promise<void> {
+  private async projectKeyUp(a: KeyAction<SlotSettings>, settings: SlotSettings): Promise<void> {
     const warned = this.clearHoldWarn(a.id);
     const held = heldMs(this.pressAt, a.id);
     const status = board.byProject()[a.id]?.status ?? 'none';
     if (shouldInterrupt(status, held, SlotKey.INTERRUPT_HOLD_MS)) {
-      const sent = interruptPids(board.pidsForProject(a.id));
+      const sent = stopSessions(board.activeSessionsForProject(a.id));
       await (sent > 0 ? a.showOk() : a.showAlert());
     } else {
       const path = board.project(a.id)?.path ?? settings.path;
@@ -414,7 +415,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
 
   /** Repaint a slot from its CURRENT settings (used after the transient "run off" notice), so a
    * concurrent live-edit that retargeted the coordinate wins over the face we captured on press. */
-  private async repaint(a: KeyAction): Promise<void> {
+  private async repaint(a: KeyAction<SlotSettings>): Promise<void> {
     if (!a.isKey()) return;
     await this.render(a, await a.getSettings());
   }
@@ -448,7 +449,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     return slotFace(settings);
   }
 
-  private async render(a: KeyAction, settings: SlotSettings): Promise<void> {
+  private async render(a: KeyAction<SlotSettings>, settings: SlotSettings): Promise<void> {
     // A transient notice OWNS the key for its couple of seconds. Otherwise any board emit (the
     // 100ms debounce) or the 30s tick repaints the live face straight over it — and stop-all is
     // pressed exactly when sessions are working, i.e. when emits are densest, so the explanation
@@ -478,7 +479,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   /** Paint a 'project' slot as a live repo status light — resolving colour/glyph/sub + the done-diff
    * badge from board state, through the SAME `projectFace` the standalone ProjectKey uses (so the two
    * never drift). A `label` override renames it; status still drives the colour/glyph. */
-  private async renderProject(a: KeyAction, settings: SlotSettings): Promise<void> {
+  private async renderProject(a: KeyAction<SlotSettings>, settings: SlotSettings): Promise<void> {
     const now = Date.now();
     const id = a.id;
     const project = board.project(id);

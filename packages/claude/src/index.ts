@@ -11,6 +11,14 @@ export interface LaunchOptions {
   continueSession?: boolean;
   resume?: string;
   fork?: boolean;
+  /** Built-in tools to allow; '' disables every tool (a pure text run). */
+  tools?: string;
+  /** Load no MCP servers from the user's config (start-up speed, no third-party surface). */
+  strictMcpConfig?: boolean;
+  /** Keep the run out of the user's session history. */
+  noSessionPersistence?: boolean;
+  /** Extra environment for the child, on top of the sanitized parent env. */
+  env?: Record<string, string>;
 }
 
 /** Build the `claude` argv for a one-shot streaming run. The PROMPT is deliberately
@@ -27,6 +35,9 @@ export function buildArgs(opts: LaunchOptions): string[] {
   if (opts.continueSession) args.push('--continue');
   if (opts.resume) args.push('--resume', opts.resume);
   if (opts.fork) args.push('--fork-session');
+  if (opts.tools !== undefined) args.push('--tools', opts.tools);
+  if (opts.strictMcpConfig) args.push('--strict-mcp-config');
+  if (opts.noSessionPersistence) args.push('--no-session-persistence');
   return args;
 }
 
@@ -102,12 +113,15 @@ export interface RunResult {
   exitCode: number | null;
   /** Total USD the run cost, from the result event (headless runs report this). */
   costUsd?: number;
+  /** The last few hundred characters of stderr: why a run failed when no result event said so. */
+  stderrTail?: string;
 }
 
 /** The minimal child-process surface `runClaude` needs — injectable so tests never
  * spawn a real `claude`. */
 export interface SpawnLike {
   stdout: { on(event: 'data', listener: (chunk: Buffer | string) => void): void };
+  stderr?: { on(event: 'data', listener: (chunk: Buffer | string) => void): void };
   stdin: { end(data?: string): void };
   on(event: 'close', listener: (code: number | null) => void): void;
   on(event: 'error', listener: (err: Error) => void): void;
@@ -129,6 +143,7 @@ export interface RunDeps {
 /** A headless run must never hang the key forever. Generous (a real launch can run many minutes)
  * but bounded, so a wedged `claude` can't pin the key or leak a quota-burning orphan indefinitely. */
 const DEFAULT_TIMEOUT_MS = 20 * 60_000;
+const STDERR_TAIL_CHARS = 400;
 /** Grace between SIGTERM and the harder SIGKILL, for a child that ignores the polite signal. */
 const KILL_GRACE_MS = 5_000;
 
@@ -175,7 +190,7 @@ export function runClaude(
     try {
       child = spawnFn('claude', buildArgs(opts), {
         cwd: opts.cwd,
-        env: sanitizeEnv(deps.env ?? process.env),
+        env: { ...sanitizeEnv(deps.env ?? process.env), ...opts.env },
       });
     } catch {
       finish({ isError: true, exitCode: null });
@@ -199,6 +214,11 @@ export function runClaude(
       }
     };
 
+    // Drain stderr (a full pipe would block the child) and keep only a short tail for the error.
+    let stderrTail = '';
+    child.stderr?.on('data', (chunk) => {
+      stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_CHARS);
+    });
     child.stdout.on('data', (chunk) => {
       buffer += chunk.toString();
       let nl = buffer.indexOf('\n');
@@ -215,10 +235,12 @@ export function runClaude(
     child.on('close', (code) => {
       clearTimers(); // the run ended on its own — cancel the watchdog (and any pending SIGKILL)
       consume(buffer); // flush a trailing partial line
+      const tail = stderrTail.trim();
       finish({
         ...final,
         exitCode: code,
         isError: final.isError || (typeof code === 'number' && code !== 0),
+        ...(tail ? { stderrTail: tail } : {}),
       });
     });
 

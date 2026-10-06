@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { installHooks } from './hooks-install';
-import { hookCommands } from './cli';
+import { hookCommands, installHooks } from './hooks-install';
 import { projectsConfigPath } from './projects-config';
 
 /** Bump whenever the auto-wired hook SET or COMMAND FORMAT changes. The marker records the
@@ -9,8 +8,9 @@ import { projectsConfigPath } from './projects-config';
  * the change on the update that introduces it — without re-wiring on every launch, and without
  * fighting a user who removed hooks WITHIN the same version. v1 was the pre-versioned timestamp
  * marker; v2 added the SubagentStart/SubagentStop hooks; v3 hardened the command quoting; v4 added
- * StopFailure, without which a turn the API kills stays pinned 'working' instead of going red. */
-export const WIRE_VERSION = 4;
+ * StopFailure, without which a turn the API kills stays pinned 'working' instead of going red; v5
+ * added the PreToolUse stop gate (a deck stop that does not end the session). */
+export const WIRE_VERSION = 5;
 
 /** The hook-set version the marker last recorded. A missing/unreadable marker, or the old
  * timestamp-format marker (non-numeric), reads as 0 → older than any real version → forces a
@@ -81,12 +81,11 @@ export async function autoWireHooks(deps: AutoWireDeps): Promise<void> {
   const markerPath = deps.markerPath ?? defaultMarkerPath();
   try {
     if (markerVersion(markerPath) === WIRE_VERSION) return; // already wired for this hook set
-    const { status, permission, usage, toolDetail } = hookCommands(deps.binDir, false);
-    const result = await install({ commands: { status, permission, usage, toolDetail } });
+    const result = await install({ commands: hookCommands(deps.binDir, false) });
     if (result.changed) {
       say(() =>
         deps.logger.info(
-          `Jetstream auto-wired its Claude hooks (status + permission + usage) into ${result.settingsPath}` +
+          `Jetstream auto-wired its Claude hooks (status + permission + usage + stop gate) into ${result.settingsPath}` +
             (result.backupCreated ? ` (previous settings backed up to ${result.backupPath})` : '') +
             '. Restart any running `claude` sessions to pick them up.',
         ),
