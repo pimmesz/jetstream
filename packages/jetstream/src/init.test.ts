@@ -477,3 +477,17 @@ describe('offerProfile input aborts', () => {
   });
 });
 
+describe('offerProfile write failure', () => {
+  it('a failed write says why in plain sentences and points at dragging keys by hand', async () => {
+    // A file where the downloads folder should be makes the write fail with ENOTDIR.
+    const notADir = join(makeTmp(), 'file');
+    writeFileSync(notADir, 'x');
+    const { io, said } = makeIo([]);
+    const out = await offerProfile(io, [], undefined, join(notADir, 'Downloads'), () => DECK_MODELS[1]);
+    expect(out).toBeUndefined();
+    const line = said.find((l) => l.startsWith('Could not write the layout ('));
+    expect(line).toMatch(/\)\. Drag keys by hand instead\.$/);
+    expect(line).not.toMatch(/[\u2013\u2014]/);
+  });
+});
+

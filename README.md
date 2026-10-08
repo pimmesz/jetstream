@@ -17,14 +17,21 @@ Requires macOS 12+ and the Stream Deck app 7.1+. Windows isn't supported yet (th
    `jetstream install` — it hands the packed plugin to the Stream Deck app; approve
    the install prompt there. (Updating? `jetstream update` — it fetches the latest published package from
    npmjs.org and reinstalls the plugin, so a bare `npm i -g` behind a stale mirror can't strand you on an old
-   version; override the registry with `JETSTREAM_REGISTRY`.) That's it — on **first
-   launch** (once, recorded in a marker next to `projects.json`) the plugin wires two hooks
-   into `~/.claude/settings.json`, backing the file up first: the **per-project status
-   hook** (lights the board) and the **permission hook** (lets Approve/Deny keys answer
-   Claude's permission prompts from the deck — while the plugin runs, an unanswered prompt
-   falls back to Claude's own dialog after ~90s). No terminal step. Restart any running
-   `claude` sessions to pick the hooks up. Remove the hooks from `settings.json` and they
-   stay removed — re-wire any time with `jetstream setup`. The usage/statusline hook is
+   version; override the registry with `JETSTREAM_REGISTRY`. If the `jetstream` you ran is not
+   the copy npm updates, it prints a note saying where each one is.) That's it: on **first
+   launch** (recorded in a marker next to `projects.json`) the plugin wires its hooks into
+   `~/.claude/settings.json`, backing the file up first:
+   the **per-project status hook** (lights the board), the **permission hook** (lets
+   Approve/Deny keys answer Claude's permission prompts from the deck; while the plugin runs, an
+   unanswered prompt falls back to Claude's own dialog after ~90s) and the **stop gate**, a
+   `PreToolUse` hook that lets the deck's stop keys end the current turn without ending the
+   session (it reads one local file per tool call). No terminal step. Restart any running
+   `claude` sessions to pick the hooks up. The plugin runs under the Stream Deck app, which does
+   not see a `CLAUDE_CONFIG_DIR` set in your shell profile; if you use one, run
+   `jetstream hooks install` from that shell (add `--tool-detail` for per-tool detail), and again
+   after an update, so the hooks land where Claude reads them. The
+   hooks are wired once per hook-set version: hooks you remove from `settings.json` stay removed
+   until an update adds a new hook, which re-wires the set once. Re-wire any time with `jetstream setup`. The usage/statusline hook is
    installed automatically on first launch if you have no statusline yet; if another tool already owns your
    statusline, hand the slot over with `jetstream hooks install --replace-statusline` (otherwise the usage gauge stays blank).
 
@@ -57,12 +64,13 @@ Requires macOS 12+ and the Stream Deck app 7.1+. Windows isn't supported yet (th
    when the board isn't lighting up).
 
 Drag keys onto your deck: **Project status** (set a name + project path per key;
-short-press opens the project folder in your editor (VS Code → Cursor → `$EDITOR`, else the OS
-folder opener), **long-press interrupts** the session; done keys show the
+short-press opens the project folder in your editor (VS Code, then Cursor, else Finder),
+**long-press interrupts** the session; done keys show the
 change size, `done 4m · +120/-40`), **Fleet roll-up** (one always-visible key counting the whole
 fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
 answerable even when projects outnumber keys), **Attention** (flashes if a request goes
-unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`),
+unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`; a second gauge can show
+your **Codex** limits, `jetstream chat` → "put a Codex usage gauge at b3"),
 **Approve / Deny** (place one of each — they answer
 the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude
 falls back to its normal dialog), and **Jetstream settings** (a press opens `jetstream doctor`;
@@ -72,7 +80,7 @@ its inspector toggles colour-blind mode and sets escalation/long-press/refresh).
 The board reads without relying on colour: each key's sub-line names its state in words (`done 4m`,
 `approve on deck`), and a corner glyph marks the exceptions — a stall, a failure, or a working key showing
 its tool (`Bash · 12m`, where the glyph carries "working"). The settings key's high-contrast theme also
-swaps the red/green pair for orange/blue.
+swaps the done green for blue, so working (orange) and done never rely on a red/green pair.
 
 ## Works on any Stream Deck
 
@@ -85,9 +93,11 @@ fleet, the touchscreen shows the current project, a tap or short-press opens it,
 ## Config file (optional)
 
 Define your whole fleet in one place instead of a placed key per repo — `jetstream init`
-builds this file for you, or write it by hand. Jetstream reads
-`$XDG_CONFIG_HOME/jetstream/projects.json` (else `~/.config/jetstream/projects.json`;
-`%APPDATA%\jetstream\projects.json` on Windows) at startup:
+builds this file for you, or write it by hand. On macOS the plugin reads
+`~/.config/jetstream/projects.json` (`%APPDATA%\jetstream\projects.json` on Windows) at startup;
+`init`, `setup` and `chat` create it there. The plugin runs under the Stream Deck app, which does not
+see an `XDG_CONFIG_HOME` set in your shell profile, so a file under `$XDG_CONFIG_HOME/jetstream/` is
+found by the CLI and doctor but not by the board:
 
 ```json
 {
@@ -101,9 +111,14 @@ your repos. An optional `"settings"` block presets the plugin config: `theme`, `
 `usageRefreshSec`, `escalateAfterSec`, plus the two destructive-key opt-ins `allowRunKeys` and
 `allowStopKeys`. Run `jetstream doctor` to check the file is parseable.
 
-**Stop-all and Run keys are OFF by default** and do nothing until you opt in — the plugin's
-loopback endpoint is unauthenticated during the upgrade grace period, so a key planted through it
-must not be able to SIGINT your whole fleet or run a command. Turn them on deliberately:
+**Slot-based Stop-all and Run keys are OFF by default** and do nothing until you opt in. These are
+the kinds `jetstream chat` (or a `/slot` request) can place; the standalone **Stop all** action you
+drag onto the deck yourself works as placed. The plugin's loopback endpoint needs its token for key
+edits and permission answers, so the opt-in is defence in depth: a planted key cannot stop every
+running turn or run a command until you turn it on. (A stop ends the current turn; the session stays
+open.) An app key whose target would run rather than open counts as a Run key too and shows
+`run off`: a script or launcher file (`.command`, `.sh`, `.py`, `.jar`, `.webloc` and the like), an
+executable file, a Finder alias, or a URL. Turn them on deliberately:
 
 ```json
 {
@@ -114,8 +129,9 @@ must not be able to SIGINT your whole fleet or run a command. Turn them on delib
 
 ## Optional: show the active tool
 
-Working keys can show the current tool (`Bash · 12m`) instead of just `working 12m`. It needs the
-higher-overhead `PreToolUse`/`PostToolUse` hooks (a hook process per tool call), so it's opt-in:
+Working keys can show the current tool (`Bash · 12m`) instead of just `working 12m`. It adds the
+status hook to `PreToolUse`, `PostToolUse` and `PostToolUseFailure`, on top of the default stop gate,
+so each tool call starts a few more hook processes. That's why it's opt-in:
 
 ```sh
 node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
@@ -124,6 +140,14 @@ node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
 ## Which meter does what
 
 - The **usage gauge** shows your interactive 5h/7d subscription windows.
+- The **Codex usage gauge** reads the rate limits Codex writes into its own session logs
+  (`~/.codex/sessions`): no login and no network, so run `codex` once for data. The plugin runs
+  under the Stream Deck app and does not see a `CODEX_HOME` set in your shell profile; if you use
+  one, set it for apps too (`launchctl setenv CODEX_HOME <dir>`, then restart Stream Deck; this
+  lasts until you log out), or link the folder once:
+  `mkdir -p ~/.codex && ln -s <dir>/sessions ~/.codex/sessions` (only while `~/.codex/sessions`
+  does not exist). The long window is labelled by its length: `7d`, or `30d` on a plan with a
+  monthly limit.
 - Watching status costs nothing; the hooks only talk to the plugin locally
   (`127.0.0.1`, never the network). The status hook reports lifecycle events; the
   permission hook additionally holds a pending prompt briefly so a deck key can answer

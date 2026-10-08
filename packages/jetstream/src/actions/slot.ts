@@ -8,19 +8,22 @@ import type {
   WillAppearEvent,
   WillDisappearEvent,
 } from '@elgato/streamdeck';
-import { worstStatus, type ProjectStatus } from '@pimmesz/jetstream-status';
+import { worstStatus, type ProjectStatus, DANGER_RED } from '@pimmesz/jetstream-status';
 import type { Face } from '../render';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
 import { config } from '../config';
 import { board } from '../state';
+import { resolveCodexUsage, resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
+import { usageFace } from './usage';
+import { doorbell } from '../doorbell';
 import { permissions } from '../permissions';
 import { readDiffStat, type DiffStat } from '../diffstat';
 import { heldMs } from '../press';
-import { openProject } from '../switchto';
+import { openProject, openProjectFromKey } from '../switchto';
 import { stopSessions } from '../stop-session';
 import { execPlan, runPlan } from '../slot-exec';
-import { parseSlotCommand } from '../slot-command';
+import { isRunTarget, parseSlotCommand, sameSlot } from '../slot-command';
 import { forgetIcon, imageMime, resolveSlotIcon } from '../slot-icon';
 import { buildFace } from './build';
 import { stopFace } from './interrupt-all';
@@ -49,6 +52,8 @@ export type SlotKind =
   | 'volup'
   | 'voldown'
   | 'volmute'
+  | 'usage' // a usage gauge; `provider` picks Claude (default) or Codex
+  | 'attention' // the doorbell: lights up when a project needs you (shared with the standalone key)
   | 'chat' // opens `jetstream chat` in a terminal — the board builder needs a real interactive TTY
   | 'logo'; // the bundled Jetstream mark; ships on the default board (removable). A press opens `jetstream chat`.
 
@@ -69,6 +74,7 @@ export type SlotSettings = {
   color?: string; // face background override (#rrggbb); else the per-kind default
   sub?: string; // small second line override
   glyph?: string; // corner glyph / emoji override
+  provider?: 'claude' | 'codex'; // kind 'usage': whose usage the gauge shows (default claude)
 };
 
 /** How long a transient notice ("run off", "why dark?") owns its key before the live face returns.
@@ -106,6 +112,10 @@ function baseFace(s: SlotSettings): Face {
       return { color: '#26262b', label: 'mute', sub: 'output', glyph: '🔇' };
     case 'chat':
       return { color: '#38bdf8', label: 'chat', sub: 'build the board', subMax: 20, glyph: '💬' };
+    case 'usage':
+      return { color: '#26262b', label: s.provider === 'codex' ? 'codex' : 'usage', sub: 'loading' };
+    case 'attention':
+      return { color: '#26262b', label: 'all clear' };
     case 'logo':
       // Fallback only — the render path paints the bundled mark over this. Shown if the asset
       // can't be read (e.g. running outside the plugin bundle).
@@ -155,12 +165,15 @@ export function slotFace(s: SlotSettings): Face {
 export class SlotKey extends SingletonAction<SlotSettings> {
   override async onWillAppear(ev: WillAppearEvent<SlotSettings>): Promise<void> {
     if (!ev.action.isKey()) return; // keypad-only; a dial has no board coordinate
+    this.heldSettings.set(ev.action.id, ev.payload.settings);
     this.syncProjectRegistry(ev.action.id, ev.payload.settings);
     await this.render(ev.action, ev.payload.settings);
+    if (ev.payload.settings.kind === 'usage') void this.refreshUsage(); // fill the gauge without waiting for the timer
   }
 
   override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<SlotSettings>): Promise<void> {
     if (!ev.action.isKey()) return;
+    this.heldSettings.set(ev.action.id, ev.payload.settings);
     this.syncProjectRegistry(ev.action.id, ev.payload.settings);
     await this.render(ev.action, ev.payload.settings);
   }
@@ -175,11 +188,8 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       const path = settings.path ?? '';
       const name = settings.name?.trim() || (path ? basename(path) : 'set path');
       const prev = board.project(id);
-      // CRITICAL: skip an UNCHANGED re-registration. render() → renderKind('project') calls
-      // getSettings(), whose SDK response re-fires onDidReceiveSettings (a shared connection event);
-      // without this guard that echo would setProject → board emit → renderBoard → renderKind → getSettings
-      // → … an endless loop the moment a project slot is visible. Registering only on a real change
-      // breaks it after one cycle.
+      // Skip an UNCHANGED re-registration: setProject emits a board change that repaints every key, so a
+      // repeat event with the same path and name must not cause one.
       if (prev?.path === path && prev?.name === name) return;
       // A re-point to a DIFFERENT repo (or a first registration) cancels any in-flight hold gesture and
       // drops the stale diff badge; a name-only change keeps the badge (avoids a needless git re-read).
@@ -202,6 +212,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   override onWillDisappear(ev: WillDisappearEvent<SlotSettings>): void {
     this.clearHoldWarn(ev.action.id);
     this.pressAt.delete(ev.action.id); // WillDisappear doesn't call syncProjectRegistry — clear the gesture here too
+    this.heldSettings.delete(ev.action.id);
     if (board.project(ev.action.id)) {
       this.diffStats.delete(ev.action.id);
       this.diffPending.delete(ev.action.id);
@@ -217,6 +228,11 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       this.projectKeyDown(ev.action);
       return;
     }
+    // The doorbell acts on key-UP: a long hold snoozes, a tap jumps to the neediest project.
+    if (settings.kind === 'attention') {
+      this.pressAt.set(ev.action.id, Date.now());
+      return;
+    }
     // `stopall` stops every running turn in the fleet. It is disruptive, so (like the run gate) it stays
     // inert until opted in, so a webpage that plants it via the unauthenticated /slot endpoint can't fire it.
     if (settings.kind === 'stopall') {
@@ -228,6 +244,21 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       }
       const sent = stopSessions(board.allActiveSessions());
       await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
+      return;
+    }
+    if (settings.kind === 'usage') {
+      // A press re-reads now instead of waiting for the timer, and always answers: like the standalone
+      // Usage key, an alert when the read fails or the gauge still has no usage.
+      let read: ReadonlyMap<'claude' | 'codex', UsageFeed>;
+      try {
+        read = await this.refreshUsage();
+      } catch {
+        await ev.action.showAlert();
+        return;
+      }
+      const provider = settings.provider ?? 'claude';
+      const feed = read.get(provider) ?? this.usageFeeds.get(provider);
+      await (feed?.available ? ev.action.showOk() : ev.action.showAlert());
       return;
     }
     if (settings.kind === 'fleet') {
@@ -282,12 +313,9 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     // loopback /slot endpoint stays inert until the user opts in via the projects.json settings
     // preset (`"allowRunKeys": true`) — deliberately a different channel from /slot itself. Don't
     // dead-end silently — say WHY on the face for a beat, then restore the key.
-    if (settings.kind === 'run' && !config.get().allowRunKeys) {
-      this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
-        await paintKey(ev.action, keyFace({ color: '#b58900', label: 'run off', sub: 'allow in projects.json', subMax: 22 }));
-      // Repaint from the slot's LIVE settings when the notice clears: if a chat live-edit retargeted
-      // this coordinate within the 2.6s, we must not paint the stale run face back over the new key.
-      setTimeout(() => void this.repaint(ev.action), 2600);
+    const shouldGateAsRun = settings.kind === 'run' || (settings.kind === 'app' && (await isRunTarget(settings.app)));
+    if (shouldGateAsRun && !config.get().allowRunKeys) {
+      await this.showRunOff(ev.action);
       return;
     }
     const plan = execPlan(settings);
@@ -300,6 +328,11 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   }
 
   override async onKeyUp(ev: KeyUpEvent<SlotSettings>): Promise<void> {
+    if (ev.payload.settings.kind === 'attention') {
+      const result = doorbell.press(heldMs(this.pressAt, ev.action.id));
+      if (result.act === 'jump' && result.path && !(await openProjectFromKey(result.path))) await ev.action.showAlert();
+      return;
+    }
     if (ev.payload.settings.kind !== 'project') return; // every other kind already acted on key-down
     await this.projectKeyUp(ev.action, ev.payload.settings);
   }
@@ -312,12 +345,44 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   /** Key id → epoch ms until which a transient notice ("run off", "why dark?") owns the key and
    * must not be repainted over by a routine board render. */
   private noticeUntil = new Map<string, number>();
+  /** Key id → count of live edits (`assign`) started, so a slow edit can tell a newer one landed. */
+  private assignSeq = new Map<string, number>();
+  /** The last usage read per provider, painted by every usage slot of that provider. */
+  private usageFeeds = new Map<'claude' | 'codex', UsageFeed>();
+  private usageGeneration = 0;
+
+  /** Re-read usage for the providers that have a gauge on screen, then repaint those gauges. Resolves
+   * with the feeds this call read, even when a newer refresh superseded it, so a press answers from its own read. */
+  async refreshUsage(): Promise<ReadonlyMap<'claude' | 'codex', UsageFeed>> {
+    const providers = new Set<'claude' | 'codex'>();
+    for (const visible of this.actions) {
+      if (!visible.isKey()) continue;
+      try {
+        const s = await this.settingsOf(visible);
+        if (s.kind === 'usage') providers.add(s.provider ?? 'claude');
+      } catch {
+        /* one slot's getSettings timeout must not stop every other gauge from refreshing */
+      }
+    }
+    if (providers.size === 0) return new Map();
+    const generation = ++this.usageGeneration;
+    const feeds = new Map(
+      await Promise.all(
+        [...providers].map(async (p) => [p, p === 'codex' ? await resolveCodexUsage() : await resolveUsage()] as const),
+      ),
+    );
+    if (generation !== this.usageGeneration) return feeds; // a newer refresh owns the faces
+    for (const [p, feed] of feeds) this.usageFeeds.set(p, feed);
+    await this.renderKind('usage');
+    return feeds;
+  }
   /** A stop cuts the current turn short, so it needs a longer, deliberate hold than a generic press. */
   private static readonly INTERRUPT_HOLD_MS = 1500;
   // Per-project done-diff, fetched ONCE per done-episode off the render path and cached; cleared when
   // the project leaves 'done' or the key is re-pointed.
   private diffStats = new Map<string, DiffStat | null>();
-  private diffPending = new Set<string>();
+  /** Key id → token of its in-flight diff read, so a read from an earlier done episode is dropped. */
+  private diffPending = new Map<string, object>();
 
   private projectKeyDown(a: KeyAction<SlotSettings>): void {
     this.pressAt.set(a.id, Date.now());
@@ -334,7 +399,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
         void paintKey(
           a,
           keyFace({
-            color: '#e5484d', // danger red: this press is about to stop the turn
+            color: DANGER_RED, // danger red: this press is about to stop the turn
             label: board.project(a.id)?.name ?? 'project',
             glyph: '✕',
             sub: 'release to interrupt',
@@ -353,9 +418,23 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       await (sent > 0 ? a.showOk() : a.showAlert());
     } else {
       const path = board.project(a.id)?.path ?? settings.path;
+      // A repo is a folder; a file here would go to the OS opener, which runs an executable or script.
+      if (path && !config.get().allowRunKeys && (await isRunTarget(path))) {
+        await this.showRunOff(a);
+        return;
+      }
       if (!path || !openProject(path)) await a.showAlert();
     }
     if (warned) await this.render(a, settings); // repaint over the "release to interrupt" warning
+  }
+
+  /** Say why a run-like key did nothing, then give the face back. */
+  private async showRunOff(a: KeyAction<SlotSettings>): Promise<void> {
+    this.noticeUntil.set(a.id, Date.now() + NOTICE_MS);
+    await paintKey(a, keyFace({ color: '#b58900', label: 'run off', sub: 'allow in projects.json', subMax: 22 }));
+    // Repaint from the slot's LIVE settings when the notice clears: if a chat live-edit retargeted
+    // this coordinate within the 2.6s, we must not paint the stale run face back over the new key.
+    setTimeout(() => void this.repaint(a), 2600);
   }
 
   /** Clear a key's pending interrupt-warning timer; returns whether one was armed. */
@@ -376,8 +455,11 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       return;
     }
     if (!path || this.diffStats.has(id) || this.diffPending.has(id)) return;
-    this.diffPending.add(id);
+    const token = {};
+    this.diffPending.set(id, token);
     void readDiffStat(path).then((stat) => {
+      // The episode this read was for ended (the key left 'done' and maybe came back): drop it.
+      if (this.diffPending.get(id) !== token) return;
       this.diffPending.delete(id);
       if (board.project(id)?.path !== path) return; // re-pointed mid-read → drop the stale result
       this.diffStats.set(id, stat);
@@ -398,7 +480,21 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       if (!visible.isKey()) continue;
       const c = visible.coordinates;
       if (!c || c.column !== cmd.column || c.row !== cmd.row) continue;
-      await visible.setSettings(cmd.settings); // full replace
+      // Compare-and-swap: chat says what it expects at this key. Anything else (the deck switched page,
+      // another edit landed) is refused before a single setting changes. The compare and the write run
+      // queued per key, so two overlapping requests cannot both pass the compare.
+      const expected = (raw as { expect?: unknown } | null)?.expect;
+      const seq = await this.queued(visible.id, async () => {
+        if (expected !== undefined && !sameSlot(await this.settingsOf(visible), expected)) return undefined;
+        const next = (this.assignSeq.get(visible.id) ?? 0) + 1;
+        this.assignSeq.set(visible.id, next);
+        await visible.setSettings(cmd.settings); // full replace
+        this.heldSettings.set(visible.id, cmd.settings);
+        return next;
+      });
+      if (seq === undefined) {
+        return { status: 409, body: JSON.stringify({ error: `${cmd.coord} holds a different key than expected` }) };
+      }
       this.syncProjectRegistry(visible.id, cmd.settings); // setSettings won't re-fire onDidReceiveSettings
       // Re-resolve this key's icon instead of trusting the cache. A cached MISS is otherwise
       // permanent for the life of the plugin — an app that wasn't installed yet, or an extraction
@@ -408,16 +504,43 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       forgetIcon(cmd.settings.app);
       forgetIcon(cmd.settings.icon);
       await this.render(visible, cmd.settings);
+      // A newer edit (chat's rollback after this one timed out) landed while this render waited on an
+      // icon, so this paint is stale: repaint from the settings the key really holds now.
+      // Repeat until no edit landed during the repaint itself, so the last paint is always the newest.
+      for (let seen = seq; this.assignSeq.get(visible.id) !== seen; ) {
+        seen = this.assignSeq.get(visible.id) ?? seen;
+        await this.repaint(visible);
+      }
+      if (cmd.settings.kind === 'usage') void this.refreshUsage();
       return { status: 200, body: JSON.stringify({ ok: true, coord: cmd.coord }) };
     }
     return { status: 404, body: JSON.stringify({ error: `no slot key at ${cmd.coord}` }) };
+  }
+
+  /** Key id → tail of its queue of compare-and-write steps. */
+  private writeQueue = new Map<string, Promise<unknown>>();
+
+  /** Run `step` after every earlier queued step for the same key. */
+  private queued<T>(id: string, step: () => Promise<T>): Promise<T> {
+    const run = (this.writeQueue.get(id) ?? Promise.resolve()).then(step);
+    this.writeQueue.set(id, run.catch(() => undefined));
+    return run;
+  }
+
+  /** Key id → the settings the key holds, as Stream Deck last sent them or this plugin last wrote them.
+   * The SDK's own cache can be refilled by a getSettings reply sent before a write, so we keep our own. */
+  private heldSettings = new Map<string, SlotSettings>();
+
+  /** What a slot key holds; asks Stream Deck only for a key this plugin has no record of. */
+  private async settingsOf(a: KeyAction<SlotSettings>): Promise<SlotSettings> {
+    return this.heldSettings.get(a.id) ?? (await a.getSettings());
   }
 
   /** Repaint a slot from its CURRENT settings (used after the transient "run off" notice), so a
    * concurrent live-edit that retargeted the coordinate wins over the face we captured on press. */
   private async repaint(a: KeyAction<SlotSettings>): Promise<void> {
     if (!a.isKey()) return;
-    await this.render(a, await a.getSettings());
+    await this.render(a, await this.settingsOf(a));
   }
 
   /** Repaint only the visible slots of a given KIND. The board tick / a poll / a subscription calls
@@ -430,7 +553,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       // (board tick / subscription) must not wipe it. Entry lives key-down → key-up.
       if (kind === 'project' && this.holdWarn.has(visible.id)) continue;
       try {
-        const s = await visible.getSettings();
+        const s = await this.settingsOf(visible);
         if (s.kind === kind) await this.render(visible, s);
       } catch {
         /* a transient getSettings/render timeout for one slot must not abort the rest (or reject) */
@@ -446,6 +569,12 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       return withOverrides(stopFace(working), settings);
     }
     if (settings.kind === 'fleet') return withOverrides(fleetFace(), settings);
+    if (settings.kind === 'attention') return withOverrides(doorbell.face(), settings);
+    if (settings.kind === 'usage') {
+      const provider = settings.provider ?? 'claude';
+      const feed = this.usageFeeds.get(provider);
+      return feed ? withOverrides(usageFace(feed, Date.now(), provider), settings) : slotFace(settings);
+    }
     return slotFace(settings);
   }
 
@@ -464,11 +593,10 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     const face = this.faceFor(settings);
     // Resolve the icon FIRST, then paint ONCE. Painting the text face and swapping to the icon
     // afterwards uploaded two different images on every render — and since a slot is re-rendered on
-    // every board change (renderKind → getSettings, whose SDK echo re-fires onDidReceiveSettings),
-    // that second image guaranteed a visible flash on every hook event, which no cache can absorb
-    // because the two faces genuinely differ. Icon resolution is cached, so this costs nothing after
-    // the first paint; on a cold cache the key simply holds its previous face a moment longer
-    // instead of flashing text at you.
+    // every board change (renderKind), that second image guaranteed a visible flash on every hook
+    // event, which no cache can absorb because the two faces genuinely differ. Icon resolution is
+    // cached, so this costs nothing after the first paint; on a cold cache the key simply holds its
+    // previous face a moment longer instead of flashing text at you.
     const icon = await resolveSlotIcon(settings);
     // A plain image paints as the raw icon (cleanest); with a glyph override we composite so the
     // corner badge isn't hidden by the image.

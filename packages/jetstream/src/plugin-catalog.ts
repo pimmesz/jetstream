@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { stripControl } from './fleet';
 
 /**
  * Keys from OTHER Stream Deck plugins (Philips Hue, Focusrite, ...) that already sit on one of the
@@ -29,7 +30,7 @@ const isForeign = (uuid: string): boolean =>
 
 const clean = (v: unknown): string | undefined => {
   if (typeof v !== 'string') return undefined;
-  const s = v.replace(/[\x00-\x1f\x7f]/g, '').trim();
+  const s = stripControl(v).trim();
   return s === '' ? undefined : s.slice(0, 60);
 };
 

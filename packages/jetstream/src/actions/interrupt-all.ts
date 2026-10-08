@@ -5,12 +5,13 @@ import { stopSessions } from '../stop-session';
 import type { Face } from '../render';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
+import { DANGER_RED } from '@pimmesz/jetstream-status';
 
 /** The stop-all face: danger red with a live working-count when sessions run, dim "idle" otherwise.
  * Pure. Shared by the standalone InterruptAll key and the slot `stopall` kind. */
 export function stopFace(working: number): Face {
   return {
-    color: working > 0 ? '#e5484d' : '#26262b',
+    color: working > 0 ? DANGER_RED : '#26262b',
     label: 'stop all',
     sub: working > 0 ? `${working} working` : 'idle',
   };

@@ -1,17 +1,12 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  realpathSync,
-  renameSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import type { JetstreamConfig } from './config';
+import { isDeepStrictEqual } from 'node:util';
+import { writeFileAtomicSync } from './atomic-write';
+import { readConfigFile } from './projects-config';
+import { errorMessage } from './errors';
 
 /**
  * The single source of the fleet rules — how a project is added, deduped, named, and
@@ -24,7 +19,9 @@ import type { JetstreamConfig } from './config';
 /** How many timestamped fleet backups to keep beside projects.json. */
 const BACKUPS_KEPT = 5;
 
-const stripControl = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '');
+/** Drop control characters (ANSI escapes included) from text bound for a terminal. The one copy:
+ * init.ts and board-layout.ts use it too, so a widened range lands everywhere at once. */
+export const stripControl = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '');
 
 /** `~` and `~/x` → the user's home; anything else unchanged. Used before a scan so a
  * typed `~/dev` resolves (readdirSync doesn't expand tildes). */
@@ -124,7 +121,8 @@ export function addToFleet(
   // the CLI, which already passes an absolute path. Then canonicalize + dedup.
   const path = canonical(expandHome(stripControl(input.path).trim()));
   if (!path) return { projects, reason: 'empty-path' };
-  if (projects.some((p) => p.path === path)) return { projects, reason: 'duplicate' };
+  // Canonical on both sides: a hand-written `repo/` or symlinked entry is the same repo.
+  if (projects.some((p) => canonical(p.path) === path)) return { projects, reason: 'duplicate' };
   const taken = new Set(projects.map((p) => p.id));
   const name = stripControl(input.name ?? '').trim() || basename(path) || 'project';
   const added: ProjectConfig = { id: slugId(name, taken), name, path };
@@ -136,14 +134,112 @@ export function removeFromFleet(projects: ProjectConfig[], id: string): ProjectC
   return projects.filter((p) => p.id !== id);
 }
 
+export interface FleetSnapshot {
+  projects: ProjectConfig[];
+  settings: Partial<JetstreamConfig>;
+}
+
+/**
+ * Replay one writer's change (what it read as `base`, what it wants as `next`) onto the file as it is
+ * on disk NOW. projects.json has three writers in separate processes; writing `next` wholesale let
+ * one writer's stale read silently drop another's add or remove. Only what this writer changed is
+ * applied: its removals are removed, its adds and edits upserted, its changed settings set; every
+ * other entry on disk is kept. Entries are tracked by id, as the editor removes them, so one of two
+ * spellings of the same repo can go; an add or edit lands on the disk entry with its canonical
+ * path. Pure.
+ */
+export function replayFleetDelta(disk: FleetSnapshot, base: FleetSnapshot, next: FleetSnapshot): FleetSnapshot {
+  const key = (p: ProjectConfig): string => canonical(p.path);
+  const before = new Map(base.projects.map((p) => [p.id, p]));
+  const nextIds = new Set(next.projects.map((p) => p.id));
+  const removed = base.projects.filter((p) => !nextIds.has(p.id));
+  // Path checked too, so an id another writer has since given to a different repo is left alone.
+  const projects = disk.projects.filter(
+    (p) => !removed.some((r) => r.id === p.id && key(r) === key(p)),
+  );
+  for (const p of next.projects) {
+    const was = before.get(p.id);
+    if (was && was.name === p.name && key(was) === key(p)) continue; // untouched by this writer
+    const at = projects.findIndex((q) => key(q) === key(p));
+    // Ids must stay unique (the reader drops a duplicate): another writer may have added a different
+    // repo under the same id meanwhile, so the newcomer gets a fresh one.
+    const taken = new Set(projects.filter((_, i) => i !== at).map((q) => q.id));
+    const entry = taken.has(p.id) ? { ...p, id: slugId(p.name, taken) } : p;
+    if (at >= 0) projects[at] = entry;
+    else projects.push(entry);
+  }
+  const settings: Record<string, unknown> = { ...disk.settings };
+  const baseSettings = base.settings as Record<string, unknown>;
+  for (const [k, v] of Object.entries(next.settings)) {
+    if (!isDeepStrictEqual(v, baseSettings[k])) settings[k] = v;
+  }
+  for (const k of Object.keys(baseSettings)) if (!(k in next.settings)) delete settings[k];
+  return { projects, settings: settings as Partial<JetstreamConfig> };
+}
+
 /** Write projects.json atomically (same-dir temp + rename), preserving the settings block.
- * projects.json is jetstream's own file; a crash mid-write can't truncate it. */
+ * projects.json is jetstream's own file; a crash mid-write can't truncate it. Pass `base` (the
+ * snapshot this writer read before editing) and only its own change is replayed onto the file as it
+ * is right now (replayFleetDelta); without `base` the file is replaced wholesale. Waiting for the
+ * lock blocks the thread, so the plugin passes a short `lockWaitMs`; the CLI can afford to wait. */
 export function writeFleetFile(
   path: string,
   projects: ProjectConfig[],
   settings: Partial<JetstreamConfig> = {},
   now: Date = new Date(),
-): void {
+  base?: FleetSnapshot,
+  lockWaitMs: number = FLEET_LOCK_WAIT_MS,
+): FleetSnapshot {
+  // One writer at a time from the re-read to the rename, so the replay always starts from the file
+  // the rename will replace.
+  return withFleetLock(`${path}.lock`, lockWaitMs, () => {
+    if (base) {
+      const disk = readConfigFile(path);
+      if (disk.corrupt) throw new Error(`${path} became unreadable since it was read; not overwriting it`);
+      ({ projects, settings } = replayFleetDelta(disk, base, { projects, settings }));
+    }
+    writeFleetFileNow(path, projects, settings, now);
+    return { projects, settings };
+  });
+}
+
+/** Writes take milliseconds: by default wait this long for another writer, and treat a lock this old
+ * as left by a writer that crashed. */
+const FLEET_LOCK_WAIT_MS = 3_000;
+const FLEET_LOCK_STALE_MS = 10_000;
+
+/** Run `fn` holding an exclusive lock file; released only while it is still ours. */
+function withFleetLock<T>(lockPath: string, waitMs: number, fn: () => T): T {
+  const token = `${process.pid} ${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + waitMs;
+  mkdirSync(dirname(lockPath), { recursive: true });
+  for (;;) {
+    try {
+      writeFileSync(lockPath, token, { flag: 'wx' });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > FLEET_LOCK_STALE_MS) rmSync(lockPath, { force: true });
+      } catch {
+        // released meanwhile: just retry
+      }
+      if (Date.now() > deadline) throw new Error(`another Jetstream writer is holding ${lockPath}; try again`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25); // a short synchronous pause
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      if (readFileSync(lockPath, 'utf8') === token) rmSync(lockPath, { force: true });
+    } catch {
+      // already gone
+    }
+  }
+}
+
+function writeFleetFileNow(path: string, projects: ProjectConfig[], settings: Partial<JetstreamConfig>, now: Date): void {
   mkdirSync(dirname(path), { recursive: true });
   // Keep the PREVIOUS fleet before overwriting it. This is the user's own hand-curated list of
   // repos, every writer here replaces the file wholesale, and the rename below is atomic — so
@@ -166,9 +262,7 @@ export function writeFleetFile(
     // No existing file (first run), an unreadable one, or an unreadable dir — nothing to preserve
     // and nothing to prune. A backup is insurance, never a reason to fail the write.
   }
-  const tmp = `${path}.jetstream-tmp-${process.pid}`;
-  writeFileSync(tmp, renderProjectsJson(projects, settings));
-  renameSync(tmp, path);
+  writeFileAtomicSync(path, renderProjectsJson(projects, settings));
 }
 
 /**
@@ -184,13 +278,16 @@ export function mergeFleet(
   existing: ProjectConfig[],
   proposed: ProjectConfig[],
 ): ProjectConfig[] {
-  const byPath = new Map(existing.map((p) => [p.path, p]));
+  // Every existing entry is kept, even two spellings of one repo: the writer replays a missing id
+  // as a removal, and absence is never a removal here.
+  const merged = [...existing];
   for (const p of proposed) {
-    const prior = byPath.get(p.path);
+    const prior = merged.find((q) => canonical(q.path) === canonical(p.path));
     // Same repo, re-emitted: KEEP its existing id. Ids are how the board, the roll-up and the
     // attention list address a project, so silently renumbering one on an unrelated edit would
     // detach it from its own state.
-    byPath.set(p.path, prior ? { ...p, id: prior.id } : p);
+    if (prior) merged[merged.indexOf(prior)] = { ...p, id: prior.id };
+    else merged.push(p);
   }
 
   // Re-uniquify ids ACROSS the merge. A proposal's ids are only unique within itself — the model
@@ -199,7 +296,7 @@ export function mergeFleet(
   // id and keeps the FIRST, so the repo the user just asked for silently vanished on the next read:
   // chat says "Wrote 2 project(s)" and the board shows one.
   const taken = new Set<string>();
-  return [...byPath.values()].map((p) => {
+  return merged.map((p) => {
     if (!taken.has(p.id)) {
       taken.add(p.id);
       return p;
@@ -225,7 +322,8 @@ export type FleetOutbound =
 
 export interface FleetDeps {
   read: () => { projects: ProjectConfig[]; settings: Partial<JetstreamConfig>; corrupt?: boolean };
-  write: (projects: ProjectConfig[], settings: Partial<JetstreamConfig>) => void;
+  /** `base` is the snapshot the change was made against, so the writer can replay just the change. */
+  write: (projects: ProjectConfig[], settings: Partial<JetstreamConfig>, base: FleetSnapshot) => FleetSnapshot | void;
   /** Re-seed the live board so an edit repaints Fleet/Attention without a restart. */
   seed: (projects: ProjectConfig[]) => void;
   reply: (msg: FleetOutbound) => void | Promise<void>;
@@ -247,18 +345,24 @@ export async function handleFleetMessage(payload: unknown, deps: FleetDeps): Pro
     'projects.json exists but isn’t valid JSON — fix or remove it before editing the fleet here.';
   // Persist + re-seed, turning a write failure (read-only dir, full disk) into a reported
   // error instead of an unhandled rejection with no reply to the inspector.
-  const save = async (next: ProjectConfig[], settings: Partial<JetstreamConfig>): Promise<boolean> => {
+  // Resolves with the fleet as saved (another writer's changes included), or undefined on failure.
+  const save = async (
+    next: ProjectConfig[],
+    settings: Partial<JetstreamConfig>,
+    base: FleetSnapshot,
+  ): Promise<ProjectConfig[] | undefined> => {
+    let saved: ProjectConfig[] = next;
     try {
-      deps.write(next, settings);
+      saved = deps.write(next, settings, base)?.projects ?? next;
     } catch (error) {
       await deps.reply({
         fleet: 'error',
-        message: `Couldn't save projects.json: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Couldn't save projects.json: ${errorMessage(error)}`,
       });
-      return false;
+      return undefined;
     }
-    deps.seed(next);
-    return true;
+    deps.seed(saved); // the saved fleet, so a repo another writer added meanwhile stays on the board
+    return saved;
   };
 
   switch (msg.fleet) {
@@ -277,8 +381,13 @@ export async function handleFleetMessage(payload: unknown, deps: FleetDeps): Pro
         path: msg.path,
         name: typeof msg.name === 'string' ? msg.name : undefined,
       });
-      if (result.added && !(await save(result.projects, settings))) return;
-      await deps.reply({ fleet: 'projects', projects: result.projects, note: result.reason });
+      let shown = result.projects;
+      if (result.added) {
+        const saved = await save(result.projects, settings, { projects, settings });
+        if (!saved) return;
+        shown = saved;
+      }
+      await deps.reply({ fleet: 'projects', projects: shown, note: result.reason });
       return;
     }
     case 'remove': {
@@ -289,8 +398,13 @@ export async function handleFleetMessage(payload: unknown, deps: FleetDeps): Pro
         return;
       }
       const next = removeFromFleet(projects, msg.id);
-      if (next.length !== projects.length && !(await save(next, settings))) return;
-      await deps.reply({ fleet: 'projects', projects: next });
+      let shown = next;
+      if (next.length !== projects.length) {
+        const saved = await save(next, settings, { projects, settings });
+        if (!saved) return;
+        shown = saved;
+      }
+      await deps.reply({ fleet: 'projects', projects: shown });
       return;
     }
     case 'scan': {

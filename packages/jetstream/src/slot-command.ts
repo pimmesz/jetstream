@@ -1,3 +1,5 @@
+import { open, realpath, stat } from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { normalizeColor } from './slot-color';
 import type { SlotKind, SlotSettings } from './actions/slot';
 
@@ -11,7 +13,7 @@ export interface SlotCommand {
 
 const KINDS: readonly SlotKind[] = [
   'empty', 'app', 'url', 'run', 'build', 'stopall', 'fleet', 'project', 'volup', 'voldown', 'volmute',
-  'chat', 'logo',
+  'chat', 'logo', 'usage', 'attention',
 ];
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined);
@@ -25,13 +27,74 @@ export function isHttpUrl(url: string): boolean {
   }
 }
 
+/** Targets the OS opener would EXECUTE rather than show: scripts and shortcuts. An `app` slot pointing
+ * at one is a run key in disguise, so it is gated by `allowRunKeys` like a `run` key. Pure. */
+const SCRIPT_EXT = /\.(command|sh|bash|zsh|tool|terminal|workflow|scpt|applescript|bat|cmd|ps1|vbs|vbe|js|jse|wsf|wsh|hta|scr|pif|lnk)$/i;
+export function isScriptTarget(app: string | undefined): boolean {
+  if (typeof app !== 'string') return false;
+  const target = app.trim();
+  // A URL (file://, or any scheme) is resolved by the opener in ways a suffix check cannot see:
+  // percent-encoding, a query or a fragment. Gate it like a script. `C:\` is a drive, not a scheme.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !/^[a-z]:[\\/]/i.test(target)) return true;
+  return SCRIPT_EXT.test(withoutTrailingSlash(target));
+}
+
+/** A trailing slash hides nothing from the opener, so suffix checks look past it. */
+function withoutTrailingSlash(target: string): string {
+  let end = target.length;
+  while (end > 0 && (target[end - 1] === '/' || target[end - 1] === '\\')) end--;
+  return target.slice(0, end);
+}
+
+/** Files macOS hands to a launcher that runs them (Python, Jar Launcher) or follows to another
+ * target that may be a script (Finder location files). */
+const LAUNCHER_EXT = /\.(py|jar|fileloc|inetloc|webloc)$/i;
+
+const hasRunName = (target: string): boolean =>
+  isScriptTarget(target) || LAUNCHER_EXT.test(withoutTrailingSlash(target.trim()));
+
+/**
+ * Whether opening a target (an `app` slot, or a project path) would run something, decided on disk at
+ * press time: a run-like name (also after following symlinks), a regular file with any execute bit, which
+ * the opener runs in Terminal whatever its name, or a Finder alias. A folder just opens, even one named
+ * like a script (`three.js`), except an Automator `.workflow`, which the opener runs. A target that is
+ * not on disk is judged by its name alone.
+ */
+export async function isRunTarget(app: string | undefined): Promise<boolean> {
+  if (typeof app !== 'string') return false;
+  try {
+    // Decide on the resolved path: a symlink, `x.workflow/.` or `x.workflow/Contents/..` is the workflow too.
+    const real = await realpath(app.trim());
+    const info = await stat(real);
+    if (info.isDirectory()) return /\.workflow$/i.test(real);
+    if (hasRunName(app) || hasRunName(real)) return true;
+    if (!info.isFile()) return false;
+    return (info.mode & 0o111) !== 0 || (await isFinderAlias(real));
+  } catch {
+    return hasRunName(app); // missing or unreachable: only its name can tell
+  }
+}
+
+/** A Finder alias is bookmark data ("book" at byte 0, "mark" at byte 8) that the opener follows to its
+ * target. Node cannot resolve it, so an alias is gated whatever it points at. */
+async function isFinderAlias(path: string): Promise<boolean> {
+  const head = Buffer.alloc(12);
+  const file = await open(path, 'r');
+  try {
+    await file.read(head, 0, 12, 0);
+  } finally {
+    await file.close();
+  }
+  return head.toString('latin1', 0, 4) === 'book' && head.toString('latin1', 8, 12) === 'mark';
+}
+
 /** A safe launch target for the 'app' slot, so a key planted via the unauthenticated /slot endpoint
  * can't inject a flag into the OS opener: a leading '-' would be parsed as an option by open/xdg-open,
  * so reject it. Pure — mirrors isHttpUrl, and guards at parse AND exec time.
  * NOTE: this deliberately does NOT restrict WHICH path is opened — the slot legitimately opens apps,
  * files and folders (native `system.open` keys migrate through here, see board-layout toSlotKey).
  * Blocking a *malicious* app bundle needs a location/existence whitelist, a separate follow-up
- * (security audit authz-2). */
+ * (security audit authz-2). Run-like targets are gated separately at press time (isRunTarget). */
 export function isSafeAppTarget(app: string, platform: NodeJS.Platform = process.platform): boolean {
   if (!app || app.startsWith('-')) return false; // a '-' target is parsed as an option by open/xdg-open
   if (platform === 'win32' && app.startsWith('/')) return false; // '/select', '/root', … are explorer switches
@@ -119,6 +182,11 @@ export function parseSlotCommand(raw: unknown): SlotCommand | null {
       settings = { kind, path, ...(str(r.name) ? { name: str(r.name) } : {}), ...extra };
       break;
     }
+    case 'usage':
+      // Whose usage: Claude unless Codex is named. Anything else is dropped, never passed through.
+      settings = { kind, ...(r.provider === 'codex' ? { provider: 'codex' as const } : {}), ...extra };
+      break;
+    case 'attention':
     case 'build':
     case 'stopall':
     case 'fleet':
@@ -136,4 +204,20 @@ export function parseSlotCommand(raw: unknown): SlotCommand | null {
       settings = { kind: 'empty' };
   }
   return { coord, column: cell.column, row: cell.row, settings };
+}
+
+/** Whether a key's stored settings are the ones a caller expects: a missing kind is an empty slot. Pure. */
+export function sameSlot(actual: unknown, expected: unknown): boolean {
+  const norm = (v: unknown): Record<string, unknown> => {
+    const o = typeof v === 'object' && v !== null ? { ...(v as Record<string, unknown>) } : {};
+    if (o.kind === undefined) o.kind = 'empty';
+    return o;
+  };
+  return isDeepStrictEqual(norm(actual), norm(expected));
+}
+
+/** The settings the plugin actually stores for a live slot edit: `/slot` keeps only each kind's own
+ * fields (an empty slot drops its cosmetics), so compare and remember in that form. Pure. */
+export function storedSlotSettings(settings: Record<string, unknown> | null): Record<string, unknown> {
+  return parseSlotCommand({ coord: 'a1', ...(settings ?? {}) })?.settings ?? { kind: 'empty' };
 }

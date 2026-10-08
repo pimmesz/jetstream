@@ -1,5 +1,106 @@
-import { describe, it, expect } from 'vitest';
-import { coordToCell, isHttpUrl, isSafeAppTarget, parseSlotCommand } from './slot-command';
+import { describe, it, expect, afterAll } from 'vitest';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { coordToCell, isHttpUrl, isRunTarget, isSafeAppTarget, isScriptTarget, parseSlotCommand } from './slot-command';
+
+describe('isScriptTarget', () => {
+  it('flags targets the opener would execute, so an app key cannot bypass allowRunKeys', () => {
+    for (const p of ['/Users/me/deploy.command', '/tmp/x.sh', '/a/b.TOOL', 'C:\\x\\run.ps1', 'C:\\x\\go.bat', '/a/b.workflow', 'C:\\Tools\\deploy.js', 'C:\\Tools\\x.wsf']) {
+      expect(isScriptTarget(p), p).toBe(true);
+    }
+    // URL forms the opener decodes are gated whatever they end in; a trailing slash does not hide a script.
+    for (const p of ['file:///tmp/deploy%2Ecommand', 'file:///tmp/deploy.command?x', 'x-scheme://run', '/tmp/x.sh/']) {
+      expect(isScriptTarget(p), p).toBe(true);
+    }
+    for (const p of ['/Applications/Telegram.app', '/Users/me/Documents', '/Users/me/report.pdf', 'C:\\Apps\\x.exe', undefined]) {
+      expect(isScriptTarget(p), String(p)).toBe(false);
+    }
+  });
+});
+
+describe('isRunTarget', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jetstream-run-target-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const file = (name: string, mode: number): string => {
+    const path = join(dir, name);
+    writeFileSync(path, '#!/bin/sh\necho hi\n');
+    chmodSync(path, mode);
+    return path;
+  };
+
+  it('counts an extensionless executable as a run key: the opener runs it in Terminal', async () => {
+    expect(await isRunTarget(file('deploy', 0o755))).toBe(true);
+    expect(await isRunTarget(file('owner-only', 0o700))).toBe(true);
+    expect(await isRunTarget(file('notes', 0o644))).toBe(false); // a plain file just opens
+  });
+
+  it('counts launcher types, also behind a symlink whose own name looks harmless', async () => {
+    for (const name of ['x.py', 'x.jar', 'x.fileloc', 'x.inetloc', 'x.webloc']) {
+      expect(await isRunTarget(file(name, 0o644)), name).toBe(true);
+    }
+    const script = file('real.command', 0o644);
+    const link = join(dir, 'harmless');
+    symlinkSync(script, link);
+    expect(await isRunTarget(link)).toBe(true);
+  });
+
+  // A Finder alias is a plain 0644 file with any name, which realpath cannot follow, yet `open` runs its target.
+  it('counts a Finder alias whatever its name, since Node cannot see where it points', async () => {
+    const alias = join(dir, 'Quarterly report');
+    writeFileSync(alias, Buffer.from('book\0\0\0\0mark\0\0\0\0', 'latin1'));
+    chmodSync(alias, 0o644);
+    expect(await isRunTarget(alias)).toBe(true);
+  });
+
+  it('leaves folders and .app bundles alone, although a folder always has execute bits', async () => {
+    const folder = join(dir, 'Documents');
+    const app = join(dir, 'Telegram.app');
+    mkdirSync(folder);
+    mkdirSync(app);
+    expect(await isRunTarget(folder)).toBe(false);
+    expect(await isRunTarget(app)).toBe(false);
+  });
+
+  it('judges a target that is not on disk by its name alone', async () => {
+    expect(await isRunTarget(join(dir, 'missing', 'deploy'))).toBe(false);
+    expect(await isRunTarget(join(dir, 'missing', 'deploy.py'))).toBe(true);
+    expect(await isRunTarget('/Users/me/Downloads/deploy.command')).toBe(true);
+    expect(await isRunTarget(undefined)).toBe(false);
+  });
+});
+
+describe('isRunTarget on folders', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jetstream-run-project-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('opens a repo folder even when its name ends like a script', async () => {
+    for (const name of ['three.js', 'discord.py', 'dotfiles.sh', 'plain-repo']) {
+      mkdirSync(join(dir, name));
+      expect(await isRunTarget(join(dir, name)), name).toBe(false);
+    }
+    const link = join(dir, 'linked-repo.js');
+    symlinkSync(join(dir, 'three.js'), link);
+    expect(await isRunTarget(`${link}/`)).toBe(false);
+  });
+
+  it('gates what would run: an executable file, a script, an Automator workflow folder, a missing script path', async () => {
+    const deploy = join(dir, 'deploy');
+    writeFileSync(deploy, '#!/bin/sh\necho hi\n');
+    chmodSync(deploy, 0o755);
+    mkdirSync(join(dir, 'Rename.workflow'));
+    expect(await isRunTarget(deploy)).toBe(true);
+    expect(await isRunTarget(join(dir, 'Rename.workflow'))).toBe(true);
+    // Other spellings of the same workflow folder.
+    mkdirSync(join(dir, 'Rename.workflow', 'Contents'));
+    symlinkSync(join(dir, 'Rename.workflow'), join(dir, 'my-repo'));
+    expect(await isRunTarget(join(dir, 'my-repo'))).toBe(true);
+    expect(await isRunTarget(`${join(dir, 'Rename.workflow')}/.`)).toBe(true);
+    expect(await isRunTarget(join(dir, 'Rename.workflow', 'Contents', '..'))).toBe(true);
+    expect(await isRunTarget(join(dir, 'missing', 'run.sh'))).toBe(true);
+    expect(await isRunTarget(join(dir, 'missing', 'repo'))).toBe(false);
+  });
+});
 
 describe('isSafeAppTarget', () => {
   it('rejects only empty targets and opener flags, so apps, files and folders all open', () => {
@@ -105,5 +206,13 @@ describe('parseSlotCommand', () => {
     expect(parseSlotCommand({ coord: 'a1', kind: 'app' })).toBeNull(); // no app
     expect(parseSlotCommand('nope')).toBeNull();
     expect(parseSlotCommand(null)).toBeNull();
+  });
+});
+
+describe('parseSlotCommand usage kind', () => {
+  it('keeps provider codex, defaults to Claude, and drops any other provider value', () => {
+    expect(parseSlotCommand({ coord: 'a1', kind: 'usage', provider: 'codex' })?.settings).toEqual({ kind: 'usage', provider: 'codex' });
+    expect(parseSlotCommand({ coord: 'a1', kind: 'usage' })?.settings).toEqual({ kind: 'usage' });
+    expect(parseSlotCommand({ coord: 'a1', kind: 'usage', provider: 'evil' })?.settings).toEqual({ kind: 'usage' });
   });
 });

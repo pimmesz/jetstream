@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import streamDeck from '@elgato/streamdeck';
+import { writeFleetFile } from '../fleet';
+import { readConfigFile } from '../projects-config';
+import { board } from '../state';
 import {
+  diagnosticsText,
+  routeInspectorMessage,
+  type InspectorRoutes,
   fixId,
   isBuildLayout,
   isDiagnostics,
@@ -7,8 +17,27 @@ import {
   isProfileSwitch,
   isToolDetail,
   hasWarnings,
+  SettingsKey,
+  writeFleetFromEditor,
 } from './settings';
 import type { CheckResult } from '../doctor';
+
+// Every projects.json read passes through; a test can set `afterRead` to land another writer's
+// change right after the next read, between the fleet route's read and its write.
+const h = vi.hoisted(() => ({ afterRead: undefined as (() => void) | undefined }));
+vi.mock('../projects-config', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../projects-config')>();
+  return {
+    ...real,
+    readConfigFile: (...args: Parameters<typeof real.readConfigFile>) => {
+      const file = real.readConfigFile(...args);
+      const afterRead = h.afterRead;
+      h.afterRead = undefined; // once only: the write's own re-read under the lock must not run it
+      afterRead?.();
+      return file;
+    },
+  };
+});
 
 // Each guard matches exactly one { key: 'value' } shape from the property inspector and
 // must reject everything else — payloads arrive as untrusted unknown JSON.
@@ -88,5 +117,138 @@ describe('fixId', () => {
     expect(fixId({ fix: 7 })).toBeUndefined();
     expect(fixId({ fix: { id: 'hooks' } })).toBeUndefined();
     expect(fixId('hooks')).toBeUndefined(); // the bare string is not the shape
+  });
+});
+
+describe('routeInspectorMessage', () => {
+  const routes = (): InspectorRoutes & { hit: string[] } => {
+    const hit: string[] = [];
+    const mark = (name: string) => async () => void hit.push(name);
+    return {
+      hit,
+      health: mark('health'),
+      fixHooks: mark('fixHooks'),
+      switchProfiles: mark('switchProfiles'),
+      toolDetail: mark('toolDetail'),
+      buildLayout: mark('buildLayout'),
+      diagnostics: mark('diagnostics'),
+      fleet: async () => void hit.push('fleet'),
+    };
+  };
+
+  it('sends each inspector message to its own handler, and everything else to the fleet editor', async () => {
+    const cases: Array<[unknown, string]> = [
+      [{ health: 'check' }, 'health'],
+      [{ fix: 'hooks' }, 'fixHooks'],
+      [{ profile: 'switch' }, 'switchProfiles'],
+      [{ hooks: 'toolDetail' }, 'toolDetail'],
+      [{ build: 'layout' }, 'buildLayout'],
+      [{ diag: 'copy' }, 'diagnostics'],
+      [{ fleet: 'list' }, 'fleet'],
+      [{ fix: 'fleet' }, 'fleet'], // only the hooks fix has its own handler
+      ['junk', 'fleet'],
+    ];
+    for (const [payload, expected] of cases) {
+      const r = routes();
+      await routeInspectorMessage(payload, r);
+      expect(r.hit, JSON.stringify(payload)).toEqual([expected]);
+    }
+  });
+});
+
+describe('diagnosticsText', () => {
+  it('lists every check with an OK/WARN prefix under the platform line', () => {
+    const checks: CheckResult[] = [
+      { status: 'ok', message: 'hooks wired' },
+      { status: 'warn', message: 'no token' },
+    ];
+    expect(diagnosticsText(checks, 'darwin', 'v24.1.0')).toBe(
+      'Jetstream diagnostics\nplatform: darwin  node: v24.1.0\n\nOK   hooks wired\nWARN no token',
+    );
+  });
+});
+
+describe('writeFleetFromEditor', () => {
+  const p = (id: string) => ({ id, name: id, path: `/r/${id}` });
+  const dirs: string[] = [];
+  const fleetPath = (): string => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'jetstream-editor-')));
+    dirs.push(dir);
+    return join(dir, 'projects.json');
+  };
+  afterEach(() => {
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
+  it('replays only the edit onto the file, keeping a repo another writer added since the read', () => {
+    const path = fleetPath();
+    writeFleetFile(path, [p('a')]);
+    const base = readConfigFile(path);
+    writeFleetFile(path, [p('a'), p('b')]); // another writer adds b
+    writeFleetFromEditor(path, [p('a'), p('c')], {}, base); // the editor adds c
+    expect(readConfigFile(path).projects.map((x) => x.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  // The lock wait blocks the plugin's only thread, so a held lock must fail fast, not after 3 s.
+  it('gives up on a held lock quickly with the try-again error, changing nothing', () => {
+    const path = fleetPath();
+    writeFleetFile(path, [p('a')]);
+    const before = readFileSync(path, 'utf8');
+    writeFileSync(`${path}.lock`, 'live writer');
+    const started = Date.now();
+    expect(() => writeFleetFromEditor(path, [p('a'), p('b')], {}, readConfigFile(path))).toThrow(
+      /try again/,
+    );
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+});
+
+describe('SettingsKey fleet route', () => {
+  const p = (id: string) => ({ id, name: id, path: `/r/${id}` });
+  const dirs: string[] = [];
+  // Points the route at a temp projects.json (HOME too, so no fallback path is the real one) and
+  // collects what it replies to the property inspector.
+  const setup = (): { path: string; replies: unknown[] } => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'jetstream-route-')));
+    dirs.push(dir);
+    vi.stubEnv('XDG_CONFIG_HOME', dir);
+    vi.stubEnv('HOME', dir);
+    mkdirSync(join(dir, 'jetstream'));
+    const path = join(dir, 'jetstream', 'projects.json');
+    writeFleetFile(path, [p('a')]);
+    const replies: unknown[] = [];
+    vi.spyOn(streamDeck.ui, 'sendToPropertyInspector').mockImplementation(async (msg) => {
+      replies.push(msg);
+    });
+    vi.spyOn(board, 'seed').mockImplementation(() => {});
+    return { path, replies };
+  };
+  afterEach(() => {
+    h.afterRead = undefined;
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
+  // The route is what the plugin runs: it must use the editor's short lock wait, not the CLI's 3 s.
+  it('answers a held lock with the try-again error well inside a second, changing nothing', async () => {
+    const { path, replies } = setup();
+    const before = readFileSync(path, 'utf8');
+    writeFileSync(`${path}.lock`, 'live writer');
+    const started = Date.now();
+    await new SettingsKey().onSendToPlugin({ payload: { fleet: 'remove', id: 'a' } });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(replies).toEqual([{ fleet: 'error', message: expect.stringMatching(/try again/) }]);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+
+  it("writes only its own removal, keeping a repo another writer added after the route's read", async () => {
+    const { path, replies } = setup();
+    h.afterRead = () => writeFleetFile(path, [p('a'), p('b')]); // another writer adds b
+    await new SettingsKey().onSendToPlugin({ payload: { fleet: 'remove', id: 'a' } });
+    expect(readConfigFile(path).projects).toEqual([p('b')]);
+    expect(replies).toEqual([{ fleet: 'projects', projects: [p('b')] }]);
+    expect(board.seed).toHaveBeenCalledWith([p('b')]);
   });
 });

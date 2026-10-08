@@ -1,15 +1,16 @@
-import { request } from 'node:http';
-import { tokenHeader } from './listener-token';
 import { clearStopFlagOnTurnEnd } from './stop-flag';
+import { appendSpool } from './spool';
+import { postHook, runStatusHook } from './status-hook';
 
 /**
  * Claude Code lifecycle-hook entry (install for SessionStart / UserPromptSubmit /
  * Notification / Stop / SessionEnd, etc.). It forwards the hook payload to the
  * Jetstream plugin's local server and exits silently. It also tags the payload with
- * `_pid` (this hook's parent — the `claude` process, since hooks are spawned via
- * argv, not a shell) so the plugin can SIGINT that session on an interrupt press.
- * It prints NOTHING to stdout — some hooks (e.g. UserPromptSubmit) treat stdout as
- * injected context — and always exits 0 so it can never disrupt a Claude session.
+ * `_pid` (this hook's parent, the `claude` process, since hooks are spawned via
+ * argv, not a shell) so the plugin can map the session to its process.
+ * It prints NOTHING to stdout (some hooks, e.g. UserPromptSubmit, treat stdout as
+ * injected context) and always exits 0 so it can never disrupt a Claude session.
+ * The logic lives in status-hook.ts, where it is tested.
  */
 const PORT = Number(process.env.JETSTREAM_PORT) || 41321;
 
@@ -23,55 +24,11 @@ function readStdin(): Promise<string> {
   });
 }
 
-function post(body: string): Promise<void> {
-  return new Promise((resolve) => {
-    const req = request(
-      {
-        host: '127.0.0.1',
-        port: PORT,
-        path: '/hook',
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'content-length': Buffer.byteLength(body),
-          ...tokenHeader(),
-        },
-        timeout: 1500,
-      },
-      (res) => {
-        res.resume();
-        res.on('end', resolve);
-      },
-    );
-    req.on('error', () => resolve());
-    req.on('timeout', () => {
-      req.destroy();
-      resolve();
-    });
-    req.end(body);
-  });
-}
-
-async function main(): Promise<void> {
-  const body = await readStdin();
-  if (!body.trim()) return;
-  // Tag with the parent PID so the plugin can map session → process for interrupt.
-  // If the body isn't a JSON object, forward it unchanged.
-  let payload: unknown;
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    await post(body);
-    return;
-  }
-  if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
-    const fields = payload as Record<string, unknown>;
-    clearStopFlagOnTurnEnd(fields.hook_event_name, fields.session_id);
-    fields._pid = process.ppid;
-    await post(JSON.stringify(payload));
-  } else {
-    await post(body);
-  }
-}
-
-void main();
+void runStatusHook({
+  readStdin,
+  post: (body) => postHook(body, PORT),
+  appendSpool: (body) => appendSpool(body),
+  clearStopFlag: (event, sessionId) => clearStopFlagOnTurnEnd(event, sessionId),
+  now: Date.now,
+  ppid: process.ppid,
+});

@@ -1,5 +1,7 @@
 # Scoping: Fold structural Stream Deck keys into the plugin-owned `slot` action
 
+> **Superseded: historical build record.** It describes the code when the slot fold was scoped. Line numbers point at old `cli.ts`; the structural/live split now lives in `chat-apply.ts` (`planLayout`), structural edits are written into the board in place (`profile-store.ts`), and `POST /slot` needs the loopback token.
+
 **Goal:** every key becomes a `gg.pim.jetstream.slot` *kind* so `jetstream chat` retargets it LIVE via `POST /slot`, eliminating the `Jetstream-Custom.streamDeckProfile` re-import churn (a new "Jetstream Custom copy" per structural move).
 
 **Root cause of the churn (confirmed):** `cli.ts:218` classifies `structural = placements.filter(p => p.uuid !== 'gg.pim.jetstream.slot')`. If **any** placement is structural, the live path is skipped (`structural.length === 0` gate at `:223`) and the whole board is rewritten to a new `.streamDeckProfile` and re-imported (`:246–253`). So *one* non-slot key on the board forces a full copy-import. Turning a key into a slot kind moves it from the structural bucket to the live bucket.

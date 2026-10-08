@@ -33,6 +33,7 @@ import { paintCoordByRow, spinner } from './term';
 import { pluginAlive, sendSlot } from './slot-client';
 import { defaultOpenFile } from './open-file';
 import { projectsConfigPath, PROJECTS_TEMPLATE , resolveProjectsConfigPath } from './projects-config';
+import { errorMessage } from './errors';
 
 /**
  * The Jetstream CLI (`bin/jetstream.js`), which lives inside the installed .sdPlugin and is
@@ -54,12 +55,14 @@ Commands:
                                   emoji/logo icons; applied LIVE to your deck (uses your subscription)
   init                            Guided setup: build projects.json (your whole fleet) +
                                   settings, wire the Claude hooks, print next steps
-  hooks install [--tool-detail]   Wire Jetstream's Claude hooks into ~/.claude/settings.json
+  hooks install [--tool-detail]   Wire Jetstream's Claude hooks into Claude's settings.json
+                                  (~/.claude, or $CLAUDE_CONFIG_DIR when set)
     [--replace-statusline]        …and take the statusline slot from another tool, so the
                                   usage gauge works (your statusline is kept without this)
   doctor [--json]                 Read-only health check — why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps
   board                           Print your current Stream Deck board as a coordinate map (a1…hN)
+  install                         Hand the packed plugin to the Stream Deck app (npm CLI)
   update                          Update the npm package + reinstall the plugin (npm CLI)
   version                         Show the installed plugin / npm package versions`;
 
@@ -89,7 +92,7 @@ async function runHooks(args: string[], binDir: string): Promise<number> {
     toolDetail = values['tool-detail'] === true;
     replaceStatusline = values['replace-statusline'] === true;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     return 1;
   }
   try {
@@ -117,7 +120,7 @@ async function runHooks(args: string[], binDir: string): Promise<number> {
     }
     return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     return 1;
   }
 }
@@ -137,7 +140,7 @@ async function runSetup(binDir: string): Promise<number> {
     } else {
       // A real write failure (EACCES/EROFS/…): don't claim success or print next steps.
       console.error(
-        `Could not create ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not create ${path}: ${errorMessage(error)}`,
       );
       return 1;
     }
@@ -194,6 +197,11 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           '  npm i -g --prefer-online --registry=https://registry.npmjs.org/ --@pimmesz:registry=https://registry.npmjs.org/ @pimmesz/jetstream\n' +
           '  jetstream install',
       );
+      return 0;
+    }
+    case 'install': {
+      // Same reason as `update`: the plugin cannot install itself, so the npm `jetstream` bin owns this verb.
+      console.log('Install via the npm CLI:\n  npm i -g @pimmesz/jetstream\n  jetstream install');
       return 0;
     }
     case 'init': {
@@ -331,7 +339,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           console.error('\nAborted — nothing further was written.');
           return 130;
         }
-        console.error(`\n${error instanceof Error ? error.message : String(error)}`);
+        console.error(`\n${errorMessage(error)}`);
         return 1;
       } finally {
         rl.close();

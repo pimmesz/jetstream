@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -185,6 +185,22 @@ describe('installHooks read failures', () => {
       // Second run: nothing to do.
       const again = await installHooks({ settingsPath, commands: { status: STATUS } });
       expect(again.changed).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('two installs started together in one process both land (neither rename drops the other)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-hooks-'));
+    try {
+      const settingsPath = join(dir, 'settings.json');
+      await Promise.all([
+        installHooks({ settingsPath, commands: { status: STATUS } }),
+        installHooks({ settingsPath, commands: { status: STATUS, permission: PERMISSION } }),
+      ]);
+      const written = JSON.parse(readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown> };
+      expect(written.hooks.PermissionRequest).toBeDefined();
+      expect(written.hooks.Stop).toBeDefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

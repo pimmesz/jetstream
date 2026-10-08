@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { execPlan } from './slot-exec';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { spawn } from 'node:child_process';
+import { execPlan, runPlan } from './slot-exec';
+
+vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ on: vi.fn(), unref: vi.fn() })) }));
 
 describe('execPlan', () => {
   it('opens an app via the platform opener — path as one literal argv element', () => {
@@ -41,5 +44,22 @@ describe('execPlan', () => {
     expect(execPlan({})).toBeNull();
     expect(execPlan({ kind: 'app' })).toBeNull();
     expect(execPlan({ kind: 'run' })).toBeNull();
+  });
+});
+
+describe('runPlan', () => {
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+  });
+
+  it('runs a key without the Anthropic API credentials, so a run key can never bill the metered API', () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'tok-test';
+    expect(runPlan({ cmd: 'claude', args: ['-p', 'hi'] })).toBe(true);
+    const env = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env ?? {};
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.PATH).toBeTruthy();
   });
 });

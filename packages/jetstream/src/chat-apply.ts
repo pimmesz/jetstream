@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { labelForAction, legacyMigrations, type BoardLayout } from './board-layout';
 import type { Placement } from './layout';
 import type { InPlaceResult } from './profile-store';
-import { coordLabel } from './slot-command';
+import { coordLabel, sameSlot, storedSlotSettings } from './slot-command';
 
 /**
  * How `jetstream chat` lands an approved layout. A key that only changes a Jetstream slot already on
@@ -11,7 +11,7 @@ import { coordLabel } from './slot-command';
  * profile while Stream Deck restarts, so no "Jetstream Custom copy N" profile ever appears.
  */
 
-const SLOT = 'gg.pim.jetstream.slot';
+export const SLOT = 'gg.pim.jetstream.slot';
 
 export type Route = 'same' | 'live' | 'restart';
 
@@ -76,8 +76,10 @@ export type ApplyOutcome = 'unchanged' | 'live' | 'restarted' | 'imported' | 'de
 
 /** Why a live edit was refused, in words that point at the real fix. */
 function liveFailure(status: number): string {
-  if (status === 401) return 'the plugin refused the request (token mismatch); restart the Stream Deck app';
+  if (status === 401)
+    return 'the plugin refused the request (a token mismatch, or a plugin older than this CLI); restart the Stream Deck app or update the plugin';
   if (status === 404) return 'that key is not on the Stream Deck page on screen';
+  if (status === 409) return 'that key changed since the plan was made';
   if (status === -1) return 'the plugin did not answer';
   return `the plugin rejected it (HTTP ${status})`;
 }
@@ -87,19 +89,28 @@ const isClear = (p: Placement): boolean => p.uuid === SLOT && (p.settings as { k
 interface LiveResult {
   ok: boolean;
   failures: string[];
-  /** Keys that changed live but could not be put back after another key failed. */
+  /** Keys that changed live and whose undo, after another key failed, was not confirmed. */
   unrestored: string[];
+  /** Styled empty keys put back without their colour, label or icon: /slot never stores those on an empty key. */
+  stripped: string[];
+  /** Some key held something else than the plan saw there (a 409). */
+  hasConflict: boolean;
 }
 
 /** Answers that prove the plugin changed nothing. Any other failure (a 500 after the settings were saved,
  * no answer at all) may have changed the key, so it is rolled back like a success. */
-const UNTOUCHED = new Set([400, 401, 404]);
+const UNTOUCHED = new Set([400, 401, 404, 409]);
 
 async function sendLive(keys: PlannedKey[], deps: ApplyDeps): Promise<LiveResult> {
   const touched: PlannedKey[] = [];
+  let hasConflict = false;
   const send = async (k: PlannedKey): Promise<string | undefined> => {
-    const status = await deps.sendSlot({ coord: k.coord, ...(k.placement.settings ?? {}) });
+    // `expect` is what the plan saw at this key; the plugin refuses the write if the deck now shows
+    // something else there.
+    const seen = deps.board?.keys.get(`${k.placement.column},${k.placement.row}`)?.settings ?? { kind: 'empty' };
+    const status = await deps.sendSlot({ coord: k.coord, ...(k.placement.settings ?? {}), expect: seen });
     if (!UNTOUCHED.has(status)) touched.push(k);
+    if (status === 409) hasConflict = true;
     return status === 200 ? undefined : `${k.coord}: ${liveFailure(status)}`;
   };
   // Destinations first, clears only once every destination landed: a move must never clear its source
@@ -108,15 +119,32 @@ async function sendLive(keys: PlannedKey[], deps: ApplyDeps): Promise<LiveResult
   if (failures.length === 0) {
     failures = (await Promise.all(keys.filter((k) => isClear(k.placement)).map(send))).filter(Boolean);
   }
-  if (failures.length === 0) return { ok: true, failures: [], unrestored: [] };
+  if (failures.length === 0) return { ok: true, failures: [], unrestored: [], stripped: [], hasConflict: false };
   // All or nothing: put back every key that already changed, so a half-done swap cannot leave the
   // same key on two coordinates and lose the other.
   const unrestored: string[] = [];
+  const stripped: string[] = [];
   for (const k of touched) {
     const original = deps.board?.keys.get(`${k.placement.column},${k.placement.row}`)?.settings ?? { kind: 'empty' };
-    if ((await deps.sendSlot({ coord: k.coord, ...original })) !== 200) unrestored.push(k.coord);
+    // Only put it back while it still holds what we wrote; anything else there is not ours to undo.
+    const ours = storedSlotSettings(k.placement.settings);
+    // A never-configured slot ({}) goes back as the empty slot it shows. Any other original is sent as it was,
+    // so one the plugin cannot parse is refused and reported below instead of being cleared.
+    const restore = sameSlot(original, { kind: 'empty' }) ? { kind: 'empty' } : original;
+    const status = await deps.sendSlot({ coord: k.coord, ...restore, expect: ours });
+    if (status !== 200 && status !== 409) unrestored.push(k.coord); // 409: not ours any more, nothing to undo
+    if (status === 200 && original.kind === 'empty' && !sameSlot(original, { kind: 'empty' })) stripped.push(k.coord);
   }
-  return { ok: false, failures: failures as string[], unrestored };
+  return { ok: false, failures: failures as string[], unrestored, stripped, hasConflict };
+}
+
+/** What a failed live apply left changed on the deck, for the closing message; undefined when nothing. */
+function leftoverNote(unrestored: string[], stripped: string[]): string | undefined {
+  const notes = [
+    ...(unrestored.length > 0 ? [`these keys may still hold the new settings: ${unrestored.join(', ')}`] : []),
+    ...(stripped.length > 0 ? [`these keys lost their colour, label or icon: ${stripped.join(', ')}`] : []),
+  ];
+  return notes.length > 0 ? notes.join('; ') : undefined;
 }
 
 /** Apply an approved layout and tell the user exactly what happened. */
@@ -137,17 +165,30 @@ export async function applyLayout(placements: Placement[], deps: ApplyDeps): Pro
     for (const k of changes) deps.say(`  ✓ ${k.coord}: ${k.after}`);
   };
 
+  let unrestored: string[] = [];
+  let stripped: string[] = [];
   if (deps.board && changes.every((k) => k.route === 'live')) {
     if (await deps.pluginAlive()) {
       const live = await sendLive(changes, deps);
+      unrestored = live.unrestored;
+      stripped = live.stripped;
       if (live.ok) {
         deps.say('\nApplied live:');
         receipt();
         return 'live';
       }
       deps.say(`\nCould not apply live (${live.failures.join('; ')}).`);
+      if (live.hasConflict) {
+        // A restart would write the plan over an edit it never saw. Chat re-reads the board once the restart
+        // is answered, so waiting before declining lets a late save reach the next plan.
+        deps.say('Stream Deck may not have saved a recent edit yet (from another chat or on the deck itself), or another page is on screen.');
+        deps.say('Safest: wait a few seconds, decline the restart, then send the request again.');
+      }
       if (live.unrestored.length > 0) {
-        deps.say(`These keys changed and could not be put back: ${live.unrestored.join(', ')}.`);
+        deps.say(`Putting these keys back was not confirmed, so they may still hold the new settings: ${live.unrestored.join(', ')}.`);
+      }
+      if (live.stripped.length > 0) {
+        deps.say(`Put back as plain empty keys, without their colour, label or icon: ${live.stripped.join(', ')}.`);
       }
     } else {
       deps.say('\nThe Jetstream plugin is not answering, so this cannot go live.');
@@ -159,7 +200,8 @@ export async function applyLayout(placements: Placement[], deps: ApplyDeps): Pro
       `This needs Stream Deck to restart (about 5 seconds; "${deps.board.profileName}" is backed up first). Go ahead?`,
     );
     if (!ok) {
-      deps.say('Nothing changed.');
+      const note = leftoverNote(unrestored, stripped);
+      deps.say(note ? `Not restarted, so ${note}.` : 'Nothing changed.');
       return 'declined';
     }
     // Fold the board's legacy keys into the same restart, so their later edits apply live.
@@ -179,7 +221,9 @@ export async function applyLayout(placements: Placement[], deps: ApplyDeps): Pro
       deps.say(`  (backup: ${result.backup})`);
       return 'restarted';
     }
-    deps.say(`\nCould not update the profile in place: ${result.reason}. Your board was not changed.`);
+    const note = leftoverNote(unrestored, stripped);
+    const leftover = note ? `Apart from that nothing changed, but ${note}.` : 'Your board was not changed.';
+    deps.say(`\nCould not update the profile in place: ${result.reason}. ${leftover}`);
     return 'failed';
   }
 

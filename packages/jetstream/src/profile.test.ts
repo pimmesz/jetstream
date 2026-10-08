@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ACTION_UUIDS } from './action-uuids';
 import {
   DECK_MODELS,
   DEFAULT_PROFILE_IDS,
@@ -357,20 +358,10 @@ describe('buildOpsProfile (the shipped controls page)', () => {
       .map((m) => m[1]!);
     expect(new Set(manifest.Actions.map((a) => a.UUID))).toEqual(new Set(implemented));
 
-    // THIRD surface: registration. The two sets above cannot see it — plugin.ts must also call
-    // registerAction, and dropping that call ships a key Stream Deck lists and nothing answers:
-    // decorator present, manifest entry present, suite green, key dead. Scraped rather than
-    // imported because plugin.ts is the live entry point and importing it would boot the SDK.
-    const plugin = stripComments(readFileSync(new URL('./plugin.ts', import.meta.url), 'utf8'));
-    // Every action class is named `<Something>Key`, so this cannot pick up an unrelated `new`.
-    const constructed = new Set(
-      [...plugin.matchAll(/const (\w+) = new \w+Key\(\);/g)].map((m) => m[1]!),
-    );
-    const registered = new Set(
-      [...plugin.matchAll(/registerAction\((\w+)\)/g)].map((m) => m[1]!),
-    );
-    expect(registered).toEqual(constructed);
-    expect(registered.size).toBe(implemented.length);
+    // THIRD surface: registration. action-registry.ts pairs one instance with each ACTION_UUIDS entry through a
+    // Record keyed by that list (a missing entry does not compile), so the list must equal the other two.
+    expect(new Set(ACTION_UUIDS)).toEqual(new Set(implemented));
+    expect(ACTION_UUIDS).toHaveLength(implemented.length); // no duplicates
   });
 });
 

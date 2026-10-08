@@ -1,9 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Placement } from './layout';
+import { writeFileAtomicSync } from './atomic-write';
+import { errorMessage } from './errors';
 
 /**
  * Stream Deck's own profile store (ProfilesV3), read and written in place. Importing a
@@ -150,9 +152,7 @@ export function writePageActions(manifestPath: string, actions: Record<string, S
   const keypad = page.Controllers?.find((c) => c.Type === 'Keypad');
   if (!keypad) throw new Error(`${manifestPath} has no keypad controller; not writing`);
   keypad.Actions = actions;
-  const tmp = `${manifestPath}.jetstream-tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(page));
-  renameSync(tmp, manifestPath);
+  writeFileAtomicSync(manifestPath, JSON.stringify(page));
 }
 
 /** Copy a profile directory to a timestamped backup, keeping the newest `keep` per profile. */
@@ -212,6 +212,8 @@ export async function writeInPlace(
     quitTimeoutMs?: number;
     /** Runs while the app is down (deletions only stick then); returns what it removed. */
     whileQuit?: () => string[];
+    /** Exclusive-write lock file (tests point it into a temp dir). */
+    lockPath?: string;
     /** The page the edits were planned against. Without it the page current after the quit is used,
      * which may not be the one the user previewed if they switched pages meanwhile. */
     pageId?: string;
@@ -221,6 +223,11 @@ export async function writeInPlace(
   if (!readCurrentPage(profileDir, options.pageId)) {
     return { ok: false, reason: 'the profile is not in the Stream Deck 7 format this writer understands' };
   }
+  // Two chat windows applying at once would both read the page while Stream Deck is down, and the
+  // second rename would silently drop the first one's keys. One writer at a time.
+  const lock = options.lockPath ?? join(homedir(), '.config', 'jetstream', 'profile-write.lock');
+  const held = takeWriteLock(lock);
+  if (!('token' in held)) return { ok: false, reason: held.reason };
   const wasRunning = app.isRunning();
   try {
     if (wasRunning) {
@@ -239,7 +246,7 @@ export async function writeInPlace(
     writePageActions(page.manifestPath, overlayActions(page.actions, placements, options));
     return { ok: true, backup, removed: options.whileQuit?.() ?? [] };
   } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    return { ok: false, reason: errorMessage(error) };
   } finally {
     if (wasRunning) {
       try {
@@ -248,5 +255,45 @@ export async function writeInPlace(
         // The caller tells the user to open Stream Deck; the write itself already succeeded or failed.
       }
     }
+    releaseWriteLock(lock, held.token);
+  }
+}
+
+/** A write takes seconds; a lock older than this was left by a process that died mid-write. */
+const STALE_LOCK_MS = 2 * 60_000;
+
+const BUSY = { reason: 'another `jetstream chat` is updating the board right now; try again in a moment' };
+
+/** Take the board lock: this writer's token, or why not. The token makes the release ownership-checked.
+ * A stale lock is reported, never taken over: every automatic takeover without an OS lock can let
+ * two writers through when several chats race for it, and a crash mid-write is rare enough that one
+ * manual delete is the safer price. */
+function takeWriteLock(path: string, now = Date.now()): { token: string } | { reason: string } {
+  const token = `${process.pid} ${randomUUID()}`;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, token, { flag: 'wx' });
+    return { token };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      return { reason: `cannot take the board lock at ${path} (${errorMessage(error)})` };
+    }
+  }
+  try {
+    if (now - statSync(path).mtimeMs < STALE_LOCK_MS) return BUSY;
+  } catch {
+    return BUSY; // released between our create and this check: the next try will get it
+  }
+  return {
+    reason: `a previous \`jetstream chat\` stopped while updating the board and left ${path}; if no other chat is running, delete that file and try again`,
+  };
+}
+
+/** Remove the lock only while it is still ours. */
+function releaseWriteLock(path: string, token: string): void {
+  try {
+    if (readFileSync(path, 'utf8') === token) rmSync(path, { force: true });
+  } catch {
+    // already gone
   }
 }

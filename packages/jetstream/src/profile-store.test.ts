@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -120,6 +120,7 @@ describe('writeInPlace', () => {
       jetstreamVersion: '3.1.0.0',
       app,
       backupRoot: join(root, 'backups'),
+      lockPath: join(root, 'write.lock'),
     });
     expect(result.ok).toBe(true);
     expect(app.log).toEqual(['quit', 'launch']);
@@ -145,6 +146,7 @@ describe('writeInPlace', () => {
       jetstreamVersion: '3.1.0.0',
       app,
       backupRoot: join(root, 'backups'),
+      lockPath: join(root, 'write.lock'),
       pageId: 'aaaa-1111',
     });
     expect(Object.keys(readCurrentPage(dir, 'aaaa-1111')!.actions)).toEqual(['0,0']);
@@ -164,6 +166,7 @@ describe('writeInPlace', () => {
       jetstreamVersion: '3.1.0.0',
       app,
       backupRoot: join(root, 'backups'),
+      lockPath: join(root, 'write.lock'),
     });
     const [backup] = readdirSync(join(root, 'backups'));
     expect(readFileSync(join(root, 'backups', backup!, 'Profiles', 'AAAA-1111', 'manifest.json'), 'utf8')).toContain('/flushed.app');
@@ -179,11 +182,77 @@ describe('writeInPlace', () => {
       jetstreamVersion: '3.1.0.0',
       app,
       backupRoot: join(root, 'backups'),
+      lockPath: join(root, 'write.lock'),
       quitTimeoutMs: 0,
     });
     expect(result.ok).toBe(false);
     expect(launched).toEqual(['launch']);
     expect(readCurrentPage(dir)?.actions).toEqual({});
+  });
+});
+
+describe('writeInPlace lock', () => {
+  const app = (): AppControl => ({ isRunning: () => false, quit: () => {}, launch: () => {}, sleep: async () => {} });
+
+  it('refuses while another writer holds the lock, and releases its own lock when done', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    writeFileSync(lockPath, '999');
+    const opts = { jetstreamVersion: '3.1.0.0', app: app(), backupRoot: join(root, 'backups'), lockPath };
+    const busy = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], opts);
+    expect(busy).toMatchObject({ ok: false });
+    expect(readCurrentPage(dir)?.actions).toEqual({}); // nothing written
+    rmSync(lockPath);
+    expect((await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], opts)).ok).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('never removes a lock it does not own, and reports an unwritable lock folder instead of throwing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    const thief: AppControl = {
+      ...app(),
+      isRunning: () => true,
+      quit: () => {
+        writeFileSync(lockPath, 'another writer'); // a recoverer replaced our lock mid-write
+        thief.isRunning = () => false;
+      },
+    };
+    await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app: thief,
+      backupRoot: join(root, 'backups'),
+      lockPath,
+    });
+    expect(readFileSync(lockPath, 'utf8')).toBe('another writer');
+    writeFileSync(join(root, 'not-a-dir'), '');
+    const blocked = await writeInPlace(dir, [placement({})], {
+      jetstreamVersion: '3.1.0.0',
+      app: app(),
+      backupRoot: join(root, 'backups'),
+      lockPath: join(root, 'not-a-dir', 'write.lock'),
+    });
+    expect(blocked).toMatchObject({ ok: false });
+  });
+
+  it('reports a lock left by a writer that died, with the file to delete, instead of taking it over', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    writeFileSync(lockPath, '999');
+    const old = (Date.now() - 3 * 60_000) / 1000;
+    utimesSync(lockPath, old, old);
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app: app(),
+      backupRoot: join(root, 'backups'),
+      lockPath,
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect((result as { reason: string }).reason).toContain(lockPath);
+    expect(readCurrentPage(dir)?.actions).toEqual({}); // nothing written
   });
 });
 

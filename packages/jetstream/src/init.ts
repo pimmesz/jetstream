@@ -3,12 +3,13 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { DEFAULTS, LIMITS, type JetstreamConfig } from './config';
-import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos, writeFleetFile } from './fleet';
+import { addToFleet, canonical, expandHome, renderProjectsJson, scanForGitRepos, stripControl as safe, writeFleetFile } from './fleet';
 import { installHooks, type HookCommands, type InstallResult } from './hooks-install';
 import { defaultOpenFile } from './open-file';
 import { DECK_MODELS, type DeckModel, writeProfileFile } from './profile';
 import { parseProjectsConfig, projectsConfigPath , resolveProjectsConfigPath } from './projects-config';
 import { selectMany } from './select';
+import { errorMessage } from './errors';
 
 /**
  * `jetstream init` — the guided onboarding: build the whole fleet config in one sitting
@@ -48,10 +49,6 @@ export interface InitDeps {
 }
 
 const yes = (answer: string): boolean => /^y(es)?$/i.test(answer.trim());
-
-/** Strip control bytes (incl. ESC) from untrusted on-disk names before they hit the
- * terminal — a directory named with ANSI escapes must not steer the user's console. */
-const safe = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, '');
 
 /** Ask for a number, defaulting on Enter. Answers outside [min, max] keep the default
  * with a warning — the plugin clamps to that range at runtime anyway (config.LIMITS),
@@ -229,7 +226,7 @@ export async function offerProfile(
     // Ctrl-D or Ctrl-C at one of the prompts above is the user leaving, not a failed write.
     if (isInputAbort(error)) throw error;
     io.say(
-      `Could not write the layout (${error instanceof Error ? error.message : String(error)}) — drag keys by hand instead.`,
+      `Could not write the layout (${errorMessage(error)}). Drag keys by hand instead.`,
     );
     return undefined;
   }
@@ -321,7 +318,7 @@ export async function runInit(deps: InitDeps): Promise<number> {
       );
     } catch (error) {
       io.say(
-        `Could not write ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not write ${configPath}: ${errorMessage(error)}`,
       );
       return 1;
     }
@@ -339,7 +336,7 @@ export async function runInit(deps: InitDeps): Promise<number> {
     }
   } catch (error) {
     io.say(
-      `Could not install the Claude hooks: ${error instanceof Error ? error.message : String(error)}`,
+      `Could not install the Claude hooks: ${errorMessage(error)}`,
     );
     return 1;
   }
@@ -366,7 +363,7 @@ export async function runInit(deps: InitDeps): Promise<number> {
       } catch (error) {
         // Non-fatal: the hooks themselves are installed; only the optional swap failed.
         io.say(
-          `Could not replace the statusline: ${error instanceof Error ? error.message : String(error)}`,
+          `Could not replace the statusline: ${errorMessage(error)}`,
         );
       }
     } else {

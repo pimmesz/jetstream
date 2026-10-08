@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it, expect } from 'vitest';
@@ -158,6 +158,25 @@ describe('Board', () => {
       expect(after.byProject()['falcon']).toEqual({ status: 'failed', since: 2 });
     });
 
+    it('keeps the tombstone of a session that ended during the scan, so a late straggler cannot revive it', async () => {
+      const file = tmpFile();
+      const after = new Board(file);
+      after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      let finishScan: () => void = () => {};
+      const scan = new Promise<void>((r) => (finishScan = r));
+      const restoring = after.restore(async () => {
+        await scan;
+        return [];
+      });
+      after.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 });
+      after.dispatch({ event: 'SessionEnd', cwd: '/Users/me/falcon', sessionId: 's1', at: 2 });
+      finishScan();
+      await restoring;
+      // A reordered Notification from the dead session arrives after the restore merged.
+      after.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 's1', at: 3, notificationType: 'permission_prompt' });
+      expect(after.byProject()['falcon']).toEqual({ status: 'none' });
+    });
+
     it('merges under live hook events that arrived during the scan (never clobbers them)', async () => {
       const file = tmpFile();
       const before = new Board(file);
@@ -212,6 +231,62 @@ describe('Board', () => {
       });
       // s1 (needsInput, rank 4) still wins over s2 (done, rank 2) — the attention signal survives
       expect(after.byProject()['falcon']).toEqual({ status: 'needsInput', since: 1 });
+    });
+
+    it('keeps the checkpointed status when an event during the scan changes nothing (the idle nudge)', async () => {
+      const file = tmpFile();
+      const before = new Board(file);
+      before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      before.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 });
+      before.dispatch({ event: 'Stop', cwd: '/Users/me/falcon', sessionId: 's1', at: 2 }); // checkpoint: done
+
+      before.flush();
+      const after = new Board(file);
+      after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      await after.restore(async () => {
+        // Claude's 60 s idle nudge leaves the status alone, so it says nothing newer than the checkpoint
+        const nudge = { cwd: '/Users/me/falcon', sessionId: 's1', at: 5, notificationType: 'idle_prompt' };
+        after.dispatch({ event: 'Notification', ...nudge });
+        return [{ pid: 9, cwd: '/Users/me/falcon', active: false }];
+      });
+      expect(after.byProject()['falcon']).toEqual({ status: 'done', since: 2 });
+    });
+
+    it('restores the fire time, so an older event arriving after the restart cannot overwrite the session', async () => {
+      const file = tmpFile();
+      const before = new Board(file);
+      before.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      const prompt = { cwd: '/Users/me/falcon', sessionId: 's1', at: 1, notificationType: 'permission_prompt' };
+      before.dispatch({ event: 'Notification', ...prompt, firedAt: 130 });
+
+      before.flush();
+      const after = new Board(file);
+      after.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);
+      await after.restore(async () => [{ pid: 9, cwd: '/Users/me/falcon', active: false }]);
+      expect(after.firedAt('s1')).toBe(130);
+      // A tool call that fired before the permission prompt (a replayed spool line) must not paint working.
+      const tool = { cwd: '/Users/me/falcon', sessionId: 's1', at: 200, toolName: 'Bash' };
+      after.dispatch({ event: 'PreToolUse', ...tool, firedAt: 100 });
+      expect(after.byProject()['falcon']?.status).toBe('needsInput');
+    });
+
+    it('checkpoints the restored sessions, even when a live event wrote the checkpoint during the scan', async () => {
+      const file = tmpFile();
+      const before = new Board(file);
+      before.dispatch({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 's1', at: 1 }); // needsInput
+      before.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/osprey', sessionId: 's2', at: 2 });
+
+      before.flush();
+      const after = new Board(file);
+      await after.restore(async () => {
+        after.dispatch({ event: 'Stop', cwd: '/Users/me/osprey', sessionId: 's2', at: 5 });
+        after.flush(); // the debounced write fires before the scan ends, holding only s2
+        return [{ pid: 9, cwd: '/Users/me/falcon', active: false }];
+      });
+      after.flush();
+      type Saved = { state: { sessions: Record<string, { status: string }> } };
+      const saved = JSON.parse(readFileSync(file, 'utf8')) as Saved;
+      expect(saved.state.sessions['s1']?.status).toBe('needsInput');
     });
 
     it('restore is a safe no-op with no checkpoint', async () => {

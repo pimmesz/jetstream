@@ -121,6 +121,19 @@ describe('appIconDataUri negative-cache invalidation', () => {
     return app;
   };
 
+  it('a slow failed extraction that ends after a forget does not re-poison the cache', async () => {
+    const app = makeApp();
+    forgetIcon(app);
+    let release: () => void = () => {};
+    const slowFail = (): Promise<undefined> => new Promise((r) => (release = () => r(undefined)));
+    const stale = appIconDataUri(app, 'darwin', slowFail);
+    forgetIcon(app); // the user retargets the key while the old extraction is still running
+    release();
+    expect(await stale).toBeUndefined();
+    const fresh = await appIconDataUri(app, 'darwin', async () => 'data:image/png;base64,OK');
+    expect(fresh).toBe('data:image/png;base64,OK'); // re-probed, not served the stale miss
+  });
+
   it('caches a failure, does not re-probe, and forgetIcon() lets the next call re-resolve', async () => {
     const app = makeApp();
     forgetIcon(app); // clean slate across test runs (the cache is module-level)

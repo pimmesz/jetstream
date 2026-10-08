@@ -56,6 +56,9 @@ export interface HookEvent {
   /** On `Stop`/`SubagentStop`: how many background tasks the parent session still has in flight.
    * Absent on older Claude builds, where only the in-flight heuristic applies. */
   backgroundTasks?: number;
+  /** When the hook process fired (epoch ms), stamped by status-hook.js. Each hook is its own process,
+   * so arrival order at the plugin is not fire order; this is. Absent from older hooks. */
+  firedAt?: number;
 }
 
 /**
@@ -139,8 +142,9 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
   // persisted state. Anything past a sane path/uuid length is not a real payload — reject it here
   // rather than let it pin memory and disk (see SESSION_CAP below for the count bound).
   if (cwd.length > MAX_CWD_LEN || sessionId.length > MAX_SESSION_ID_LEN) return null;
-  const toolName = typeof r?.tool_name === 'string' ? r.tool_name : undefined;
-  const agentId = typeof r?.agent_id === 'string' ? r.agent_id : undefined;
+  // Both are stored in board state and persisted, so they are bounded like the other untrusted strings.
+  const toolName = typeof r?.tool_name === 'string' && r.tool_name.length <= 128 ? r.tool_name : undefined;
+  const agentId = typeof r?.agent_id === 'string' && r.agent_id.length <= 128 ? r.agent_id : undefined;
   // Notification carries WHICH kind of notification it is. Without it every notification — most
   // often Claude's 60-second idle nudge — became 'needs you'. Bounded like the other untrusted
   // strings; an unknown or absent value falls back to today's behaviour.
@@ -150,6 +154,9 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
   const rawSource = r?.source;
   const source = typeof rawSource === 'string' && rawSource.length <= 32 ? rawSource : undefined;
   const backgroundTasks = Array.isArray(r?.background_tasks) ? r.background_tasks.length : undefined;
+  // Untrusted like everything on /hook: only a fire time within ten minutes of arrival is believed.
+  const rawFired = r?._at;
+  const firedAt = typeof rawFired === 'number' && Number.isFinite(rawFired) && Math.abs(rawFired - at) <= 10 * 60_000 ? rawFired : undefined;
   return {
     event,
     cwd,
@@ -160,10 +167,17 @@ export function parseHookPayload(raw: unknown, at: number): HookEvent | null {
     ...(notificationType ? { notificationType } : {}),
     ...(source ? { source } : {}),
     ...(backgroundTasks !== undefined ? { backgroundTasks } : {}),
+    ...(firedAt !== undefined ? { firedAt } : {}),
   };
 }
 
-const norm = (p: string): string => p.replace(/\/+$/, '');
+/** Drop trailing slashes. A loop, not /\/+$/: that regex backtracks quadratically on a long run of
+ * slashes followed by another character, and `cwd` arrives untrusted from the untokened /hook. */
+function norm(p: string): string {
+  let end = p.length;
+  while (end > 0 && p.charCodeAt(end - 1) === 47) end--;
+  return p.slice(0, end);
+}
 
 /** The id of the configured project whose path best (longest-prefix) contains `cwd`,
  * or undefined when none does. Longest-prefix so a nested project wins over its parent. */
@@ -190,6 +204,15 @@ export function matchProject(cwd: string, projects: ProjectConfig[]): string | u
 export interface InflightAgent {
   id: string;
   at: number;
+  /** The hook's own fire stamp for the Start, when it sent one: a live POST can arrive late. */
+  firedAt?: number;
+}
+
+/** Whether an in-flight agent started after `event` fired. Compares the hooks' fire stamps when both have
+ * one, since a live Start is applied when it arrives and a replayed event when it fired. Pure. */
+function startedAfter(agent: InflightAgent, event: HookEvent): boolean {
+  if (agent.firedAt !== undefined && event.firedAt !== undefined) return agent.firedAt > event.firedAt;
+  return agent.at > event.at;
 }
 
 /** How long a subagent entry keeps a session 'working' without its SubagentStop arriving.
@@ -205,6 +228,8 @@ interface SessionState {
   since: number;
   /** The tool active during a `PreToolUse`→`PostToolUse` window (opt-in detail). */
   tool?: string;
+  /** Fire time of the event that set this status, when the hook stamped one (see HookEvent.firedAt). */
+  firedAt?: number;
   /** Subagents still running under this session (SubagentStart without a matching Stop).
    * Live entries mean background work is in flight, so the session reads 'working' even after
    * its main turn yielded (Stop → 'done'). In-memory only — dropped on checkpoint restore, since
@@ -303,9 +328,10 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
     if (!prev && event.event === 'SubagentStop') return state;
     // Prune both lists by TTL as they pass through — bounded state, pure (event time, not wall clock).
     const fresh = (a: InflightAgent): boolean => event.at - a.at < INFLIGHT_TTL_MS;
-    // An empty background_tasks list is Claude saying nothing is in flight for the parent: drop
-    // every entry, including teammates and agents whose SubagentStop was lost.
-    let inflight = event.backgroundTasks === 0 ? [] : (prev?.inflight ?? []).filter(fresh);
+    // An empty background_tasks list is Claude saying nothing was in flight for the parent when it fired:
+    // drop every entry that started before then, including teammates and agents whose SubagentStop was lost.
+    // One that started later (a replayed event can be seconds late) is newer news and stays.
+    let inflight = (prev?.inflight ?? []).filter((a) => fresh(a) && (event.backgroundTasks !== 0 || startedAfter(a, event)));
     let stopped = (prev?.stopped ?? []).filter(fresh);
     if (event.agentId) {
       const id = event.agentId;
@@ -318,7 +344,8 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
           // A duplicate Start refreshes its timestamp instead of double-counting. Cap on push (like
           // `stopped`/`ended`) so an unauthenticated /hook flood of unique agent ids can't grow one
           // session's inflight list without bound.
-          inflight = [...inflight.filter((a) => a.id !== id), { id, at: event.at }].slice(-64);
+          const started = { id, at: event.at, ...(event.firedAt !== undefined ? { firedAt: event.firedAt } : {}) };
+          inflight = [...inflight.filter((a) => a.id !== id), started].slice(-64);
         }
       } else {
         const had = inflight.some((a) => a.id === id);
@@ -336,6 +363,7 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
       status: prev?.status ?? 'idle',
       since: prev?.since ?? event.at,
       ...(prev?.tool ? { tool: prev.tool } : {}),
+      ...(prev?.firedAt !== undefined ? { firedAt: prev.firedAt } : {}), // keep the fire-order guard armed
       ...(inflight.length ? { inflight } : {}),
       ...(stopped.length ? { stopped } : {}),
     };
@@ -349,6 +377,11 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   if (status === undefined) {
     return { sessions: next, ...keepEnded };
   }
+  // A status event that FIRED before the one already applied arrived late (separate hook processes
+  // race to the loopback): a late PostToolUse must not paint 'working' over a later needs-you.
+  if (status !== 'remove' && prev?.firedAt !== undefined && event.firedAt !== undefined && event.firedAt < prev.firedAt) {
+    return { sessions: next, ...keepEnded };
+  }
   if (status === 'remove') {
     delete next[event.sessionId]; // SessionEnd forgets the session AND its in-flight set
     // Tombstone the id (TTL-pruned + capped at 64) so a reordered straggler can't resurrect it.
@@ -358,7 +391,12 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
     ].slice(-64);
     return { sessions: next, ended: tombstones };
   }
-  const session: SessionState = { cwd: event.cwd, status, since: event.at };
+  const session: SessionState = {
+    cwd: event.cwd,
+    status,
+    since: event.at,
+    ...(event.firedAt !== undefined ? { firedAt: event.firedAt } : {}),
+  };
   // Show the tool only during its own PreToolUse→PostToolUse window; every other
   // working event (UserPromptSubmit / PostToolUse / Stop) leaves `tool` cleared.
   if (event.event === 'PreToolUse' && event.toolName) session.tool = event.toolName;
@@ -366,8 +404,9 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   // yields to a running workflow stays 'working', and a NEW user turn doesn't forget a workflow
   // still running from the previous one. A lost SubagentStop can't pin the key forever — entries
   // age out after INFLIGHT_TTL_MS (see effectiveStatus), the self-heal a hard clear used to provide.
-  // An empty background_tasks list on Stop is authoritative: nothing will wake this session.
-  if (prev?.inflight?.length && event.backgroundTasks !== 0) session.inflight = prev.inflight;
+  // An empty background_tasks list on Stop is authoritative for every agent that started before it fired.
+  const carried = (prev?.inflight ?? []).filter((a) => event.backgroundTasks !== 0 || startedAfter(a, event));
+  if (carried.length) session.inflight = carried;
   if (prev?.stopped?.length) session.stopped = prev.stopped;
   next[event.sessionId] = session;
   capSessions(next); // untrusted key → bound the map (and therefore the persisted state)
@@ -501,6 +540,10 @@ export function worstStatus(byProject: Record<string, ProjectState>): ProjectSta
  * either theme regardless of colour. */
 export type Theme = 'default' | 'highContrast';
 
+/** Reserved for danger (deny, stop, an over-budget gauge, a muted mic): no project status uses it,
+ * so red on the deck always means "careful". */
+export const DANGER_RED = '#e5484d';
+
 /** Key colour for a status. */
 export function colorFor(status: ProjectStatus, theme: Theme = 'default'): string {
   if (theme === 'highContrast') {
@@ -571,3 +614,5 @@ export type {
 } from './permission';
 export { parsePermissionRequest, permissionDecisionJson, summarizeTool } from './permission';
 export { STOP_FLAG_TTL_MS, stopFlagDir, stopFlagPath, takeStopFlag } from './stop-flag';
+export { MAC_HEADER, NONCE_HEADER, macMatches, newNonce, permissionMac } from './permission-client';
+export { appendSpool, spoolPath, takeSpool } from './spool';

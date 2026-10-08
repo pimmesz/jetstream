@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,10 +23,14 @@ const MAX_ICON_BYTES = 512 * 1024;
  * through the UI fixes it. `forgetIcon` is called whenever a slot is retargeted, so re-setting the
  * key through `jetstream chat` re-resolves instead of replaying the old failure. */
 const cache = new Map<string, string | null>();
+/** Bumped by every forgetIcon, so an extraction that started before the forget cannot write its
+ * (possibly negative) result back into the cache afterwards. */
+let cacheGeneration = 0;
 
 /** Drop a cached icon so the next render re-resolves it. Pass a source (app path / image path) to
  * clear one, or nothing to clear all. Call this on any EXPLICIT user edit of a key. */
 export function forgetIcon(source?: string): void {
+  cacheGeneration++;
   if (source === undefined) cache.clear();
   else cache.delete(source);
 }
@@ -87,8 +91,9 @@ export async function appIconDataUri(
   if (platform !== 'darwin' || !appPath.endsWith('.app') || !existsSync(appPath)) return undefined;
   const hit = cache.get(appPath);
   if (hit !== undefined) return hit ?? undefined;
+  const generation = cacheGeneration;
   const uri = await extract(appPath);
-  cache.set(appPath, uri ?? null);
+  if (generation === cacheGeneration) cache.set(appPath, uri ?? null);
   return uri;
 }
 
@@ -118,9 +123,12 @@ async function extractAppIcon(appPath: string): Promise<string | undefined> {
     failures.set(appPath, `CFBundleIconFile "${iconName}" has no matching .icns under Resources/`);
     return undefined;
   }
-  // Hash the FULL app path so two apps with the same basename (e.g. two "Notes.app") don't race on a
-  // shared temp file and cache each other's icon.
-  const out = join(tmpdir(), `jetstream-icon-${createHash('sha1').update(appPath).digest('hex').slice(0, 16)}.png`);
+  // A temp file of its own per extraction: two extractions of the same app (a render and a live
+  // retarget) must never read each other's half-written PNG.
+  const out = join(
+    tmpdir(),
+    `jetstream-icon-${createHash('sha1').update(appPath).digest('hex').slice(0, 16)}-${randomBytes(4).toString('hex')}.png`,
+  );
   try {
     // argv array, never a shell; -Z scales the longest side to 144 for a 144px key.
     await run('sips', ['-s', 'format', 'png', '-Z', '144', icns, '--out', out]);
@@ -128,6 +136,8 @@ async function extractAppIcon(appPath: string): Promise<string | undefined> {
   } catch (error) {
     failures.set(appPath, `sips could not convert ${icns}: ${(error as Error).message}`);
     return undefined;
+  } finally {
+    rmSync(out, { force: true });
   }
 }
 

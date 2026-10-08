@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { request } from 'node:http';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -27,11 +27,12 @@ export const PUBLIC_REGISTRY = 'https://registry.npmjs.org/';
 
 /** A registry URL conservative enough to be safe as a command-line argument.
  *
- * `--registry=<value>` reaches a SHELL on the Windows `npm.cmd` fallback (spawn with
+ * A `JETSTREAM_REGISTRY` override travels only in npm's environment (argv only ever carries the
+ * npmjs.org constant), so this is defence in depth for the Windows `npm.cmd` fallback (spawn with
  * `shell: true`), where cmd.exe re-parses the joined command string. A URL is otherwise free to
  * contain `&`, so validating merely that it parses would still let
  * `https://host/& calc.exe &` execute. This pattern allows every character a real registry URL
- * needs — host, port, path, userinfo — and no cmd.exe metacharacter.
+ * needs (host, port, path, userinfo) and no cmd.exe metacharacter.
  *
  * `%` is deliberately NOT allowed, even though URLs may percent-encode. cmd.exe expands `%VAR%`
  * while parsing, so a registry containing `%FOO%` becomes whatever FOO holds — and if that is
@@ -49,7 +50,11 @@ export function redactRegistry(url: string): string {
     parsed.password = '';
     return `${parsed.toString()} (credentials hidden)`;
   } catch {
-    return url;
+    // Unparseable, so strip anything that looks like `user:password@` after the scheme by hand: this
+    // is exactly the malformed value the caller is about to print in an error.
+    // Up to the LAST `@` before the path: a password may itself contain `@`.
+    const stripped = url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, '$1');
+    return stripped === url ? url : `${stripped} (credentials hidden)`;
   }
 }
 
@@ -64,9 +69,10 @@ export function resolveRegistry(
   const raw = env.JETSTREAM_REGISTRY?.trim();
   if (!raw) return PUBLIC_REGISTRY;
   const reject = (): string => {
-    onInvalid(
-      `Ignoring JETSTREAM_REGISTRY — it must be a plain http(s) URL (got ${redactRegistry(raw)}). Using ${PUBLIC_REGISTRY}`,
-    );
+    // A rejected value is malformed by definition, so redaction cannot be trusted to find its
+    // credentials: never print one that contains an `@`.
+    const shown = raw.includes('@') ? '(value hidden: it looks like it carries credentials)' : redactRegistry(raw);
+    onInvalid(`Ignoring JETSTREAM_REGISTRY: it must be a plain http(s) URL (got ${shown}). Using ${PUBLIC_REGISTRY}`);
     return PUBLIC_REGISTRY;
   };
   if (!SAFE_REGISTRY.test(raw)) return reject();
@@ -145,8 +151,10 @@ export function installedPluginVersion(
 
 /** The OS command that hands a file to its default app — the Stream Deck app registers the
  * `.streamDeckPlugin` type, so this triggers its install flow (the "double-click"). */
-function openArgs(platform: NodeJS.Platform, file: string): { cmd: string; args: string[] } {
-  if (platform === 'win32') return { cmd: 'cmd', args: ['/c', 'start', '', file] };
+function openArgs(platform: NodeJS.Platform, file: string): { cmd: string; args: string[]; cwd?: string } {
+  // cmd.exe re-parses its command line, so a `&` or `%` in the install path would split it. Run from
+  // the file's folder and pass only its fixed basename, as exec-terminal.ts does.
+  if (platform === 'win32') return { cmd: 'cmd', args: ['/c', 'start', '', win32.basename(file)], cwd: win32.dirname(file) };
   if (platform === 'darwin') return { cmd: 'open', args: [file] };
   return { cmd: 'xdg-open', args: [file] };
 }
@@ -202,10 +210,37 @@ export interface RunJetstreamDeps {
   env?: NodeJS.ProcessEnv;
   /** Info sink (defaults to console.log), injected for tests. */
   say?: (message: string) => void;
-  /** Plugin liveness probe for the post-install confirmation (defaults to a GET /health), injected for tests. */
-  alive?: () => Promise<boolean>;
+  /** Plugin health probe for the post-install confirmation, given the version to wait for (defaults to
+   * pluginReportsVersion), injected for tests. */
+  alive?: (expected: string) => Promise<boolean>;
   /** Delay between liveness polls (defaults to setTimeout), injected so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
+  /** npm's global node_modules (`npm root -g`), or undefined when it cannot be asked; injected for tests. */
+  globalRoot?: () => string | undefined;
+  /** The version the installed plugin should report on /health (update passes the one npm installed). */
+  expectedVersion?: string;
+}
+
+/** The registry always travels in npm's ENVIRONMENT, and on its argv only as the npmjs.org default: argv
+ * is readable by every user on the machine (`ps`), the environment only by you. Env
+ * config also outranks .npmrc for both the plain and the scoped key (verified against npm 11), which
+ * is the precedence the pin needs (DECISIONS.md #10). */
+export function registryEnv(registry: string, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const ours = ['npm_config_registry', 'npm_config_@pimmesz:registry'];
+  // Windows env names are case-insensitive: an inherited NPM_CONFIG_REGISTRY would survive next to ours
+  // and win, so drop every spelling of these two before setting them.
+  const env = Object.fromEntries(Object.entries(base).filter(([k]) => !ours.includes(k.toLowerCase())));
+  return { ...env, npm_config_registry: registry, 'npm_config_@pimmesz:registry': registry };
+}
+
+/** The version in a package directory's package.json, or undefined when there is none. */
+function versionAt(dir: string): string | undefined {
+  try {
+    const version = (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { version?: unknown }).version;
+    return typeof version === 'string' ? version : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The loopback port the plugin's hook listener binds. Duplicated from server.ts's DEFAULT_PORT
@@ -308,14 +343,14 @@ export function installPlugin(deps: RunJetstreamDeps = {}): void {
     setExitCode(1);
     return;
   }
-  const { cmd, args } = openArgs(platform, artifact);
+  const { cmd, args, cwd } = openArgs(platform, artifact);
   say(
     'Opening the Jetstream plugin in Stream Deck — approve the install prompt there, then set up your\n' +
       'fleet: `jetstream init` (guided), or `jetstream chat` to build your board by describing your\n' +
       'repos + keys in plain English.',
   );
-  // argv array, no shell — the artifact path is this package's own, never user input.
-  const child = spawnFn(cmd, args, { stdio: 'inherit' });
+  // argv array, no shell on macOS and Linux; on Windows cmd.exe only ever sees the fixed basename.
+  const child = spawnFn(cmd, args, { stdio: 'inherit', ...(cwd ? { cwd } : {}) });
   child.on('exit', (code) => {
     // The opener exits non-zero when no app is registered for .streamDeckPlugin — surface it
     // instead of reporting success while nothing was installed.
@@ -331,8 +366,10 @@ export function installPlugin(deps: RunJetstreamDeps = {}): void {
     // (packageVersion reads it from disk — fresh after an `update`), so an old plugin still holding
     // the port can't report success before the new build loads. Fire-and-forget: the pending polls
     // keep the process alive until it resolves, then it exits on its own.
-    const expected = packageVersion();
-    void confirmPluginLive(say, deps.alive ?? (() => pluginReportsVersion(expected)), deps.sleep);
+    // The version the handed-over plugin will report: the copy npm installed when update says so.
+    const expected = deps.expectedVersion ?? packageVersion();
+    const alive = deps.alive ?? pluginReportsVersion;
+    void confirmPluginLive(say, () => alive(expected), deps.sleep);
   });
   child.on('error', (err: Error) => {
     error(
@@ -363,24 +400,26 @@ export function updatePackage(deps: RunJetstreamDeps = {}): void {
   // commands must consult the same registry or they disagree forever.
   //
   // BOTH forms are needed: for a scoped package a `@pimmesz:registry` line in .npmrc takes
-  // PRECEDENCE over plain `--registry`, so pinning only the latter is silently defeated.
+  // PRECEDENCE over the plain registry, so pinning only the latter is silently defeated.
   // `JETSTREAM_REGISTRY` is the escape hatch for a machine that legitimately cannot reach
-  // npmjs.org and updates through an authorized mirror instead — validated, because it ends up
-  // on a command line that the Windows fallback hands to a shell.
+  // npmjs.org and updates through an authorized mirror instead. It is still validated (a strict
+  // URL allowlist, no `%`, see SAFE_REGISTRY), even though it travels only in the environment.
   const registry = resolveRegistry(deps.env ?? process.env, (m) => error(errRed(m)));
+  const npmEnv = registryEnv(registry, deps.env ?? process.env);
   const npmArgs = [
     'i',
     '-g',
-    // Force a fresh packument read. The registry pin below defeats a stale MIRROR index, but not
+    // Force a fresh packument read. The registry pin defeats a stale MIRROR index, but not
     // npm's own on-disk cache: a cached "latest" can reinstall the same old version, exit 0, and
     // leave this command reporting "nothing newer" while `jetstream doctor` (a direct GET, no
     // cache) already sees the new one. That is the exact disagreement the two commands must avoid.
     '--prefer-online',
-    `--registry=${registry}`,
-    `--@pimmesz:registry=${registry}`,
+    // zsh and dash drop `npm_config_@pimmesz:registry` (not a valid shell name) when npm is a script
+    // shim, so the default pin also goes on argv. A JETSTREAM_REGISTRY mirror stays env-only: it can
+    // carry a token in its userinfo or its path, and argv shows in `ps`.
+    ...(registry === PUBLIC_REGISTRY ? [`--@pimmesz:registry=${PUBLIC_REGISTRY}`] : []),
     '@pimmesz/jetstream',
   ];
-  const before = packageVersion();
   // Prefer npm's own JS entry next to THIS node binary, spawned with NO shell: on Windows a
   // shell resolves a bare `npm.cmd` from the CURRENT DIRECTORY before PATH, so a planted
   // npm.cmd in e.g. a cloned repo would run instead of npm (binary planting). node ships npm
@@ -391,24 +430,51 @@ export function updatePackage(deps: RunJetstreamDeps = {}): void {
   const npmCli = win
     ? join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
     : join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  const child = exists(npmCli)
-    ? spawnFn(process.execPath, [npmCli, ...npmArgs], { stdio: 'inherit' })
+  const hasNpmCli = exists(npmCli);
+  // npm installs into ITS global prefix, which need not be where this running copy lives (Homebrew
+  // node against a /usr/local install, npx). So the version check and the plugin handed to Stream
+  // Deck come from npm's own global root, not from this module (DECISIONS.md #9).
+  const globalRoot =
+    deps.globalRoot ??
+    ((): string | undefined => {
+      try {
+        const out = hasNpmCli
+          ? execFileSync(process.execPath, [npmCli, 'root', '-g'], { encoding: 'utf8', env: npmEnv, timeout: 15_000 })
+          : win
+            ? execFileSync('npm.cmd', ['root', '-g'], { encoding: 'utf8', env: npmEnv, timeout: 15_000, shell: true, cwd: homedir() })
+            : execFileSync('npm', ['root', '-g'], { encoding: 'utf8', env: npmEnv, timeout: 15_000 });
+        return out.trim() || undefined;
+      } catch {
+        return undefined;
+      }
+    });
+  const installedDir = (): string | undefined => {
+    const root = globalRoot();
+    const dir = root ? join(root, '@pimmesz', 'jetstream') : undefined;
+    return dir && versionAt(dir) !== undefined ? dir : undefined;
+  };
+  const versionNow = (): string => {
+    const dir = installedDir();
+    return (dir && versionAt(dir)) ?? packageVersion();
+  };
+  const before = versionNow();
+  const child = hasNpmCli
+    ? spawnFn(process.execPath, [npmCli, ...npmArgs], { stdio: 'inherit', env: npmEnv })
     : win
-      ? // Fallback .cmd shim needs a shell; pin cwd to HOME so the current directory can
-        // never supply the binary. Two of the arguments carry the resolved registry, which is
-        // env-derived — they are VALIDATED (see SAFE_REGISTRY), not fixed literals, so relaxing
-        // that pattern relaxes what reaches cmd.exe here.
-        spawnFn('npm.cmd', npmArgs, { stdio: 'inherit', shell: true, cwd: homedir() })
-      : spawnFn('npm', npmArgs, { stdio: 'inherit' }); // execvp PATH lookup — no CWD resolution
+      ? // Fallback .cmd shim needs a shell; pin cwd to HOME so the current directory can never supply
+        // the binary. Every argument is a fixed literal; a JETSTREAM_REGISTRY override rides in the environment.
+        spawnFn('npm.cmd', npmArgs, { stdio: 'inherit', shell: true, cwd: homedir(), env: npmEnv })
+      : spawnFn('npm', npmArgs, { stdio: 'inherit', env: npmEnv }); // execvp PATH lookup, no CWD resolution
   child.on('exit', (code) => {
     if (code !== 0) {
       error(errRed(`npm install failed (exit ${code ?? 1}) — the plugin was not reinstalled.`));
       setExitCode(code ?? 1);
       return;
     }
-    // packageVersion() reads package.json from disk, so this reports the FRESH version even
-    // though this process still runs the old code; the bundled artifact on disk is new too.
-    const after = packageVersion();
+    // Read from npm's global install on disk: the FRESH version even though this process still runs
+    // the old code, and the copy npm actually updated.
+    const dir = installedDir();
+    const after = (dir && versionAt(dir)) ?? packageVersion();
     if (after === before) {
       // npm exited 0 but nothing moved. Say so rather than claiming an update: a silent no-op is
       // exactly how a stale mirror wastes an afternoon. Already-latest is the benign case, so
@@ -418,7 +484,15 @@ export function updatePackage(deps: RunJetstreamDeps = {}): void {
     } else {
       say(`Updated ${before} → ${after} — handing the plugin to Stream Deck…`);
     }
-    (deps.install ?? installPlugin)(deps);
+    // A `jetstream` that runs from outside npm's global root (pnpm -g, Volta, npx) never moves, and
+    // its own `install` would hand Stream Deck the old plugin, so say which copy to remove.
+    const running = packageRoot(import.meta.url);
+    if (dir && realpathSync(dir) !== realpathSync(running)) {
+      say(`Note: npm installs into ${dir}, but this \`jetstream\` runs from ${running}; remove that copy or put npm's global bin first on PATH.`);
+    }
+    (deps.install ?? installPlugin)(
+      dir ? { ...deps, artifactPath: join(dir, BUNDLED_PLUGIN_REL), expectedVersion: after } : deps,
+    );
   });
   child.on('error', (err: Error) => {
     error(errRed(`Could not run npm: ${err.message}`));
@@ -437,6 +511,16 @@ export function runJetstream(deps: RunJetstreamDeps = {}): void {
     say(`@pimmesz/jetstream ${packageVersion()}`);
     const plugin = installedPluginVersion(deps.resolve ?? resolveJetstreamCli);
     if (plugin) say(`plugin ${plugin} (installed)`);
+    return;
+  }
+  // `install` and `update` change the machine, so asking either for help must only print help.
+  if ((args[0] === 'install' || args[0] === 'update') && args.some((a) => a === '--help' || a === '-h')) {
+    const say = deps.say ?? ((m: string) => console.log(m));
+    say(
+      args[0] === 'install'
+        ? 'jetstream install: hand the packed plugin to the Stream Deck app (approve its prompt). Takes no options.'
+        : 'jetstream update: npm i -g @pimmesz/jetstream from the public registry (JETSTREAM_REGISTRY overrides it),\nthen reinstall the plugin. Takes no options.',
+    );
     return;
   }
   // `install` is this package's own verb, not forwarded: the plugin CLI lives INSIDE the

@@ -1,19 +1,13 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import {
-  linkSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { IncomingHttpHeaders } from 'node:http';
 import { projectsConfigPath } from './projects-config';
+import { writeFileAtomicSync } from './atomic-write';
 
-/** The header every Jetstream client puts its token in. */
+/** The header a token-bearing request carries. Current clients never send it (/hook needs none,
+ * /permission and /slot are signed); the plugin still accepts it from a client older than signing. */
 export const TOKEN_HEADER = 'x-jetstream-token';
 
 /**
@@ -38,7 +32,7 @@ export function listenerTokenPath(
  * use (packages/status/src/listener-token.ts). One path is not enough: the plugin runs under the
  * Stream Deck app while the CLI runs from your shell, so an `XDG_CONFIG_HOME` set in a shell profile
  * but absent from the GUI env would make writer and reader disagree, and `jetstream chat` would
- * silently send no token (invisible now, a 401 once enforcement lands).
+ * find no token to sign its live edits with, so the plugin would refuse them (401).
  */
 export function listenerTokenPaths(
   env: NodeJS.ProcessEnv = process.env,
@@ -101,12 +95,14 @@ export function readToken(paths: string | string[] = listenerTokenPaths()): stri
  *
  * Honest scope — this is a bar-raiser, not a boundary:
  *   - It does NOT stop a process running AS you: it can read the file too.
- *   - It does NOT survive port squatting. The port is fixed and unprivileged, so another local
- *     user who binds 127.0.0.1:41321 BEFORE Stream Deck starts receives the hooks' token in their
- *     own request headers and can replay it afterwards. Closing that needs a transport that
- *     doesn't hand the secret to whoever answers — a 0700 unix socket, or a challenge/response —
- *     which is the shape any future hardening should take. Squatting is loud, though: the plugin
- *     retries the bind for ~90s and then logs that it could not listen.
+ *   - Port squatting: the port is fixed and unprivileged, so another local user can bind
+ *     127.0.0.1:41321 BEFORE Stream Deck starts. Current clients never hand it the token: /hook is
+ *     served without one, and /permission and /slot send a nonce and an HMAC instead
+ *     (permission-client.ts in the status package), so a squatter can neither learn the token nor
+ *     forge a permission answer (a /slot answer is not signed, so it can still tell chat an edit
+ *     applied). It still reads what is sent to it, and a hook or CLI older than signing still sends
+ *     the token. Squatting is loud: the plugin retries the bind for ~90s and then logs that it
+ *     could not listen.
  *   - What it DOES stop is the easy case this was written for: any other local process that
  *     merely connects to an already-running listener and drives your board.
  * Browser-borne requests are blocked separately by the Origin/Referer guard in server.ts.
@@ -149,15 +145,7 @@ function linkTokenInto(path: string, token: string): boolean {
  * there. Unlike `link`, `rename` REPLACES, so this is the tool for reconciling a stale file; it
  * leaves no truncate window a reader could see. */
 function replaceTokenAt(path: string, token: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
-  try {
-    rmSync(tmp, { force: true });
-    writeFileSync(tmp, token, { encoding: 'utf8', mode: 0o600 });
-    renameSync(tmp, path);
-  } finally {
-    rmSync(tmp, { force: true });
-  }
+  writeFileAtomicSync(path, token, { encoding: 'utf8', mode: 0o600 });
 }
 
 /**

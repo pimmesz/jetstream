@@ -3,6 +3,7 @@ import {
   parseHookPayload,
   matchProject,
   reduce,
+  DANGER_RED,
   initialState,
   statusByProject,
   needsAttention,
@@ -80,7 +81,55 @@ describe('parseHookPayload', () => {
   });
 });
 
+describe('fire-order stamping', () => {
+  const ev = (event: string, firedAt: number | undefined, at: number, extra: Record<string, unknown> = {}) =>
+    parseHookPayload({ hook_event_name: event, cwd: '/p', session_id: 's', ...(firedAt !== undefined ? { _at: firedAt } : {}), ...extra }, at)!;
+
+  it('a status event that fired earlier but arrived later does not overwrite the newer status', () => {
+    let s = reduce(initialState(), ev('Notification', 2_000, 2_010, { notification_type: 'permission_prompt' }));
+    s = reduce(s, ev('PostToolUse', 1_000, 2_020)); // fired before the prompt, arrived after it
+    expect(s.sessions.s?.status).toBe('needsInput');
+    s = reduce(s, ev('PostToolUse', 3_000, 3_010)); // a genuinely later event still applies
+    expect(s.sessions.s?.status).toBe('working');
+  });
+
+  it('a subagent event in between does not disarm the guard', () => {
+    let s = reduce(initialState(), ev('Notification', 2_000, 2_010, { notification_type: 'permission_prompt' }));
+    s = reduce(s, ev('SubagentStop', 2_100, 2_110, { agent_id: 'a1' }));
+    s = reduce(s, ev('PostToolUse', 1_000, 2_120)); // fired before the prompt
+    expect(s.sessions.s?.status).toBe('needsInput');
+  });
+
+  it('events from an older hook without a stamp keep arrival order', () => {
+    let s = reduce(initialState(), ev('Notification', 2_000, 2_010, { notification_type: 'permission_prompt' }));
+    s = reduce(s, ev('PostToolUse', undefined, 2_020));
+    expect(s.sessions.s?.status).toBe('working');
+  });
+
+  it('ignores a fire time more than ten minutes from arrival (untrusted /hook input)', () => {
+    expect(ev('Stop', 1, 20 * 60_000).firedAt).toBeUndefined();
+    expect(ev('Stop', 5_000, 6_000).firedAt).toBe(5_000);
+  });
+});
+
+describe('parseHookPayload bounds', () => {
+  it('drops an oversized tool_name or agent_id instead of storing it', () => {
+    const base = { hook_event_name: 'PreToolUse', cwd: '/p', session_id: 's' };
+    const long = 'x'.repeat(129);
+    expect(parseHookPayload({ ...base, tool_name: long, agent_id: long }, 1)).toEqual({ event: 'PreToolUse', cwd: '/p', sessionId: 's', at: 1 });
+    expect(parseHookPayload({ ...base, tool_name: 'Bash', agent_id: 'a1' }, 1)).toMatchObject({ toolName: 'Bash', agentId: 'a1' });
+  });
+});
+
 describe('matchProject', () => {
+  it('trims a long run of trailing slashes in linear time', () => {
+    const cwd = `/Users/me/falcon${'/'.repeat(4000)}x`;
+    const started = performance.now();
+    for (let i = 0; i < 50; i++) matchProject(cwd, PROJECTS);
+    expect(performance.now() - started).toBeLessThan(100); // the old regex took ~14 ms per call
+    expect(matchProject(`/Users/me/falcon${'/'.repeat(40)}`, PROJECTS)).toBe('falcon');
+  });
+
   it('matches by path and picks the longest prefix for nested projects', () => {
     expect(matchProject('/Users/me/falcon', PROJECTS)).toBe('falcon');
     expect(matchProject('/Users/me/falcon/src/deep', PROJECTS)).toBe('falcon');
@@ -361,8 +410,8 @@ describe('colorFor', () => {
 
   it('reserves danger-red — no project status is #e5484d in either theme', () => {
     for (const status of ALL_STATUSES) {
-      expect(colorFor(status)).not.toBe('#e5484d');
-      expect(colorFor(status, 'highContrast')).not.toBe('#e5484d');
+      expect(colorFor(status)).not.toBe(DANGER_RED);
+      expect(colorFor(status, 'highContrast')).not.toBe(DANGER_RED);
     }
   });
 
@@ -592,6 +641,28 @@ describe('Claude Code 2.1.289 contract', () => {
     s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b3', at: 1, agentId: 'teammate-9' }));
     s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'b3', at: 2, agentId: 'w1', backgroundTasks: 0 }));
     expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('idle');
+  });
+
+  // A spool replay applies an event at its fire time, which can be seconds after a newer live SubagentStart.
+  it('an empty background_tasks list fired earlier keeps an agent that started after it', () => {
+    let s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'b4', at: 1, agentId: 'old' }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b4', at: 5, agentId: 'new' }));
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'b4', at: 3, agentId: 'old', backgroundTasks: 0 }));
+    expect(s.sessions.b4?.inflight?.map((a) => a.id)).toEqual(['new']);
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'b4', at: 4, backgroundTasks: 0 }));
+    expect(s.sessions.b4?.inflight?.map((a) => a.id)).toEqual(['new']);
+    expect(statusByProject(s, PROJECTS, 10).falcon?.status).toBe('working');
+  });
+
+  it('compares fire stamps when both have one: a Start that arrived late still counts as started before', () => {
+    // b's Start fired at 10 but arrived at 40; the empty list fired at 20 and is replayed at 20.
+    let s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'b5', at: 40, firedAt: 10, agentId: 'b' }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'b5', at: 20, firedAt: 20, backgroundTasks: 0 }));
+    expect(s.sessions.b5?.inflight).toBeUndefined();
+    // c fired after the empty list, so it stays whatever order they are applied in.
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b5', at: 50, firedAt: 30, agentId: 'c' }));
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'b5', at: 25, firedAt: 25, agentId: 'x', backgroundTasks: 0 }));
+    expect(s.sessions.b5?.inflight?.map((a) => a.id)).toEqual(['c']);
   });
 
   it('parses source and background_tasks from the raw payload', () => {

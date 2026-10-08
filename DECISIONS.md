@@ -5,6 +5,377 @@ Newest first. A decision here is settled — re-open it only against its stated 
 
 ---
 
+## 2026-10-08: review fixes
+
+A review of the 2026-10-06 work (the three sections below) found 49 items, from a
+restore bug that erased a checkpointed status to style nits. The maintainer asked for all of them
+to be fixed. Where a line below now says otherwise, this section supersedes it.
+
+**Restart and the hook spool** (race F1):
+
+- The spool keeps only the fields the plugin reads back (`hook_event_name`, `session_id`, `cwd`,
+  `notification_type`, `source`, `tool_name`, `agent_id`, `_pid`, `_at`, and `background_tasks` as
+  zeros of the same length), so no prompt text, message or tool input waits on disk; the live POST
+  is unchanged. When the next line would pass 256 KB, or the last append is over an hour old, the
+  spool starts over instead of refusing new lines. A single line over 256 KB is still dropped.
+- A replayed event is applied as of when it fired (`min(_at, now)`), not when it was replayed, so
+  elapsed time, the stall glyph, doorbell order and the inflight TTL count from the fire time, and
+  an event 10 to 60 minutes old keeps its `firedAt`. The replay filter (stale skip, a stale
+  SessionEnd included, and the subagent exemption) is `replaySpool` in plugin-wiring.ts, with
+  tests. A payload that throws is logged as `spool replay` and the rest of the batch still runs; a
+  throwing drain can no longer stop the 5 s poll, and `takeSpool` never throws.
+- Spool drains, at bind and on the poll, wait until `board.restore()` has settled. During the
+  restore only an event that changes a session, or a SessionEnd, keeps that session's checkpoint
+  entry from being restored, so an idle nudge no longer erases a checkpointed `done`. `restore()`
+  keeps the checkpointed `firedAt` (the fire-order guard and the stale skip now hold across a
+  restart) and writes the checkpoint again after merging.
+- The checkpoint is flushed on process `exit`, so it is also written when Stream Deck closes the
+  socket and the plugin exits without a signal. SIGTERM and SIGINT now only exit.
+- status-hook.js's producer contract (`_pid` and `_at` stamped, no token, spool only on a refused
+  connection) is `runStatusHook` in status-hook.ts, with tests.
+
+**Loopback auth** (amends 2026-07-25 #3 and the dos-resource-2 line below):
+
+- `/slot` is signed like `/permission`: `jetstream chat` sends a nonce and
+  HMAC-SHA256(token, "slot\n" + nonce + "\n" + body), never the token, so no current hook or CLI
+  hands the token to a port squatter. The `slot` kind keeps a `/permission` MAC from being accepted on
+  `/slot`.
+- A signed nonce is `<send time in ms>.<32 random hex>`, inside the MAC. The plugin refuses a
+  signed request whose nonce is malformed, more than 2 minutes from its clock, or already seen. It
+  remembers only nonces whose MAC matched, for their 2-minute window, up to 1024, and refuses new
+  ones when full rather than forget one. The signed format was never released, so an unstamped
+  signed request gets no compatibility path.
+- The plugin still accepts the `x-jetstream-token` header on `/permission` and `/slot` from a hook
+  or CLI older than signing, so a mixed install keeps working.
+- The listener sweeps its timeouts every second (`connectionsCheckingInterval: 1_000`): headers
+  time out at 10 to 11 s and bodies at 30 to 31 s, where they were 10 to 40 s and 30 to 60 s. A
+  connection dropped over the 128-socket cap is logged, the first one and then at most one a minute.
+- SPEC.md and the listener-token.ts JSDoc describe this; they no longer say the hooks send the
+  token or call challenge/response future work.
+
+**Chat live edits:**
+
+- Chat keeps a pending live edit only while disk still shows the key as it was before chat's edits
+  there, and forgets it as soon as disk shows anything else (chat's own edit, a change on the deck
+  or by another chat, a native key, no key), so the next plan sees what disk now shows there
+  instead of chat's old edit. A change disk does not show yet, or one made after chat's last
+  re-read, is still unseen (see the restart-fallback residual). This replaces "keeps every pending
+  one until disk shows it".
+- A 409 reads "that key changed since the plan was made", followed once by "Stream Deck may not have
+  saved a recent edit yet (from another chat or on the deck itself), or another page is on screen."
+  and "Safest: wait a few seconds, decline the restart, then send the request again."
+- Tests pin the rollback's compare (`expect: ours`; a 409 is not reported as unrestored) and the
+  stored-form normalization.
+
+**Slot keys** (amends authz-authn-3 of 2026-10-06):
+
+- The `allowRunKeys` gate for an `app` slot is decided on disk at press time (`isRunTarget` in
+  slot-command.ts). A regular file with any execute bit (an extensionless `chmod +x` script, the
+  binary inside an app bundle), the launcher types `.py`, `.jar`, `.fileloc`, `.inetloc` and
+  `.webloc`, a Finder alias (whatever it points at, since Node cannot resolve one), and a symlink
+  whose resolved target has a run-like name now also show "run off" until it is on. A folder opens
+  ungated whatever its name (`three.js`), except an Automator `.workflow`, and so does an `.app`
+  bundle; a target not on disk is judged by its name. The accepted trade widens with it: a migrated native Open key to an executable file now
+  needs `allowRunKeys`.
+- The `/slot` compare-and-write reads the plugin's own record of what each slot key holds (seeded on
+  appear, updated after each write and on inspector edits), not the SDK settings cache, which a
+  late `getSettings` answer could refill with pre-write values. "Two writers cannot both pass the
+  compare" now also holds against that.
+- One slot whose settings read times out no longer stops the usage refresh, and a usage press
+  always ends in a check or an alert.
+- The shared Doorbell snooze and the attention slot routing have tests; the dead rejection handler
+  and the test-only re-exports are gone.
+
+**Usage** (amends the Codex usage gauge decision below):
+
+- The Codex reader skips a `rate_limits` snapshot whose `limit_id` is anything but `codex`: a
+  per-model bucket (`codex_bengalfox` for GPT-5.3-Codex-Spark) reads 0% and was replacing the
+  account's limits. A snapshot without a `limit_id` (older logs) still counts as the account.
+- The long window is labelled by its logged length, `round(minutes / 1440)` days: `7d` for the
+  weekly window, `30d` for a free plan's 43200-minute one. Claude stays `7d`, the statusline line
+  follows the same rule, and a passed reset keeps the length (`30d 0%`).
+- The standalone Usage key re-reads on press like the usage slot, and shows an alert when it still
+  finds no usage.
+- The snapshot prune also deletes leftover `<id>.json.prune-<hex>` copies older than eight days; a
+  recent one stays until it ages out. The move-aside, link-back and EEXIST paths have tests.
+
+**Fleet and npm** (amends #7, #9 and #10 below):
+
+- `replayFleetDelta` tracks entries by id, the identity the editor removes by. A removal drops the
+  disk entry with the same id and canonical path, so removing one of two spellings of a repo
+  (`repo` and `repo/`, or a symlink) works, and an id another writer has since given a different
+  repo is left alone. The in-app add and chat's merge compare canonical paths: a second spelling of
+  a fleet repo is a duplicate, and chat keeps the existing id. Chat's merge keeps both entries when
+  the file already lists a repo twice, since it never infers a removal.
+- The in-app editor waits about 100 ms for the fleet lock, not 3 s, because the wait blocks the
+  plugin's only thread (keys, `/hook`, `/permission`); it then shows "another Jetstream writer is
+  holding ...; try again". `jetstream chat` and `init` still wait up to 3 s.
+- `jetstream update` prints a note when npm's global copy (by realpath) is not the `jetstream` that
+  ran: "npm installs into <dir>, but this `jetstream` runs from <root>; remove that copy or put
+  npm's global bin first on PATH." #9's reopen trigger is answered with a warning, not a fix.
+- The npmjs.org default also goes on npm's argv as
+  `--@pimmesz:registry=https://registry.npmjs.org/`, because zsh and dash drop the environment name
+  `npm_config_@pimmesz:registry` when npm is a script shim. A `JETSTREAM_REGISTRY` mirror stays
+  environment-only, since a token can sit in its path where no check can see it. Argv therefore
+  only ever carries the constant, and SAFE_REGISTRY stays defence in depth for the Windows
+  `npm.cmd` fallback.
+- The post-install health check waits for the version it was told to expect, with a test. The
+  plugin CLI answers `install` with the npm install steps, as it does `update`, so its help line is
+  true.
+
+**Docs and style:**
+
+- The action registry Record lives in action-registry.ts, and its test checks each instance's
+  `manifestId` against its key, so a mis-paired registration fails (amends #6 below).
+- README says the plugin writes `~/.claude/settings.json`, and that a `CLAUDE_CONFIG_DIR` or
+  `CODEX_HOME` set only in a shell profile is not seen by the plugin (it runs under the Stream Deck
+  app), with the shell step for each. The project inspector, SPEC and README give the macOS editor
+  order (VS Code, then Cursor, else Finder; `$EDITOR` is read only off macOS). The settings
+  inspector points at its own "Enable per-tool detail" button, not a CLI a Marketplace install
+  lacks.
+- plugin-catalog.ts uses the shared `stripControl`, so "one `stripControl`" below is now true.
+  The installHooks JSDoc is back on its function, and comments narrating history, booleans not
+  named as questions, and em dashes on touched lines were fixed.
+
+**Claude x Codex cross-review of these fixes (gpt-6.1-sol, then a gpt-6-astra pass):**
+
+- Live `/hook` events that arrive while the board restores are held (`createHookGate` in
+  plugin-wiring.ts, at most 1024 and 8 MiB) and applied after the spool replay, each as of when it
+  arrived.
+  Replaying after the live events had broken subagent pairs: a live SubagentStop landed before its
+  spooled Start (the agent stayed "working"), and a spooled SubagentStop with no background tasks
+  cleared an agent that had started live. Board's own `touchedSessions` guard stays as is.
+- An empty `background_tasks` list (on Stop or SubagentStop) clears only the agents that started
+  before the event fired, so a SubagentStop that a later 5 s poll replays (refused just before the
+  bind, appended after the startup drain) cannot clear an agent that started live meanwhile. Start
+  and list are compared by the hooks' fire stamps when both carry one, since a live Start is applied
+  when its POST arrives, which can be late; an older hook without stamps falls back to arrival time.
+- The Codex reader compares the newest 8 files that hold an account reading, reading at most 64,
+  so eight newer auto-review sessions with only model buckets no longer blank the gauge.
+- A chat rollback sends a never-configured slot (`{}`) back as empty instead of being refused 400.
+  Any other original is sent as it was, so one the plugin cannot parse (a migrated Website key with
+  a URL `/slot` refuses) is refused and reported, never cleared. When an undo was not confirmed
+  (refused, or no answer), chat says those keys "may still hold the new settings": after the live
+  attempt, on a declined restart, and when the restart write fails, instead of "Nothing changed."
+  or "Your board was not changed." A styled spacer (an empty key with a colour, label or icon) goes
+  back as a plain empty key, because `/slot` never stores cosmetics on an empty key, and chat names
+  it as having lost them.
+- A usage slot press answers from its own read, even when a timer refresh superseded it.
+- A project path that would run something (an executable file, a script, a Finder alias, an
+  Automator `.workflow`) is not opened until `allowRunKeys` is on, like an `app` slot: the project
+  slot shows "run off", and the standalone Project key, the Fleet dial and the doorbell jump show an
+  alert (`openProjectFromKey` in switchto.ts). App slots and project paths share one rule,
+  `isRunTarget`: a folder always opens, even one named like a script (`three.js`, `dotfiles.sh`),
+  and the check uses the resolved path, so a symlink to a `.workflow`, or `x.workflow/.`, is gated.
+
+**Residuals accepted:**
+
+- Pending live edits live inside one `jetstream chat` process. A new chat (after the 20-turn limit,
+  say) starts from disk alone, so its first live edit to a key Stream Deck has not saved yet gets a
+  false 409. The advice above is printed, and declining the restart is safe. Persisting pending
+  edits across processes was not built.
+- If another writer puts back exactly a value a key held before chat's edit, before Stream Deck
+  saves chat's edit, chat cannot tell the two apart and the next live edit at that key gets the
+  same false 409.
+- After a failed live apply, the restart fallback still writes by coordinate without comparing
+  against disk.
+- A hook or CLI older than signing still sends the token header, so it hands the token to a port
+  squatter until it is updated. A newer hook or CLI against a plugin older than signing gets 401:
+  permission prompts fall back to Claude's own dialog, and chat to its restart write with a "token
+  mismatch" message. Updating the plugin fixes it.
+- A signed request a squatter captured, which the real plugin therefore never saw, can be replayed
+  to the plugin once within its 2-minute window; closing that needs a challenge the plugin issues
+  first (an extra round trip). A `/slot` answer carries no MAC, so a squatter can tell chat an edit
+  applied when it did not. It can neither approve anything nor learn the token.
+- A hook event dropped over the 128-socket cap is logged but not spooled: the hook spools only a
+  refused connection.
+- `jetstream chat` and `init` wait for the fleet lock synchronously, up to 3 s, which only blocks
+  the CLI. In the plugin the ~100 ms wait still blocks its thread that long, and within 10 s of a
+  writer crashing while holding the lock an in-app add or remove fails fast until the lock is
+  taken over.
+- Two hooks deciding to start the spool over at the same moment: the second unlink can remove the
+  line the first just wrote to the fresh spool. Same class as the claim and overshoot races below.
+- `isRunTarget` checks the target at press time and the `open` follows, so a file swapped in
+  between is not caught. The malicious `.app` bundle gap (authz-2) stays deferred.
+- The empty-list cutoff compares wall-clock stamps, so a backward clock step between an agent's
+  Start and the parent's empty list, together with that agent's own SubagentStop being lost, keeps
+  the agent "working" until its 30 min TTL.
+- `jetstream update` warns about another `jetstream` first on PATH but does not reorder PATH or
+  remove that copy.
+- A `JETSTREAM_REGISTRY` mirror reached through a zsh or dash npm shim loses the scoped pin, so a
+  `@pimmesz:registry` line in .npmrc can still win for it.
+- A `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set only in a shell is documented, not handled: auto-wire
+  (also its re-wire after an update) and the inspector's "Enable per-tool detail" button still
+  write `~/.claude/settings.json`, and the Codex gauge reads `~/.codex/sessions`. Doctor, run
+  from that shell, does find hooks missing under its `CLAUDE_CONFIG_DIR`; it says nothing about
+  Codex.
+
+**TRIGGER to reopen:** a false 409 outside the cases above, Codex renaming its account bucket away
+from `codex`, or the listener ever binding beyond loopback.
+
+## 2026-10-06 (night): accepted and open items fixed on request
+
+The maintainer asked for every remaining recorded item to be fixed. Each record named below is
+superseded by the fix described here; the older text stays as history.
+
+- **Race F1** (a session stuck "working" after a chat restart, accepted earlier today): status-hook.js
+  now spools an event the plugin refused (`~/.jetstream/hook-spool.jsonl`, 256 KB cap, events over an
+  hour old dropped) and the plugin replays it once it is listening again. Only a refused connection
+  is spooled; a timeout may already have been delivered.
+- **Page switch during a live chat apply** (accepted earlier today): every live `/slot` write carries
+  `expect`, the settings the plan saw at that key, and the plugin answers 409 without changing anything
+  when the key holds something else. A 409 is never rolled back. After a live apply chat lays its own
+  keys over the re-read board, so Stream Deck saving late to disk cannot cause a false 409.
+- **Usage snapshot prune race** (accepted residual earlier today): a stale snapshot is moved aside and
+  re-checked before it is deleted; one rewritten in between goes back through a link, which never
+  overwrites an even newer snapshot.
+- **#7 projects.json lost update**: `writeFleetFile` takes the writer's `base` snapshot and replays only
+  that writer's change (adds, removes, changed settings) onto the file as it is right before the
+  rename (`replayFleetDelta`). Removal still works, which is what made the earlier merge-on-write wrong.
+  The in-app editor and chat pass their base; `jetstream init` stays a whole-file replace because it
+  only writes after an explicit "overwrite it? y".
+- **#9 `jetstream update` targets**: the version check and the plugin handed to Stream Deck come from
+  npm's own global root (`npm root -g`), not from the running copy.
+- **#10 registry credentials**: the registry now reaches npm through its environment
+  (`npm_config_registry`, `npm_config_@pimmesz:registry`), never its argv. Inline mirror credentials
+  still work, but no longer show in `ps` for other users. Environment config outranks both `.npmrc`
+  lines (verified against npm 11), so the pin still holds.
+- **concurrency `shared-mutable-state-3`** (unverified): each icon extraction has its own temp file,
+  removed afterwards.
+
+A Claude x Codex review of these fixes found fourteen further edges, all fixed the same night: the
+fleet writer holds a short exclusive lock (`projects.json.lock`, waits up to 3 s) from the re-read to
+the rename, gives a concurrently added repo a fresh id, and the editor seeds and replies with the
+fleet as saved; the plugin drains the hook spool on every 5 s poll as well as at bind, replays it in
+fire order, and the spool's cap counts the event being added; `/slot` compare-and-write steps are
+queued per key so two writers cannot both pass the compare; chat compares and remembers live edits
+in the form the plugin stores (an empty slot drops its cosmetics), keeps every pending one until disk
+shows it, and only for the same profile and page; a fresh usage snapshot whose link back fails is
+renamed back, not deleted; the registry environment drops inherited upper-case spellings first; the
+post-install health check expects the version npm installed; a rejected registry containing `@` is
+never printed.
+
+**Residuals accepted (cannot be closed from inside the plugin or without an OS lock):**
+
+- Two pages holding byte-identical keys at the same position: a live edit cannot tell which page is
+  on screen, because the Stream Deck SDK gives an action no page identity. Chat's own page check
+  (Pages.Current on disk) still applies.
+- A fleet lock left by a writer that crashed is taken over after 10 s; two writers reclaiming the same
+  crashed lock in the same instant can still both write. A crash during a millisecond write is rare,
+  and the `.bak` trail keeps every replaced fleet.
+- The hook spool: an append that opened the file just as the plugin claimed it can land in the claimed
+  copy and be lost (as every refused event was before the spool), and two simultaneous appends can
+  overshoot the 256 KB cap slightly.
+- Chat forgets its pending live edits when you switch page mid-chat; going back to the first page
+  before Stream Deck saved them can give a false 409, which falls back to the restart write.
+- A repo whose path another writer changed while this one edited it by the old path comes back as a
+  new entry; nothing in the app or chat renames a repo's path.
+
+Three regressions the same review found were fixed rather than accepted: chat remembered unchanged
+native keys as empty slots (now only changed live slots are remembered), a remembered live edit hid a
+later restart write at the same key (now forgotten), and a spooled event older than the session's
+newest could be replayed over it (now skipped, a stale SessionEnd included).
+
+## 2026-10-06 (later): built on request, superseding three deferrals above
+
+The maintainer asked for everything still unbuilt. Recorded here so the deferrals and the v2
+roadmap's rejection below are not read as still open.
+
+### Codex usage gauge (reverses the v2-roadmap "multi-provider usage" rejection)
+
+The rejection was about reusing each CLI's stored credentials. Codex writes its own rate limits
+into every session log (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`, `token_count` events,
+`rate_limits.primary` / `secondary` with `used_percent`, `window_minutes`, `resets_at`), so reading
+the newest log's tail needs no login and no network. **Decided:** a `usage` slot kind with
+`provider: "codex"` (chat type `codex-usage`), its own key rather than a second line on the Claude
+gauge, which is too small for both. A window of a day or less is the short one. A window whose reset
+time has passed reads as 0% for both providers.
+
+**TRIGGER to reopen:** Codex stops logging `rate_limits`, or moves its session logs.
+
+### Deferred items now built
+
+- **concurrency `file-write-races:file-write-races-1`** (the `usage.json` single writer): each Claude
+  session writes `~/.jetstream/usage/<session>.json`, the reader merges them per window (a later reset
+  wins, then the higher reading), snapshots older than eight days are pruned. The legacy file is
+  still read. **Accepted residual:** a prune can delete a snapshot its session rewrote in the microseconds
+  between the prune's stat and unlink; the next statusline render rewrites it, so no lock.
+- **concurrency `ordering:ordering-1`**: status-hook.js stamps `_at` (fire time); the reducer drops a
+  status event that fired before the one it already applied. A stamp more than ten minutes from
+  arrival is ignored (untrusted `/hook`), and older hooks without one keep arrival order.
+- **security `dos-resource:dos-resource-2`**: the loopback server caps sockets at 128, headers at 10 s
+  and request bodies at 30 s. Receiving only, so a held `/permission` answer is unaffected.
+
+### Folded into slots, and the refactor harness items
+
+- The Usage and Attention keys are slot kinds (`usage`, `attention`), so chat moves them live; the
+  standalone actions still work and migrate on a restart write. Both doorbell keys share one
+  `Doorbell` (doorbell.ts), so a snooze on either quiets both; its face is the pure `doorbellFace`.
+- **#6 (action registration)** is built: `action-uuids.ts` is the list, plugin.ts registers through a
+  `Record` keyed by it (a missing registration does not compile), and the test checks the list
+  against the manifest and the decorators.
+- plugin.ts's token retry, bind retry, repaint coalescing and hook handler live in
+  `plugin-wiring.ts` with tests; SettingsKey's inspector router is `routeInspectorMessage`.
+- One atomic writer (`atomic-write.ts`), one `stripControl`, one `DANGER_RED`, one `errorMessage`.
+
+- `jetstream chat`'s profile-write lock is never taken over automatically. A lock older than two
+  minutes is reported with its path to delete: every takeover without an OS lock can admit two
+  writers when several chats race for it, and a crash mid-write is rare.
+
+Race F1 (stuck "working" after a chat restart) stays accepted as recorded below.
+
+## 2026-10-06: needs-decision items from the post-4.0.0 audits
+
+From security-audit, docs-drift-audit (package run), concurrency-audit and a targeted race review,
+all 2026-10-06 (reports in the audit ledger). The maintainer delegated these calls.
+
+### Do now (landed with the audit fixes)
+
+- **security `authz-authn:authz-authn-2`**, `packages/status/src/hook.ts`: status-hook.js sent the
+  shared token on every `/hook` POST although `/hook` is served without one (decision #2 above), so
+  a port squatter collected it from any Claude event. The hook now sends no token, and the plugin's
+  "untokened request" warning only fires for `/permission` and `/slot`.
+- **security `authz-authn:authz-authn-3`**, `packages/jetstream/src/slot-exec.ts`: an `app` slot
+  opened any path, so a `.command` or `.sh` target ran a script without the `allowRunKeys` opt-in.
+  Script-like targets and any URL-form target (`isScriptTarget` in slot-command.ts; the opener decodes
+  `file://%2E…`, so a suffix check alone is bypassable) now count as run keys and are gated by
+  `allowRunKeys`; apps, files and folders still open as before. Accepted trade: a native Open key to a
+  script that chat migrates into a slot now needs `allowRunKeys`, and says so on the key ("run off").
+- **docs `api-signatures:api-signatures-2`**, `docs/slot-kinds-scoping.md`: marked as a superseded
+  build record rather than kept in sync, like the item-g doc.
+- **docs `install-setup:install-setup-2`**, `SPEC.md` capability matrix: updated to SDK 3, the Node 24
+  plugin runtime and the CLI's Node >= 22.12.
+
+### Accepted
+
+- **race F1**, `packages/jetstream/src/state.ts` restore: a Stop hook lost while Stream Deck restarts
+  (a chat structural edit) leaves a session restored as `working`. **Accepted:** the key shows the
+  stall glyph after 20 minutes and the session's next hook event corrects it. Restoring an idle-CPU
+  session as `done` was rejected: the CPU signal is a decaying average and a turn waiting on a long
+  tool or the API reads idle, so it would show a false "done" while work continues, which is worse.
+  **TRIGGER to reopen:** a user reports a key stuck on working after a chat edit.
+
+### Deferred
+
+- **security `dos-resource:dos-resource-2`**, `packages/jetstream/src/server.ts`: no connection cap or
+  tightened header timeout. Unverified, and a cap sized wrong would starve held `/permission`
+  requests. **TRIGGER:** a reproduced plugin stall from held sockets, or the listener ever binding
+  beyond loopback.
+- **concurrency `ordering:ordering-1`**, `packages/status/src/index.ts` reduce(): hook events are
+  applied in arrival order, so a late PostToolUse can overwrite a later needs-you Notification. Only
+  reachable with `--tool-detail` (the default install does not wire PostToolUse), and the fix stamps a
+  fire time into the hook payload and changes the reducer's ordering rule. **TRIGGER:** tool detail
+  becomes the default, or a report of a needs-you key showing working.
+- **concurrency `file-write-races:file-write-races-1`**, `packages/usage/src/index.ts`: concurrent
+  statusline renders write `usage.json` last-renamer-wins. Used % only rises within a window and the
+  next render corrects it. **TRIGGER:** a Codex usage source is built (design a per-source, per-session
+  cache then) or a reported gauge regression.
+
+### No longer present
+
+- **docs `api-signatures:api-signatures-1`** (SPEC.md:79 SIGINT / `board.allPids()`): fixed with the
+  audit fixes.
+
 ## 2026-10-05: Claude Code 2.1.289 contract round
 
 Jetstream's hook assumptions were last checked against Claude Code 2.1.216. This round re-checked
@@ -227,6 +598,12 @@ changes to include a same-user attacker, which the token does not defend against
 
 **Known residual, accepted:** a squatter still receives the permission-request body, so the
 tool prompt's contents leak. It cannot approve anything.
+
+**Built 2026-10-06** (with #4): the hook sends a nonce plus HMAC-SHA256(token, "req\n" + nonce + "\n" + body)
+instead of the token, so `/permission` keeps its decision-#2 authentication without the token ever
+leaving the hook; the plugin answers with HMAC(token, "res\n" + nonce + "\n" + decision) and the hook prints
+nothing unless it verifies (`packages/status/src/permission-client.ts`, tested through
+`runPermissionHook`). The status hook stopped sending the token on `/hook` the same day (see 2026-10-06 above).
 
 ### 4. `permission-hook.ts` gets a tested seam — DO IT NOW
 

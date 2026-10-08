@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -16,6 +16,7 @@ import {
 } from '@pimmesz/jetstream-status';
 import { discoverClaudeSessions, type DiscoveredSession } from './discover';
 import { probeClaudeProcess, type ProcessProbe } from './switchto';
+import { writeFileAtomicSync } from './atomic-write';
 
 export interface ProjectEntry {
   name: string;
@@ -78,10 +79,19 @@ export class Board {
     this.emit();
   }
 
+  /** When the newest event applied for a session fired (a hook-stamped time), if any. */
+  firedAt(sessionId: string): number | undefined {
+    return this.state.sessions[sessionId]?.firedAt;
+  }
+
   dispatch(event: HookEvent): void {
+    const before = this.state.sessions[event.sessionId];
     this.state = reduce(this.state, event);
     if (event.event === 'SessionEnd') this.sessions.delete(event.sessionId);
-    if (this.restoring) this.touchedSessions.add(event.sessionId);
+    // Only a change (reduce keeps the same object otherwise) or an end is newer than the checkpoint: a
+    // no-op such as the idle nudge must not stop restore() from bringing the session back.
+    const isChanged = this.state.sessions[event.sessionId] !== before;
+    if (this.restoring && (isChanged || event.event === 'SessionEnd')) this.touchedSessions.add(event.sessionId);
     this.persist();
     this.emit();
   }
@@ -154,7 +164,7 @@ export class Board {
     const byCwd = new Map<string, Array<[string, Sess]>>();
     for (const [sessionId, value] of Object.entries(rawSessions)) {
       if (typeof value !== 'object' || value === null) continue;
-      const v = value as { cwd?: unknown; status?: unknown; since?: unknown; tool?: unknown };
+      const v = value as { cwd?: unknown; status?: unknown; since?: unknown; tool?: unknown; firedAt?: unknown };
       if (
         typeof v.cwd !== 'string' ||
         typeof v.since !== 'number' ||
@@ -168,6 +178,8 @@ export class Board {
         status: v.status as ProjectStatus,
         since: v.since,
         ...(typeof v.tool === 'string' ? { tool: v.tool } : {}),
+        // Keeps the reducer's fire-order guard and the spool replay's stale skip armed across a restart.
+        ...(typeof v.firedAt === 'number' && Number.isFinite(v.firedAt) ? { firedAt: v.firedAt } : {}),
       };
       const list = byCwd.get(v.cwd) ?? [];
       list.push([sessionId, session]);
@@ -196,8 +208,12 @@ export class Board {
     // 5s poller): a checkpoint session for a repo where a *different-id* live session appears
     // mid-scan — cwd alone can't tell "ended + replaced" from "two concurrent sessions", so we
     // keep both rather than risk hiding a still-live one.
-    this.state = { sessions: { ...restored, ...this.state.sessions } };
+    // Keep the live state's other fields too: a SessionEnd during the scan left a tombstone in `ended`
+    // that stops a late straggler from re-creating the session.
+    this.state = { ...this.state, sessions: { ...restored, ...this.state.sessions } };
     this.sessions = new Map([...pids, ...this.sessions]);
+    // A live event during the scan may already have checkpointed a board without these sessions.
+    if (Object.keys(restored).length > 0) this.persist();
     this.emit();
   }
 
@@ -271,9 +287,8 @@ export class Board {
   private writeCheckpoint(): void {
     try {
       mkdirSync(dirname(this.statePath), { recursive: true });
-      const tmp = `${this.statePath}.tmp-${process.pid}`; // pid-suffixed so two overlapping plugin processes never share the temp inode
-      writeFileSync(tmp, JSON.stringify({ state: this.state, sessions: [...this.sessions.entries()] }));
-      renameSync(tmp, this.statePath); // atomic swap — a crash mid-write can't truncate the live checkpoint
+      // Atomic: a crash mid-write can never truncate the live checkpoint.
+      writeFileAtomicSync(this.statePath, JSON.stringify({ state: this.state, sessions: [...this.sessions.entries()] }));
     } catch {
       /* disk full / read-only home / … — the board stays correct in memory */
     }

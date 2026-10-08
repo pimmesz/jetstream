@@ -7,7 +7,7 @@ import type {
   WillAppearEvent,
   WillDisappearEvent,
 } from '@elgato/streamdeck';
-import { type ProjectStatus } from '@pimmesz/jetstream-status';
+import { type ProjectStatus, DANGER_RED } from '@pimmesz/jetstream-status';
 import { board } from '../state';
 import { config } from '../config';
 import { permissions } from '../permissions';
@@ -15,7 +15,7 @@ import { readDiffStat, type DiffStat } from '../diffstat';
 import { heldMs } from '../press';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
-import { openProject } from '../switchto';
+import { openProjectFromKey } from '../switchto';
 import { stopSessions } from '../stop-session';
 import { projectFace } from './project-face';
 
@@ -73,7 +73,7 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
         void paintKey(
           ev.action,
           keyFace({
-            color: '#e5484d', // danger red: this press is about to stop the turn
+            color: DANGER_RED, // danger red: this press is about to stop the turn
             label: board.project(ev.action.id)?.name ?? 'project',
             glyph: '✕',
             sub: 'release to interrupt',
@@ -93,7 +93,7 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
       await (sent > 0 ? ev.action.showOk() : ev.action.showAlert());
     } else {
       const project = board.project(ev.action.id);
-      if (!project?.path || !openProject(project.path)) await ev.action.showAlert();
+      if (!project?.path || !(await openProjectFromKey(project.path))) await ev.action.showAlert();
     }
     if (warned) void this.renderAll(); // repaint over the "release to interrupt" warning
   }
@@ -120,7 +120,8 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
   // A: per-project done-diff, fetched ONCE per done-episode (git read is off the render
   // path, fired async on the transition and cached; cleared when a project leaves 'done').
   private diffStats = new Map<string, DiffStat | null>();
-  private diffPending = new Set<string>();
+  /** Key id → token of its in-flight diff read, so a read from an earlier done episode is dropped. */
+  private diffPending = new Map<string, object>();
 
   /** Redraw every visible project key from the board (called on state changes and
    * on the elapsed-timer tick). */
@@ -166,8 +167,11 @@ export class ProjectKey extends SingletonAction<ProjectSettings> {
       return;
     }
     if (!path || this.diffStats.has(id) || this.diffPending.has(id)) return;
-    this.diffPending.add(id);
+    const token = {};
+    this.diffPending.set(id, token);
     void readDiffStat(path).then((stat) => {
+      // The episode this read was for ended (the key left 'done' and maybe came back): drop it.
+      if (this.diffPending.get(id) !== token) return;
       this.diffPending.delete(id);
       // Drop a result for a path the key no longer points at (re-pointed mid-read).
       if (board.project(id)?.path !== path) return;

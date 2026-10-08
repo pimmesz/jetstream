@@ -214,7 +214,7 @@
       "UUID": "gg.pim.jetstream.slot",
       "Name": "Slot",
       "Icon": "imgs/plugin",
-      "Tooltip": "A self-labeling board slot: an empty key shows its a8-style coordinate; configure it as an app / URL / command shortcut, or retarget it live from jetstream chat.",
+      "Tooltip": "A board slot: configure it as an app / URL / command shortcut, or retarget it live from jetstream chat. An empty slot stays blank; the Grid key shows coordinates.",
       "Controllers": [
         "Keypad"
       ],
@@ -242,7 +242,7 @@
       "UUID": "gg.pim.jetstream.interruptall",
       "Name": "Stop all",
       "Icon": "imgs/attention",
-      "Tooltip": "Panic key: one press interrupts (SIGINT) every running Claude session across your fleet. The face shows how many are working.",
+      "Tooltip": "Panic key: one press stops the current turn of every running Claude session across your fleet, at its next tool call. The sessions stay open. The face shows how many are working.",
       "Controllers": [
         "Keypad"
       ],

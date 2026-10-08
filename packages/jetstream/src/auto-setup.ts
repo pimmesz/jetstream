@@ -96,7 +96,7 @@ export async function autoWireHooks(deps: AutoWireDeps): Promise<void> {
   } catch (error) {
     say(() =>
       deps.logger.warn(
-        'Jetstream could not auto-wire its Claude hooks — run `jetstream setup` from the plugin folder to do it manually.',
+        'Jetstream could not auto-wire its Claude hooks. Run `jetstream setup` (npm install), or `node bin/jetstream.js setup` from the plugin folder, to do it manually.',
         error,
       ),
     );

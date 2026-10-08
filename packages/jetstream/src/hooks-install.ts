@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { errorMessage } from './errors';
 
 /** The lifecycle events the board needs. Deliberately NOT PreToolUse/PostToolUse:
  * those fire on every tool call and would spawn a node process each time; the
@@ -256,7 +257,7 @@ async function readSettings(settingsPath: string): Promise<string | undefined> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw new Error(
-      `could not read ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `could not read ${settingsPath}: ${errorMessage(error)}`,
     );
   }
 }
@@ -286,13 +287,24 @@ async function backupOnce(
   }
 }
 
+/** Installs inside one process queue behind each other (the plugin's auto-wire, the fix button and
+ * the tool-detail toggle can overlap), so the re-read below never races a sibling's rename. Another
+ * PROCESS can still interleave; that window is the re-read's to narrow. */
+let installChain: Promise<unknown> = Promise.resolve();
+
 /** Install the hooks into `~/.claude/settings.json`: read (or start empty), merge,
  * back up the original once (`settings.json.jetstream-bak`), write pretty JSON
  * atomically (unique same-dir temp + rename, so concurrent installers can't corrupt
  * the file). A concurrent writer landing between our read and rename is detected by
  * re-reading before the rename; the merge then retries over the fresh content
  * (bounded — mergeHooks is idempotent, so re-merging is free). */
-export async function installHooks(options: InstallOptions): Promise<InstallResult> {
+export function installHooks(options: InstallOptions): Promise<InstallResult> {
+  const next = installChain.then(() => installOnce(options));
+  installChain = next.catch(() => undefined);
+  return next;
+}
+
+async function installOnce(options: InstallOptions): Promise<InstallResult> {
   const settingsPath = options.settingsPath ?? defaultSettingsPath();
   let backup: { backupPath: string; backupCreated: boolean } | undefined;
 

@@ -4,24 +4,22 @@ import { join } from 'node:path';
 
 /**
  * Read-only twin of the plugin's `listener-token.ts`. This package ships as the standalone hook
- * binaries Claude Code spawns, and deliberately depends on nothing — so the path rule is repeated
- * here rather than imported. Only the PLUGIN ever creates the token; a hook that finds none simply
- * sends no header and is accepted for as long as the grace period lasts.
+ * binaries Claude Code spawns, and deliberately depends on nothing, so the path rule is repeated
+ * here rather than imported. Only the PLUGIN ever creates the token. The permission hook uses it as
+ * the HMAC key (permission-client.ts) and never sends it; without one it does not ask the deck.
  *
  * Keep in sync with packages/jetstream/src/{projects-config,listener-token}.ts.
  */
-export const TOKEN_HEADER = 'x-jetstream-token';
 
 /**
  * EVERY place the token could live, most-specific first.
  *
  * A single path would not be enough: the plugin runs under the Stream Deck app (launchd/GUI env)
  * while these hooks are spawned by `claude` from your shell, so the two processes do not see the
- * same environment. `XDG_CONFIG_HOME` set in a shell profile but absent from the GUI env — a
- * completely ordinary setup — would make the writer and the reader disagree about where the token
- * is, and the hook would silently send none. That is invisible during the grace period and turns
- * into "every hook 401s, board permanently dark" the moment enforcement lands. So read the
- * candidates in order and take the first that exists.
+ * same environment. `XDG_CONFIG_HOME` set in a shell profile but absent from the GUI env (a
+ * completely ordinary setup) would make the writer and the reader disagree about where the token
+ * is, and the permission hook would find none to sign with, so every prompt would silently skip the
+ * deck. So read the candidates in order and take the first that exists.
  */
 export function listenerTokenPaths(
   env: NodeJS.ProcessEnv = process.env,
@@ -58,10 +56,4 @@ export function readToken(paths = listenerTokenPaths()): string | undefined {
     }
   }
   return undefined;
-}
-
-/** The auth header to merge into a request, empty when there is no token to send. */
-export function tokenHeader(paths = listenerTokenPaths()): Record<string, string> {
-  const token = readToken(paths);
-  return token ? { [TOKEN_HEADER]: token } : {};
 }

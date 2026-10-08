@@ -49,6 +49,45 @@ describe('MicMuteKey.onKeyDown', () => {
     expect(writeInputVolume).not.toHaveBeenCalled();
   });
 
+  it('a board repaint whose read started before a toggle never paints over the toggle', async () => {
+    const mic = new MicMuteKey();
+    const a = fakeKey();
+    Object.defineProperty(mic, 'actions', { value: [a], configurable: true });
+    let resolveStale!: (v: number) => void;
+    const staleRead = new Promise<number>((r) => (resolveStale = r));
+    // renderAll's read is slow and sees the old muted level; the toggle then unmutes and paints 'mic'.
+    vi.mocked(readInputVolume).mockReturnValueOnce(staleRead).mockResolvedValueOnce(0).mockResolvedValue(75);
+    const repaint = mic.renderAll();
+    await press(mic, a);
+    const paintsAfterToggle = a.setImage.mock.calls.length;
+    resolveStale(0);
+    await repaint;
+    expect(a.setImage.mock.calls.length).toBe(paintsAfterToggle); // the stale MUTED face was dropped
+  });
+
+  it('a repaint whose read starts while the toggle is still writing does not paint the old state', async () => {
+    const mic = new MicMuteKey();
+    const a = fakeKey();
+    Object.defineProperty(mic, 'actions', { value: [a], configurable: true });
+    let finishWrite!: () => void;
+    const writing = new Promise<void>((r) => (finishWrite = r));
+    vi.mocked(writeInputVolume).mockReturnValueOnce(writing);
+    let resolveStale!: (v: number) => void;
+    const staleRead = new Promise<number>((r) => (resolveStale = r));
+    // toggle reads muted (0); the repaint's read starts mid-write and sees 0 too; the toggle's own read sees 75.
+    vi.mocked(readInputVolume).mockResolvedValueOnce(0).mockReturnValueOnce(staleRead).mockResolvedValue(75);
+    const toggle = press(mic, a);
+    await Promise.resolve();
+    await Promise.resolve();
+    const repaint = mic.renderAll(); // starts while the write is pending
+    finishWrite();
+    await toggle;
+    const paintsAfterToggle = a.setImage.mock.calls.length;
+    resolveStale(0);
+    await repaint;
+    expect(a.setImage.mock.calls.length).toBe(paintsAfterToggle);
+  });
+
   it('drops a second press while the first toggle is still in flight (no double-mute)', async () => {
     const mic = new MicMuteKey();
     const a = fakeKey();

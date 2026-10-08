@@ -95,6 +95,7 @@ The fable tier is exhausted; the genuinely-remaining work is all Opus-tier below
   all require driving/wrapping a **running interactive TUI**, which the hook-observe design forbids.
 - **Multi-provider usage** (Codex/Gemini/…) — reuses each CLI's stored creds, against Jetstream's
   subscription-only, strips-key ethos. (Adopt the reset-countdown formatting only — that's #3.)
+  (2026-10-06: Codex built anyway, from its own session logs with no creds; see DECISIONS.md.)
 - **AgentDeck's full 16-surface architecture** — a scope trap; mine single features.
 - **Deep-link hook transport, SD+ launch dialer, burn-rate sparkline, open-usage-page link** — cut
   by the critic as lower value than their in-tier alternatives.

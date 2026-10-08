@@ -6,7 +6,7 @@ import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { clarifyingQuestion, parseProposal, runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { KEY_TYPE_NAMES, type Placement } from './layout';
 import { DECK_MODELS, type DeckModel } from './profile';
-import type { BoardLayout } from './board-layout';
+import type { BoardKey, BoardLayout } from './board-layout';
 
 describe('clarifyingQuestion', () => {
   it('extracts a QUESTION reply, else null', () => {
@@ -35,7 +35,9 @@ describe('parseProposal', () => {
   });
 
   it('ignores bad settings types (clamping happens at plugin load)', () => {
-    const p = parseProposal('{"projects":[{"path":"/a"}],"settings":{"theme":"bogus","longPressMs":"x"}}');
+    const p = parseProposal(
+      '{"projects":[{"path":"/a"}],"settings":{"theme":"bogus","longPressMs":"x"}}',
+    );
     expect(p?.settings).toEqual({});
   });
 
@@ -69,7 +71,9 @@ describe('parseProposal', () => {
   });
 
   it('reports dropped keys — an unknown type is refused, not silently placed', () => {
-    const p = parseProposal('{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"usage"},{"coord":"a2","type":"nope"}]}}');
+    const p = parseProposal(
+      '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"usage"},{"coord":"a2","type":"nope"}]}}',
+    );
     expect(p?.layout?.placements).toHaveLength(1); // only usage resolved
     expect(p?.layout?.dropped).toBe(1); // the unknown "nope" was dropped
   });
@@ -139,7 +143,10 @@ describe('runChatSetup preflight', () => {
   });
 });
 
-function makeIo(answers: string[]): { io: { ask: (q: string) => Promise<string>; say: (l: string) => void }; said: string[] } {
+function makeIo(answers: string[]): {
+  io: { ask: (q: string) => Promise<string>; say: (l: string) => void };
+  said: string[];
+} {
   const said: string[] = [];
   let i = 0;
   // Out of scripted answers means the user leaves, as EOF does on a real terminal.
@@ -152,7 +159,12 @@ describe('runChatSetup', () => {
     const replies = ['{"projects":[{"name":"Falcon","path":"/dev/falcon"}]}'];
     let r = 0;
     const write = vi.fn();
-    const code = await runChatSetup({ io, ask: async () => replies[r++] ?? null, write, configPath: '/tmp/p.json' });
+    const code = await runChatSetup({
+      io,
+      ask: async () => replies[r++] ?? null,
+      write,
+      configPath: '/tmp/p.json',
+    });
     expect(code).toBe(0);
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0]![0]).toHaveLength(1);
@@ -171,8 +183,12 @@ describe('runChatSetup', () => {
         states: [{}, {}],
       },
     ];
-    const onLayout = vi.fn(async (_p: Placement[], _t: { deck: DeckModel; board: BoardLayout | null }) => 'restarted' as const);
-    const ask = async () => '{"layout":{"deck":"xl","keys":[{"coord":"d6","type":"plugin","ref":"philips-hue-power-1"}]}}';
+    const onLayout = vi.fn(
+      async (_p: Placement[], _t: { deck: DeckModel; board: BoardLayout | null }) =>
+        'restarted' as const,
+    );
+    const ask = async () =>
+      '{"layout":{"deck":"xl","keys":[{"coord":"d6","type":"plugin","ref":"philips-hue-power-1"}]}}';
     await runChatSetup({ io, ask, onLayout, catalog, configPath: '/x' });
     expect(onLayout).toHaveBeenCalledTimes(1);
     const placed = onLayout.mock.calls[0]![0][0]!;
@@ -183,12 +199,153 @@ describe('runChatSetup', () => {
     expect(said.some((l) => /d6: Philips Hue power/.test(l))).toBe(true); // shown in the plan first
   });
 
+  it('after a live apply, the next request plans against the applied key even if the disk is stale', async () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+    const stale: BoardLayout = {
+      profileName: 'Jetstream',
+      profileDir: '/p.sdProfile',
+      deck: xl,
+      keys: new Map([
+        ['0,0', { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'empty' }, label: '·' }],
+      ]),
+      allUuids: [],
+    };
+    const { io } = makeIo(['put telegram at a1', 'y', 'make a1 a url', 'y']);
+    const replies = [
+      '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"https://t.me"}]}}',
+      '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"https://x.dev"}]}}',
+    ];
+    let r = 0;
+    const seen: Array<BoardLayout | null> = [];
+    const onLayout = vi.fn(
+      async (_p: Placement[], t: { deck: DeckModel; board: BoardLayout | null }) => {
+        seen.push(t.board);
+        return 'live' as const;
+      },
+    );
+    await runChatSetup({
+      io,
+      ask: async () => replies[r++] ?? null,
+      onLayout,
+      board: stale,
+      readBoard: () => stale,
+      configPath: '/x',
+    });
+    expect(onLayout).toHaveBeenCalledTimes(2);
+    expect(seen[1]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://t.me' });
+  });
+
+  it('remembers every live edit until disk shows it, and never lays them over another page', async () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+    const empty = { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'empty' }, label: '·' };
+    const pageA: BoardLayout = {
+      profileName: 'J',
+      profileDir: '/p.sdProfile',
+      pageId: 'a',
+      deck: xl,
+      keys: new Map([
+        ['0,0', empty],
+        ['1,0', empty],
+      ]),
+      allUuids: [],
+    };
+    const pageB: BoardLayout = {
+      ...pageA,
+      pageId: 'b',
+      keys: new Map([
+        ['0,0', empty],
+        ['1,0', empty],
+      ]),
+    };
+    let onScreen = pageA;
+    const { io } = makeIo(['a1', 'y', 'a2', 'y', 'a1 again', 'y']);
+    const replies = [
+      '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"https://one.dev"}]}}',
+      '{"layout":{"deck":"xl","keys":[{"coord":"a2","type":"open-url","url":"https://two.dev"}]}}',
+      '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"https://three.dev"}]}}',
+    ];
+    let r = 0;
+    const seen: Array<BoardLayout | null> = [];
+    const onLayout = vi.fn(
+      async (_p: Placement[], t: { deck: DeckModel; board: BoardLayout | null }) => {
+        seen.push(t.board);
+        if (seen.length === 2) onScreen = pageB; // the user flips to page B after the second edit
+        return 'live' as const;
+      },
+    );
+    await runChatSetup({
+      io,
+      ask: async () => replies[r++] ?? null,
+      onLayout,
+      board: pageA,
+      readBoard: () => onScreen,
+      configPath: '/x',
+    });
+    expect(seen[1]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://one.dev' }); // a1 kept
+    expect(seen[2]?.pageId).toBe('b');
+    expect(seen[2]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' }); // page A's edits not laid over B
+  });
+
+  it('remembers only changed live slots, and forgets them where a restart write replaced the key', async () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+    const text = {
+      uuid: 'com.elgato.streamdeck.system.text',
+      settings: { pastedText: 'hi' },
+      label: 'hi',
+    };
+    const empty = { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'empty' }, label: '·' };
+    const stale: BoardLayout = {
+      profileName: 'J',
+      profileDir: '/p.sdProfile',
+      pageId: 'a',
+      deck: xl,
+      keys: new Map<string, BoardKey>([
+        ['0,0', empty],
+        ['1,0', text],
+      ]),
+      allUuids: [],
+    };
+    const { io } = makeIo(['a1 url', 'y', 'a1 text', 'y', 'look', 'y']);
+    const replies = [
+      // a live slot edit at a1 that also re-emits the unchanged native text key at a2
+      '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"https://one.dev"},{"coord":"a2","type":"text","text":"hi"}]}}',
+      // a1 becomes a native text key: a restart write
+      '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"text","text":"note"}]}}',
+      '{"layout":{"deck":"xl","keys":[{"coord":"a3","type":"open-url","url":"https://x.dev"}]}}',
+    ];
+    let r = 0;
+    const seen: Array<BoardLayout | null> = [];
+    const outcomes = ['live', 'restarted', 'live'] as const;
+    const onLayout = vi.fn(
+      async (_p: Placement[], t: { deck: DeckModel; board: BoardLayout | null }) => {
+        seen.push(t.board);
+        return outcomes[seen.length - 1]!;
+      },
+    );
+    await runChatSetup({
+      io,
+      ask: async () => replies[r++] ?? null,
+      onLayout,
+      board: stale,
+      readBoard: () => stale,
+      configPath: '/x',
+    });
+    expect(seen[1]?.keys.get('1,0')).toEqual(text); // the untouched native key keeps its real settings
+    expect(seen[2]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' }); // the live a1 was superseded
+  });
+
   it('a third-party request with no copy available gets the QUESTION and writes nothing', async () => {
     const { io, said } = makeIo(['add a spotify key to d6']);
     const write = vi.fn();
     const ask = async () =>
       'QUESTION: That needs the Spotify Stream Deck plugin. Place one Spotify key once in the Stream Deck app, then I can copy and move it. Or give me a command for a run key.';
-    const code = await runChatSetup({ io, ask, write, configPath: '/tmp/p.json', claudeAvailable: () => true });
+    const code = await runChatSetup({
+      io,
+      ask,
+      write,
+      configPath: '/tmp/p.json',
+      claudeAvailable: () => true,
+    });
     expect(code).toBe(0);
     expect(said.some((l) => /Spotify Stream Deck plugin/.test(l))).toBe(true);
     expect(write).not.toHaveBeenCalled(); // a question is not a proposal
@@ -200,7 +357,8 @@ describe('runChatSetup', () => {
     const onWritten = vi.fn(async (_projects: ProjectConfig[]) => {});
     const code = await runChatSetup({
       io,
-      ask: async () => '{"projects":[{"name":"Falcon","path":"/dev/falcon"},{"name":"Api","path":"/dev/api"}]}',
+      ask: async () =>
+        '{"projects":[{"name":"Falcon","path":"/dev/falcon"},{"name":"Api","path":"/dev/api"}]}',
       write,
       onWritten,
       configPath: '/tmp/p.json',
@@ -215,7 +373,8 @@ describe('runChatSetup', () => {
     const onLayout = vi.fn(async () => {});
     // usage resolves at d1, but the unknown "nope" at d2 is dropped → applying would clear/overwrite
     // without placing everything the model intended. The flow must refuse, not apply the remainder.
-    const reply = '{"layout":{"deck":"xl","keys":[{"coord":"d2","type":"nope"},{"coord":"d1","type":"usage"}]}}';
+    const reply =
+      '{"layout":{"deck":"xl","keys":[{"coord":"d2","type":"nope"},{"coord":"d1","type":"usage"}]}}';
     const prompts: string[] = [];
     const code = await runChatSetup({
       io,
@@ -254,7 +413,12 @@ describe('runChatSetup', () => {
       profileName: 'Jetstream',
       profileDir: '/store/b.sdProfile',
       deck: DECK_MODELS.find((d) => d.key === 'xl')!,
-      keys: new Map([['0,0', { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'app', app: '/A.app' }, label: 'A' }]]),
+      keys: new Map([
+        [
+          '0,0',
+          { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'app', app: '/A.app' }, label: 'A' },
+        ],
+      ]),
       allUuids: [],
     };
     const { io, said } = makeIo(['put A at a1']);
@@ -262,7 +426,8 @@ describe('runChatSetup', () => {
     await runChatSetup({
       io,
       board,
-      ask: async () => '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-app","app":"/A.app"}]}}',
+      ask: async () =>
+        '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-app","app":"/A.app"}]}}',
       onLayout,
       configPath: '/x',
     });
@@ -275,7 +440,12 @@ describe('runChatSetup', () => {
     const replies = ['QUESTION: where are they?', '{"projects":[{"path":"/dev/a"}]}'];
     let r = 0;
     const write = vi.fn();
-    const code = await runChatSetup({ io, ask: async () => replies[r++] ?? null, write, configPath: '/x' });
+    const code = await runChatSetup({
+      io,
+      ask: async () => replies[r++] ?? null,
+      write,
+      configPath: '/x',
+    });
     expect(code).toBe(0);
     expect(write).toHaveBeenCalledTimes(1);
     expect(said.some((l) => l.includes('where are they?'))).toBe(true);
@@ -307,7 +477,12 @@ describe('runChatSetup', () => {
     const replies = [{ error: 'usage limit reached' }, '{"projects":[{"path":"/a"}]}'];
     let r = 0;
     const write = vi.fn();
-    const code = await runChatSetup({ io, ask: async () => replies[r++] ?? null, write, configPath: '/x' });
+    const code = await runChatSetup({
+      io,
+      ask: async () => replies[r++] ?? null,
+      write,
+      configPath: '/x',
+    });
     expect(code).toBe(0);
     expect(said.some((l) => /could not answer \(usage limit reached\)/.test(l))).toBe(true);
     expect(write).toHaveBeenCalledTimes(1); // the retry went through
@@ -378,5 +553,109 @@ describe('runChatSetup', () => {
     expect(code).toBe(1); // refused
     expect(readFileSync(configPath, 'utf8')).toBe(corrupt); // and did not clobber the file
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('runChatSetup pending live edits', () => {
+  const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+  const slotKey = (settings: Record<string, unknown>): BoardKey => ({ uuid: 'gg.pim.jetstream.slot', settings, label: 'k' });
+  const empty = slotKey({ kind: 'empty' });
+  const page = (keys: Record<string, BoardKey>): BoardLayout => ({
+    profileName: 'J',
+    profileDir: '/p.sdProfile',
+    pageId: 'a',
+    deck: xl,
+    keys: new Map(Object.entries(keys)),
+    allUuids: [],
+  });
+  const urlAt = (coord: string, url: string): string =>
+    `{"layout":{"deck":"xl","keys":[{"coord":"${coord}","type":"open-url","url":"${url}"}]}}`;
+
+  /** Every turn's layout goes live. `disk` is what the re-read shows after that turn (unchanged when absent).
+   * Returns the board each turn was planned against. */
+  async function liveTurns(start: BoardLayout, turns: Array<{ reply: string; disk?: BoardLayout }>): Promise<Array<BoardLayout | null>> {
+    let disk = start;
+    let r = 0;
+    const seen: Array<BoardLayout | null> = [];
+    const { io } = makeIo(turns.flatMap(() => ['change it', 'y']));
+    await runChatSetup({
+      io,
+      ask: async () => turns[r++]?.reply ?? null,
+      onLayout: async (_p: Placement[], t: { deck: DeckModel; board: BoardLayout | null }) => {
+        disk = turns[seen.length]?.disk ?? disk;
+        seen.push(t.board);
+        return 'live' as const;
+      },
+      board: start,
+      readBoard: () => disk,
+      configPath: '/x',
+    });
+    expect(seen).toHaveLength(turns.length);
+    return seen;
+  }
+
+  it('forgets a live edit as soon as disk shows anything else at that key', async () => {
+    // A native key with no settings, which compares equal to an empty slot by settings alone.
+    const nextPage: BoardKey = { uuid: 'com.elgato.streamdeck.page.next', settings: {}, label: 'Next Page' };
+    const otherChat = slotKey({ kind: 'app', app: '/T.app' });
+    const seen = await liveTurns(page({ '0,0': empty, '1,0': empty, '2,0': empty }), [
+      {
+        reply: '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"https://one.dev"},{"coord":"a2","type":"open-url","url":"https://two.dev"},{"coord":"a3","type":"open-url","url":"https://gone.dev"}]}}',
+        // Before Stream Deck saved any edit, a native key was dragged onto a1, another chat changed a2
+        // and a3 was deleted.
+        disk: page({ '0,0': nextPage, '1,0': otherChat }),
+      },
+      { reply: urlAt('a4', 'https://four.dev') },
+    ]);
+    expect(seen[1]?.keys.has('2,0')).toBe(false);
+    expect(seen[1]?.keys.get('0,0')).toEqual(nextPage);
+    expect(seen[1]?.keys.get('1,0')).toEqual(otherChat);
+  });
+
+  it('keeps the latest live edit to a key while disk still shows the key before any of its edits', async () => {
+    const both = (url: string): string =>
+      `{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"${url}"},{"coord":"a2","type":"open-url","url":"${url}"}]}}`;
+    const one = slotKey({ kind: 'url', url: 'https://one.dev' });
+    const seen = await liveTurns(page({ '0,0': empty, '1,0': empty, '2,0': empty }), [
+      { reply: both('https://one.dev') },
+      // Stream Deck saved a1's first edit only, and neither edit to a2.
+      { reply: both('https://two.dev'), disk: page({ '0,0': one, '1,0': empty, '2,0': empty }) },
+      { reply: urlAt('a3', 'https://x.dev') },
+    ]);
+    expect(seen[2]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://two.dev' });
+    expect(seen[2]?.keys.get('1,0')?.settings).toEqual({ kind: 'url', url: 'https://two.dev' });
+  });
+
+  it('remembers a live edit in the form the plugin stores (a cleared key drops its colour)', async () => {
+    const clearRed = '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"slot","color":"red"}]}}';
+    expect(parseProposal(clearRed, xl)?.layout?.placements[0]?.settings).toMatchObject({ kind: 'empty', color: expect.any(String) });
+    const seen = await liveTurns(page({ '0,0': slotKey({ kind: 'url', url: 'https://one.dev' }), '1,0': empty }), [
+      { reply: clearRed },
+      { reply: urlAt('a2', 'https://x.dev') },
+    ]);
+    // What the next live edit at a1 sends as `expect`, so it must match what the plugin holds.
+    expect(seen[1]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' });
+  });
+
+  it('forgets a live edit once disk shows it, so a later change made on the deck shows', async () => {
+    const seen = await liveTurns(page({ '0,0': empty, '1,0': empty }), [
+      { reply: urlAt('a1', 'https://one.dev'), disk: page({ '0,0': slotKey({ kind: 'url', url: 'https://one.dev' }), '1,0': empty }) },
+      // a1 was cleared on the deck; a2's edit is not saved yet.
+      { reply: urlAt('a2', 'https://two.dev'), disk: page({ '0,0': empty, '1,0': empty }) },
+      { reply: urlAt('a2', 'https://three.dev') },
+    ]);
+    expect(seen[2]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' });
+    expect(seen[2]?.keys.get('1,0')?.settings).toEqual({ kind: 'url', url: 'https://two.dev' });
+  });
+
+  it('forgets a live edit once disk shows it, even when it put back what the key held before', async () => {
+    const one = slotKey({ kind: 'url', url: 'https://one.dev' });
+    const seen = await liveTurns(page({ '0,0': empty, '1,0': empty }), [
+      { reply: urlAt('a1', 'https://one.dev') },
+      { reply: '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"slot","color":"red"}]}}' }, // disk shows the clear
+      { reply: urlAt('a2', 'https://two.dev'), disk: page({ '0,0': one, '1,0': empty }) }, // another chat set a1
+      { reply: urlAt('a2', 'https://three.dev') },
+    ]);
+    expect(seen[3]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://one.dev' });
   });
 });

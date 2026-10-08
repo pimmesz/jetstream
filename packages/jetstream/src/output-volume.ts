@@ -35,9 +35,19 @@ export async function readOutputVolume(): Promise<number | undefined> {
   }
 }
 
+/** Volume changes queue behind each other: a second tap must read the volume the first one wrote,
+ * or two quick +6 presses land as a single +6. */
+let nudgeChain: Promise<unknown> = Promise.resolve();
+
 /** Nudge the default output volume by `delta` (clamped 0-100). No-op off-macOS or when the output has no
- * software volume. Best-effort — the key already gave press feedback. */
-export async function nudgeOutputVolume(delta: number): Promise<boolean> {
+ * software volume. Best-effort: the key already gave press feedback. */
+export function nudgeOutputVolume(delta: number): Promise<boolean> {
+  const next = nudgeChain.then(() => nudgeOnce(delta));
+  nudgeChain = next.catch(() => undefined);
+  return next;
+}
+
+async function nudgeOnce(delta: number): Promise<boolean> {
   if (haveBgmVol()) {
     try {
       await run(BGM_VOL, ['nudge', String(Math.round(delta))]); // nudge EVERY BGM-routed app at once

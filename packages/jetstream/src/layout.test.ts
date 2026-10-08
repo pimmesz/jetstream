@@ -62,7 +62,7 @@ describe('resolvePlacements', () => {
   it('folds a project key into a LIVE slot kind (uuid slot → sendSlot, no import) alongside a no-settings key', () => {
     const { placements } = resolvePlacements(xl, [
       { coord: 'b1', type: 'project', path: '/dev/falcon', name: 'Falcon' },
-      { coord: 'c1', type: 'usage' },
+      { coord: 'c1', type: 'settings' },
     ]);
     // uuid === gg.pim.jetstream.slot is exactly what puts a repo add in cli.ts onLayout's LIVE bucket
     // (structural.length === 0) instead of forcing a .streamDeckProfile re-import.
@@ -70,7 +70,20 @@ describe('resolvePlacements', () => {
       uuid: 'gg.pim.jetstream.slot',
       settings: { kind: 'project', path: '/dev/falcon', name: 'Falcon' },
     });
-    expect(placements[1]).toMatchObject({ uuid: 'gg.pim.jetstream.usage', settings: null });
+    expect(placements[1]).toMatchObject({ uuid: 'gg.pim.jetstream.settings', settings: null });
+  });
+
+  it('usage, codex-usage and attention are live slots, Codex named by provider', () => {
+    const { placements } = resolvePlacements(xl, [
+      { coord: 'a1', type: 'usage' },
+      { coord: 'a2', type: 'codex-usage' },
+      { coord: 'a3', type: 'attention' },
+    ]);
+    expect(placements.map((p) => [p.uuid, p.settings])).toEqual([
+      ['gg.pim.jetstream.slot', { kind: 'usage' }],
+      ['gg.pim.jetstream.slot', { kind: 'usage', provider: 'codex' }],
+      ['gg.pim.jetstream.slot', { kind: 'attention' }],
+    ]);
   });
 
   it('a project key requires a path, and threads cosmetic overrides onto the slot', () => {
@@ -124,13 +137,13 @@ describe('resolvePlacements', () => {
   it('drops — with a warning each — unknown types, off-board coords, dupes, and missing settings', () => {
     const { placements, warnings } = resolvePlacements(xl, [
       { coord: 'a1', type: 'open-app' }, // missing app
-      { coord: 'z9', type: 'usage' }, // off-board
+      { coord: 'z9', type: 'settings' }, // off-board
       { coord: 'a2', type: 'nope' }, // unknown type
-      { coord: 'b2', type: 'usage' }, // ok
+      { coord: 'b2', type: 'settings' }, // ok
       { coord: 'b2', type: 'fleet' }, // duplicate coordinate
     ]);
     expect(placements).toHaveLength(1);
-    expect(placements[0]).toMatchObject({ column: 1, row: 1, uuid: 'gg.pim.jetstream.usage' });
+    expect(placements[0]).toMatchObject({ column: 1, row: 1, uuid: 'gg.pim.jetstream.settings' });
     expect(warnings).toHaveLength(4);
   });
 });

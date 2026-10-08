@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { augmentedPath } from './exec-path';
+import { sanitizeEnv } from '@pimmesz/jetstream-claude';
 import { isHttpUrl, isSafeAppTarget } from './slot-command';
 import type { SlotSettings } from './actions/slot';
 
@@ -49,7 +50,7 @@ export function runPlan(plan: ExecPlan): boolean {
       detached: true,
       stdio: 'ignore',
       ...(plan.cwd ? { cwd: plan.cwd } : {}),
-      env: { ...process.env, PATH: augmentedPath() },
+      env: { ...sanitizeEnv(process.env), PATH: augmentedPath() },
     });
     child.on('error', () => {
       /* the key press already gave feedback; nothing to surface post-hoc */

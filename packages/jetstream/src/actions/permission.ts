@@ -6,6 +6,7 @@ import { config } from '../config';
 import { heldMs } from '../press';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
+import { DANGER_RED } from '@pimmesz/jetstream-status';
 
 /** Which decision this key issues. Place one Approve key and one Deny key; each acts
  * on the oldest pending Claude permission request. */
@@ -58,7 +59,7 @@ export class PermissionKey extends SingletonAction<PermissionSettings> {
       const deny = settings.decision === 'deny';
       const face = pending
         ? keyFace({
-            color: deny ? '#e5484d' : '#30a46c',
+            color: deny ? DANGER_RED : '#30a46c',
             label: deny ? 'DENY' : 'APPROVE',
             // E: the pending command needs to be READABLE (`Bash: rm -rf dist/build`), so
             // give it a longer, smaller line instead of cutting it at ~14 chars.

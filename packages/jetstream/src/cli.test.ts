@@ -45,6 +45,15 @@ describe('cli dispatch', () => {
     expect(printed).not.toMatch(/npm i -g @pimmesz\/jetstream/);
   });
 
+  it('install points at the npm CLI instead of failing as an unknown command', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await run(['install'], BIN)).toBe(0);
+    expect(log.mock.calls.join('\n')).toContain('npm i -g @pimmesz/jetstream');
+    expect(log.mock.calls.join('\n')).toContain('jetstream install');
+    expect(err).not.toHaveBeenCalled();
+  });
+
   it('unknown hooks subcommand → non-zero exit (does not install)', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(await run(['hooks', 'wat'], BIN)).toBe(1);

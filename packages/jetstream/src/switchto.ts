@@ -4,7 +4,10 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { augmentedPath } from './exec-path';
+import { sanitizeEnv } from '@pimmesz/jetstream-claude';
 import { isClaudeCommand } from './discover';
+import { config } from './config';
+import { isRunTarget } from './slot-command';
 
 export interface Command {
   cmd: string;
@@ -120,7 +123,7 @@ export function openProject(path: string, platform: NodeJS.Platform = process.pl
     const child = spawn(command.cmd, command.args, {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, PATH: augmentedPath() },
+      env: { ...sanitizeEnv(process.env), PATH: augmentedPath() },
     });
     // The press already gave feedback, so there is nothing to show now — but log it, or an opener
     // that fails asynchronously (a missing editor, a TCC denial) leaves no trace anywhere.
@@ -132,4 +135,11 @@ export function openProject(path: string, platform: NodeJS.Platform = process.pl
   } catch {
     return false;
   }
+}
+
+/** Open a project from a key press. A repo folder opens; a path that would RUN something instead (a
+ * script, an executable) stays shut until `allowRunKeys` is on, so a planted project cannot launch it. */
+export async function openProjectFromKey(path: string): Promise<boolean> {
+  if (!config.get().allowRunKeys && (await isRunTarget(path))) return false;
+  return openProject(path);
 }

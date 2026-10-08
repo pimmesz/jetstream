@@ -1,16 +1,15 @@
 import { request } from 'node:http';
-import { parsePermissionDecision } from './permission';
-import { tokenHeader } from './listener-token';
+import { MAC_HEADER, runPermissionHook } from './permission-client';
+import { readToken } from './listener-token';
 
 /**
  * Claude Code `PermissionRequest` hook entry (blocking). POSTs the request to the
- * Jetstream plugin's local server and holds until the plugin answers — an
- * Approve/Deny key press resolves it. The plugin's answer is VALIDATED and re-built from
- * our own canonical writer before it reaches stdout (never echoed verbatim: Claude treats
- * this stdout as the authoritative decision, so a process holding the port must not be able
- * to inject arbitrary hook output). An empty or unrecognised answer (timeout / no key
- * pressed / plugin down) prints nothing, so Claude falls back to its own dialog and
- * you decide at the keyboard as usual. Never blocks longer than the request timeout.
+ * Jetstream plugin's local server and holds until the plugin answers (an
+ * Approve/Deny key press resolves it). The exchange is signed both ways and the answer is
+ * re-built from our own canonical writer (see permission-client.ts). An empty, unsigned or
+ * unrecognised answer (timeout / no key pressed / plugin down / a port squatter) prints
+ * nothing, so Claude falls back to its own dialog and you decide at the keyboard as usual.
+ * Never blocks longer than the request timeout.
  */
 const PORT = Number(process.env.JETSTREAM_PORT) || 41321;
 
@@ -24,7 +23,7 @@ function readStdin(): Promise<string> {
   });
 }
 
-function requestDecision(body: string): Promise<string> {
+function post(body: string, headers: Record<string, string>): Promise<{ body: string; mac: unknown }> {
   return new Promise((resolve) => {
     const req = request(
       {
@@ -35,7 +34,7 @@ function requestDecision(body: string): Promise<string> {
         headers: {
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),
-          ...tokenHeader(),
+          ...headers,
         },
         timeout: 110_000, // under Claude's 600s hook timeout; the plugin also times out sooner
       },
@@ -43,30 +42,22 @@ function requestDecision(body: string): Promise<string> {
         let out = '';
         res.setEncoding('utf8');
         res.on('data', (chunk) => (out += chunk));
-        res.on('end', () => resolve(out));
+        res.on('end', () => resolve({ body: out, mac: res.headers[MAC_HEADER] }));
       },
     );
-    req.on('error', () => resolve(''));
+    req.on('error', () => resolve({ body: '', mac: undefined }));
     req.on('timeout', () => {
       req.destroy();
-      resolve('');
+      resolve({ body: '', mac: undefined });
     });
     req.end(body);
   });
 }
 
-async function main(): Promise<void> {
-  // `jetstream chat` runs its own `claude -p` with this marker: its prompts are not the user's to
-  // answer on the deck (headless runs fire PermissionRequest since Claude Code 2.1.268).
-  if (process.env.JETSTREAM_SKIP_DECK === '1') return;
-  const body = await readStdin();
-  if (!body.trim()) return;
-  const decision = await requestDecision(body);
-  // NEVER write the socket's bytes through: Claude treats this stdout as the authoritative
-  // decision, so we validate the shape and re-emit from our own canonical writer. An
-  // unrecognised answer prints nothing and falls back to Claude's dialog.
-  const safe = parsePermissionDecision(decision);
-  if (safe) process.stdout.write(safe);
-}
-
-void main();
+void runPermissionHook({
+  env: process.env,
+  readStdin,
+  readToken: () => readToken(),
+  post,
+  write: (out) => process.stdout.write(out),
+});

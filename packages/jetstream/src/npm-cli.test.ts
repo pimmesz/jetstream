@@ -1,5 +1,5 @@
 import type { spawn as spawnType } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -15,6 +15,7 @@ import {
   pluginReportsVersion,
   PUBLIC_REGISTRY,
   redactRegistry,
+  registryEnv,
   resolveJetstreamCli,
   resolveRegistry,
   runJetstream,
@@ -171,6 +172,18 @@ describe('runJetstream', () => {
     };
   };
 
+  it('install --help and update --help only print help, never install or update', () => {
+    for (const verb of ['install', 'update']) {
+      const say = vi.fn();
+      const spawn = vi.fn();
+      const install = vi.fn();
+      runJetstream({ args: [verb, '--help'], say, spawn: spawn as unknown as typeof spawnType, install });
+      expect(spawn, verb).not.toHaveBeenCalled();
+      expect(install, verb).not.toHaveBeenCalled();
+      expect(String(say.mock.calls[0]?.[0]), verb).toContain(`jetstream ${verb}:`);
+    }
+  });
+
   it('plugin not found → error points at `jetstream install`, exit 1, never spawns', () => {
     const error = vi.fn();
     const setExitCode = vi.fn();
@@ -258,6 +271,7 @@ describe('runJetstream', () => {
     const install = vi.fn();
     runJetstream({
       args: ['update'],
+      globalRoot: () => undefined,
       spawn: spawn as unknown as typeof spawnType,
       install,
       say: vi.fn(),
@@ -270,8 +284,8 @@ describe('runJetstream', () => {
     // --prefer-online forces a fresh packument so a cached one cannot either.
     expect(spawn).toHaveBeenCalledWith(
       'npm',
-      ['i', '-g', '--prefer-online', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
-      { stdio: 'inherit' },
+      ['i', '-g', '--prefer-online', `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      expect.objectContaining({ stdio: 'inherit' }),
     );
     expect(install).not.toHaveBeenCalled(); // not before npm finishes
     child.fire('exit', 0);
@@ -285,6 +299,7 @@ describe('runJetstream', () => {
     const setExitCode = vi.fn();
     runJetstream({
       args: ['update'],
+      globalRoot: () => undefined,
       spawn: (() => child) as unknown as typeof spawnType,
       install,
       say: vi.fn(),
@@ -304,6 +319,7 @@ describe('runJetstream', () => {
     const spawn = vi.fn(() => child);
     runJetstream({
       args: ['update'],
+      globalRoot: () => undefined,
       spawn: spawn as unknown as typeof spawnType,
       install: vi.fn(),
       say: vi.fn(),
@@ -315,8 +331,8 @@ describe('runJetstream', () => {
     // cwd pinned to HOME so cmd.exe's CWD-first resolution can't run a planted npm.cmd.
     expect(spawn).toHaveBeenCalledWith(
       'npm.cmd',
-      ['i', '-g', '--prefer-online', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
-      { stdio: 'inherit', shell: true, cwd: homedir() },
+      ['i', '-g', '--prefer-online', `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      expect.objectContaining({ stdio: 'inherit', shell: true, cwd: homedir() }),
     );
   });
 
@@ -325,6 +341,7 @@ describe('runJetstream', () => {
     const spawn = vi.fn(() => child);
     runJetstream({
       args: ['update'],
+      globalRoot: () => undefined,
       spawn: spawn as unknown as typeof spawnType,
       install: vi.fn(),
       say: vi.fn(),
@@ -336,8 +353,8 @@ describe('runJetstream', () => {
     const expected = join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
     expect(spawn).toHaveBeenCalledWith(
       process.execPath,
-      [expected, 'i', '-g', '--prefer-online', `--registry=${PUBLIC_REGISTRY}`, `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
-      { stdio: 'inherit' },
+      [expected, 'i', '-g', '--prefer-online', `--@pimmesz:registry=${PUBLIC_REGISTRY}`, '@pimmesz/jetstream'],
+      expect.objectContaining({ stdio: 'inherit' }),
     );
   });
 });
@@ -405,11 +422,12 @@ describe('installPlugin', () => {
       error: vi.fn(),
       setExitCode: vi.fn(),
     });
-    expect(spawn).toHaveBeenCalledWith(
-      'cmd',
-      ['/c', 'start', '', 'C:\\pkg\\plugin.streamDeckPlugin'],
-      { stdio: 'inherit' },
-    );
+    // cmd.exe re-parses its command line, so it only ever sees the fixed basename; the folder (which
+    // may hold a `&` from the user's name) goes in as the working directory.
+    expect(spawn).toHaveBeenCalledWith('cmd', ['/c', 'start', '', 'plugin.streamDeckPlugin'], {
+      stdio: 'inherit',
+      cwd: 'C:\\pkg',
+    });
   });
 
   it('a failure to open (no Stream Deck app) → error + exit 1', () => {
@@ -450,6 +468,32 @@ describe('installPlugin', () => {
     await vi.waitFor(() =>
       expect(say.mock.calls.some((c) => /live on your deck/.test(String(c[0])))).toBe(true),
     );
+  });
+
+  it('polls /health for the version it was told to expect, else for its own', async () => {
+    // update hands over npm's global copy, which need not be the copy running this code.
+    const probeAfterInstall = (expectedVersion?: string): ReturnType<typeof vi.fn> => {
+      const child = fakeChild();
+      const alive = vi.fn(async () => true);
+      installPlugin({
+        exists: () => true,
+        artifactPath: '/pkg/plugin.streamDeckPlugin',
+        platform: 'darwin',
+        spawn: (() => child) as unknown as typeof spawnType,
+        say: vi.fn(),
+        error: vi.fn(),
+        setExitCode: vi.fn(),
+        alive,
+        sleep: async () => {},
+        ...(expectedVersion ? { expectedVersion } : {}),
+      });
+      child.fire('exit', 0);
+      return alive;
+    };
+    const told = probeAfterInstall('1.1.0');
+    await vi.waitFor(() => expect(told).toHaveBeenCalledWith('1.1.0'));
+    const own = probeAfterInstall();
+    await vi.waitFor(() => expect(own).toHaveBeenCalledWith(packageVersion()));
   });
 
   it('gives an actionable hint (run doctor) when /health never comes up', async () => {
@@ -581,7 +625,7 @@ describe('updatePackage', () => {
   const run = (
     exitCode = 0,
     env: NodeJS.ProcessEnv = {},
-  ): { said: string[]; args: string[]; installed: boolean } => {
+  ): { said: string[]; args: string[]; installed: boolean; npmEnv: NodeJS.ProcessEnv } => {
     const said: string[] = [];
     let installed = false;
     const child = fakeChild();
@@ -592,6 +636,7 @@ describe('updatePackage', () => {
     });
     updatePackage({
       spawn: spawn as unknown as typeof spawnType,
+      globalRoot: () => undefined,
       env,
       say: (m) => said.push(m),
       error: (m) => said.push(m),
@@ -601,7 +646,8 @@ describe('updatePackage', () => {
     child.fire('exit', exitCode);
     // argv is either [npmCliJs, ...npmArgs] (node path) or the npm args alone (shim fallback).
     const args = (calls[0]?.[1] ?? []) as string[];
-    return { said, args, installed };
+    const npmEnv = ((calls[0]?.[2] ?? {}) as { env?: NodeJS.ProcessEnv }).env ?? {};
+    return { said, args, installed, npmEnv };
   };
 
   // The bug this exists for: a corporate ~/.npmrc points npm at a caching mirror whose index of
@@ -609,7 +655,7 @@ describe('updatePackage', () => {
   // `jetstream doctor` asks npmjs.org directly and keeps insisting an update is available — the
   // two commands consult different registries and disagree forever.
   it('pins the public registry so a machine-local mirror cannot serve a stale version', () => {
-    expect(run().args).toContain(`--registry=${PUBLIC_REGISTRY}`);
+    expect(run().npmEnv.npm_config_registry).toBe(PUBLIC_REGISTRY);
     expect(PUBLIC_REGISTRY).toBe('https://registry.npmjs.org/'); // must match package.json publishConfig
   });
 
@@ -617,7 +663,15 @@ describe('updatePackage', () => {
     // Verified against real npm: with `@pimmesz:registry=<mirror>` in .npmrc, a plain
     // `--registry=https://registry.npmjs.org` is ignored for this scope — npm returned the
     // mirror's 1.6.0 instead of the public 2.0.0. Pinning only the unscoped form is defeated.
-    expect(run().args).toContain(`--@pimmesz:registry=${PUBLIC_REGISTRY}`);
+    expect(run().npmEnv['npm_config_@pimmesz:registry']).toBe(PUBLIC_REGISTRY);
+  });
+
+  it('also pins the scoped registry on argv, because zsh and dash drop its env name', () => {
+    // `npm_config_@pimmesz:registry` is not a valid shell name, so an npm reached through a zsh or
+    // dash script never sees it, and a stale `@pimmesz:registry` in .npmrc wins again.
+    const { args } = run();
+    expect(args).toContain(`--@pimmesz:registry=${PUBLIC_REGISTRY}`);
+    expect(args.join(' ')).not.toContain('--registry='); // the plain key is a valid name, env is enough
   });
 
   it('forces a fresh packument (--prefer-online) so a cached "latest" cannot pin the old version', () => {
@@ -627,10 +681,115 @@ describe('updatePackage', () => {
   });
 
   it('JETSTREAM_REGISTRY overrides both, for a machine that can only reach a mirror', () => {
-    const args = run(0, { JETSTREAM_REGISTRY: 'https://nexus.internal/npm/' }).args;
-    expect(args).toContain('--registry=https://nexus.internal/npm/');
-    expect(args).toContain('--@pimmesz:registry=https://nexus.internal/npm/');
-    expect(args).not.toContain(`--registry=${PUBLIC_REGISTRY}`);
+    const { npmEnv, args } = run(0, { JETSTREAM_REGISTRY: 'https://nexus.internal/npm/' });
+    expect(npmEnv.npm_config_registry).toBe('https://nexus.internal/npm/');
+    expect(npmEnv['npm_config_@pimmesz:registry']).toBe('https://nexus.internal/npm/');
+    expect(args.join(' ')).not.toContain('registry'); // never on the command line
+  });
+
+  it('inline mirror credentials go to npm through its environment, never its command line', () => {
+    const { args, npmEnv } = run(0, { JETSTREAM_REGISTRY: 'https://user:s3cret@nexus.internal/npm/' });
+    expect(args.join(' ')).not.toContain('s3cret'); // argv is visible to every user via ps
+    expect(args.join(' ')).not.toContain('registry'); // not even with the secret stripped
+    expect(npmEnv.npm_config_registry).toBe('https://user:s3cret@nexus.internal/npm/');
+    // A token as the username alone is a credential too.
+    expect(run(0, { JETSTREAM_REGISTRY: 'https://npmtoken@nexus.internal/npm/' }).args.join(' ')).not.toContain('npmtoken');
+  });
+
+  it('keeps a token in the mirror path off the command line too', () => {
+    // Gemfury-style URLs carry the token as a path segment, with no userinfo to detect.
+    const { args, npmEnv } = run(0, { JETSTREAM_REGISTRY: 'https://npm-proxy.fury.io/s3cret/acme/' });
+    expect(args.join(' ')).not.toContain('s3cret');
+    expect(npmEnv['npm_config_@pimmesz:registry']).toBe('https://npm-proxy.fury.io/s3cret/acme/');
+  });
+
+  it('drops every spelling of the registry keys before pinning them (Windows env is case-insensitive)', () => {
+    const env = registryEnv('https://registry.npmjs.org/', { NPM_CONFIG_REGISTRY: 'https://stale/', 'NPM_CONFIG_@PIMMESZ:REGISTRY': 'https://stale/', PATH: '/bin' });
+    expect(Object.keys(env).filter((k) => k.toLowerCase().includes('registry'))).toEqual(['npm_config_registry', 'npm_config_@pimmesz:registry']);
+    expect(env.PATH).toBe('/bin');
+  });
+
+  it('never prints a rejected registry that may carry credentials', () => {
+    const said: string[] = [];
+    resolveRegistry({ JETSTREAM_REGISTRY: 'https//user:secret@mirror/' }, (m) => said.push(m));
+    expect(said.join('\n')).not.toContain('secret');
+    expect(said.join('\n')).toContain('value hidden');
+  });
+
+  it('reads the version and the plugin from where npm actually installed, not from this copy', () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-npm-root-'));
+    const pkg = join(root, '@pimmesz', 'jetstream');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ version: '1.0.0' }));
+    const child = fakeChild();
+    const said: string[] = [];
+    let handed: string | undefined;
+    let handedVersion: string | undefined;
+    updatePackage({
+      spawn: (() => child) as unknown as typeof spawnType,
+      globalRoot: () => root,
+      env: {},
+      say: (m) => said.push(m),
+      error: (m) => said.push(m),
+      setExitCode: () => {},
+      install: (d) => {
+        handed = d.artifactPath;
+        handedVersion = d.expectedVersion;
+      },
+    });
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ version: '1.1.0' })); // npm updated that copy
+    child.fire('exit', 0);
+    expect(said.join('\n')).toContain('Updated 1.0.0 → 1.1.0');
+    expect(handed).toBe(join(pkg, 'assets', 'gg.pim.jetstream.streamDeckPlugin'));
+    expect(handedVersion).toBe('1.1.0'); // the health check waits for the version npm installed
+    // This test runs from the checkout, not from npm's copy, so the `jetstream` on PATH stays old.
+    const runningRoot = dirname(dirname(bundledPluginPath()));
+    expect(said.join('\n')).toContain(`npm installs into ${pkg}, but this \`jetstream\` runs from ${runningRoot}`);
+  });
+
+  it('stays quiet about where it runs when npm\'s copy is this one, through a symlink too', () => {
+    const runningRoot = dirname(dirname(bundledPluginPath()));
+    const root = makeTmp();
+    mkdirSync(join(root, '@pimmesz'));
+    symlinkSync(runningRoot, join(root, '@pimmesz', 'jetstream'), 'dir');
+    const child = fakeChild();
+    const said: string[] = [];
+    updatePackage({
+      spawn: (() => child) as unknown as typeof spawnType,
+      globalRoot: () => root,
+      env: {},
+      say: (m) => said.push(m),
+      error: (m) => said.push(m),
+      setExitCode: () => {},
+      install: () => {},
+    });
+    child.fire('exit', 0);
+    expect(said.join('\n')).toContain('Already on');
+    expect(said.join('\n')).not.toContain('runs from');
+  });
+
+  it('still names the stale copy on a later run, when npm had nothing newer', () => {
+    // After the first update npm's copy is current, so every later run says "Already on", while
+    // the `jetstream` on PATH (this checkout) stays old.
+    const root = makeTmp();
+    const pkg = join(root, '@pimmesz', 'jetstream');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+    const child = fakeChild();
+    const said: string[] = [];
+    updatePackage({
+      spawn: (() => child) as unknown as typeof spawnType,
+      globalRoot: () => root,
+      env: {},
+      say: (m) => said.push(m),
+      error: (m) => said.push(m),
+      setExitCode: () => {},
+      install: () => {},
+    });
+    child.fire('exit', 0);
+    const runningRoot = dirname(dirname(bundledPluginPath()));
+    expect(said.join('\n')).toContain('Already on 9.9.9');
+    expect(said.join('\n')).toContain(`npm installs into ${pkg}, but this \`jetstream\` runs from ${runningRoot}`);
   });
 
   it('says nothing moved when the version is unchanged, instead of claiming an update', () => {
@@ -655,8 +814,8 @@ describe('updatePackage', () => {
     // re-parsed by cmd.exe and run calc.exe. `new URL()` accepts it — `&` is legal in a path —
     // so parsing alone is NOT sufficient validation.
     const evil = 'https://nexus.invalid/& calc.exe &';
-    const { args, said } = run(0, { JETSTREAM_REGISTRY: evil });
-    expect(args).toContain(`--registry=${PUBLIC_REGISTRY}`); // fell back
+    const { args, said, npmEnv } = run(0, { JETSTREAM_REGISTRY: evil });
+    expect(npmEnv.npm_config_registry).toBe(PUBLIC_REGISTRY); // fell back
     expect(args.join(' ')).not.toContain('calc.exe');
     expect(said.join('\n')).toMatch(/Ignoring JETSTREAM_REGISTRY/); // and said so, not silently
   });
@@ -710,6 +869,10 @@ describe('resolveRegistry / redactRegistry', () => {
     expect(redactRegistry('https://u:secret@nexus.internal/npm/')).not.toContain('secret');
     expect(redactRegistry('https://u:secret@nexus.internal/npm/')).toContain('credentials hidden');
     expect(redactRegistry(PUBLIC_REGISTRY)).toBe(PUBLIC_REGISTRY); // untouched when there are none
+    // An unparseable URL (bad port) is exactly what the error path prints, so it is stripped too.
+    expect(redactRegistry('https://u:secret@mirror:99999/')).not.toContain('secret');
+    expect(redactRegistry('https://u:secret@mirror:99999/')).toContain('credentials hidden');
+    expect(redactRegistry('https://user:secret@tail@mirror:99999/')).toBe('https://mirror:99999/ (credentials hidden)');
   });
 
 });

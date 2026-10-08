@@ -12,7 +12,7 @@ import { board } from '../state';
 import { config } from '../config';
 import { dialFeedback, scrubIndex } from '../encoder';
 import { heldMs } from '../press';
-import { openProject } from '../switchto';
+import { openProjectFromKey } from '../switchto';
 import { stopSessions } from '../stop-session';
 
 /**
@@ -61,7 +61,7 @@ export class FleetDialKey extends SingletonAction<NoSettings> {
       if (sent === 0) await ev.action.showAlert();
       return;
     }
-    if (!project.path || !openProject(project.path)) await ev.action.showAlert();
+    if (!project.path || !(await openProjectFromKey(project.path))) await ev.action.showAlert();
   }
 
   override async onTouchTap(ev: TouchTapEvent<NoSettings>): Promise<void> {
@@ -74,7 +74,7 @@ export class FleetDialKey extends SingletonAction<NoSettings> {
       if (sent === 0) await ev.action.showAlert();
       return;
     }
-    if (!project.path || !openProject(project.path)) await ev.action.showAlert();
+    if (!project.path || !(await openProjectFromKey(project.path))) await ev.action.showAlert();
   }
 
   /** The project the given dial is currently pointing at (index clamped to the live fleet). */

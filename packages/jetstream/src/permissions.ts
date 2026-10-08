@@ -5,6 +5,7 @@ import {
   type PendingPermission,
   type PermissionBehavior,
   type ProjectConfig,
+  takeStopFlag,
 } from '@pimmesz/jetstream-status';
 
 interface Entry {
@@ -42,13 +43,25 @@ export class Permissions {
   /** Bound memory over a long-running plugin; oldest rule drops first (insertion order). */
   private static readonly MAX_ALLOW_RULES = 256;
 
+  /** `takeStop` consumes a pending deck stop for a session (stop-flag.ts); injected for tests. */
+  constructor(private readonly takeStop: (sessionId: string) => boolean = (id) => takeStopFlag(id)) {}
+
   private ruleKey(sessionId: string, toolName: string): string {
     return `${sessionId}\u0000${toolName}`;
   }
 
-  request(raw: unknown, timeoutMs = 90_000): Promise<string | undefined> {
+  /** `abort` fires when the hook stopped waiting (its process died or the session closed), so the
+   * prompt leaves the deck instead of showing APPROVE/DENY for nobody until the timeout. */
+  request(raw: unknown, timeoutMs = 90_000, abort?: AbortSignal): Promise<string | undefined> {
     const perm = parsePermissionRequest(raw, `perm-${++this.seq}`);
-    if (!perm || NOT_DECK_ANSWERABLE.has(perm.toolName)) return Promise.resolve(undefined);
+    if (!perm) return Promise.resolve(undefined);
+    // A stop pressed after this tool passed the stop gate (one node start-up before its prompt) is
+    // still pending: honour it first, before an armed Always-Allow, the deck, or a keyboard-only
+    // prompt (a plan approval would otherwise sit waiting after the user asked to stop).
+    if (perm.sessionId && this.takeStop(perm.sessionId)) {
+      return Promise.resolve(permissionDecisionJson('deny', true));
+    }
+    if (NOT_DECK_ANSWERABLE.has(perm.toolName)) return Promise.resolve(undefined);
     // Always-Allow: an armed session+tool auto-approves with no keypress. A non-empty sessionId is
     // required to match, so the '' parse-fallback can never be armed into a wildcard.
     if (perm.sessionId && this.allowRules.has(this.ruleKey(perm.sessionId, perm.toolName))) {
@@ -58,6 +71,7 @@ export class Permissions {
     return new Promise((resolve) => {
       const timer = setTimeout(() => this.settleId(perm.id, undefined), timeoutMs);
       this.queue.push({ perm, resolve, timer });
+      abort?.addEventListener('abort', () => this.settleId(perm.id, undefined), { once: true });
       this.emit();
     });
   }
@@ -140,6 +154,8 @@ export class Permissions {
     }
     // Repaint the APPROVE key auto-allow affordance when the count actually dropped.
     if (removed) this.emit();
+    // A prompt the ended session left behind can never be answered: take it off the deck.
+    for (const e of this.queue.filter((q) => q.perm.sessionId === sessionId)) this.settleId(e.perm.id, undefined);
   }
 
   /** How many Always-Allow rules are armed — for the APPROVE key's "auto-allow active" affordance. */

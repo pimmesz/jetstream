@@ -26,6 +26,44 @@ describe('Permissions', () => {
     expect(p.count()).toBe(0);
   });
 
+  it('denies and interrupts a prompt whose session has a deck stop pending, even with Always-Allow armed', async () => {
+    const pending = new Set<string>();
+    const p = new Permissions((id) => pending.delete(id));
+    const first = p.request(req());
+    p.allowAlways(p.head()?.id); // arm Always-Allow for s1 + Bash
+    await first;
+    pending.add('s1'); // the user presses stop after the next tool passed its gate
+    expect(JSON.parse((await p.request(req())) as string)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', message: 'Stopped from the Stream Deck.', interrupt: true },
+      },
+    });
+    expect(pending.has('s1')).toBe(false); // the stop is used up, so it cannot cut the next turn
+  });
+
+  it('a pending stop also ends a keyboard-only prompt (plan approval) instead of leaving it waiting', async () => {
+    const pending = new Set(['s1']);
+    const p = new Permissions((id) => pending.delete(id));
+    const out = await p.request(req({ tool_name: 'ExitPlanMode', tool_input: {} }));
+    expect(JSON.parse(out as string).hookSpecificOutput.decision).toMatchObject({ behavior: 'deny', interrupt: true });
+    expect(await p.request(req({ tool_name: 'ExitPlanMode', tool_input: {} }))).toBeUndefined(); // no stop: Claude's dialog
+  });
+
+  it('takes a prompt off the deck when its hook hangs up, or when its session ends', async () => {
+    const p = new Permissions(() => false);
+    const hangUp = new AbortController();
+    const first = p.request(req(), 90_000, hangUp.signal);
+    hangUp.abort();
+    expect(await first).toBeUndefined();
+    expect(p.count()).toBe(0);
+    const second = p.request(req({ session_id: 's2' }));
+    p.request(req({ session_id: 's3' }));
+    p.forgetSession('s2');
+    expect(await second).toBeUndefined();
+    expect(p.count()).toBe(1); // only the other session's prompt stays
+  });
+
   it('resolves undefined (defer) after the timeout with no key press', async () => {
     const p = new Permissions();
     const pending = p.request(req(), 90_000);

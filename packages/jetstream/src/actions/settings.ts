@@ -7,7 +7,14 @@ import type { KeyDownEvent } from '@elgato/streamdeck';
 import { board } from '../state';
 import { config, type JetstreamConfig } from '../config';
 import { commandOnPath, defaultDoctorIO, runDoctor, type CheckResult } from '../doctor';
-import { expandHome, handleFleetMessage, scanForGitRepos, writeFleetFile } from '../fleet';
+import type { ProjectConfig } from '@pimmesz/jetstream-status';
+import {
+  expandHome,
+  handleFleetMessage,
+  scanForGitRepos,
+  writeFleetFile,
+  type FleetSnapshot,
+} from '../fleet';
 import { hookCommands } from '../hooks-install';
 import { isListenerBound } from '../listener-status';
 import { installHooks } from '../hooks-install';
@@ -23,8 +30,8 @@ import {
 import { readConfigFile, projectsConfigPath , resolveProjectsConfigPath } from '../projects-config';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
+import { errorMessage } from '../errors';
 
-const errMsg = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** Was this a health-check request from the property inspector? */
 export function isHealthCheck(payload: unknown): boolean {
@@ -57,13 +64,59 @@ export function fixId(payload: unknown): string | undefined {
   return typeof fix === 'string' ? fix : undefined;
 }
 
-/** Whether the face should show the amber "setup N/M" nudge. INFORMATIONAL only — it changes what
+/** One handler per property-inspector message; `fleet` takes everything else. */
+export interface InspectorRoutes {
+  health: () => Promise<void>;
+  fixHooks: () => Promise<void>;
+  switchProfiles: () => Promise<void>;
+  toolDetail: () => Promise<void>;
+  buildLayout: () => Promise<void>;
+  diagnostics: () => Promise<void>;
+  fleet: (payload: unknown) => Promise<void>;
+}
+
+/** Send an inspector message to its handler, checked in this order. */
+export async function routeInspectorMessage(payload: unknown, routes: InspectorRoutes): Promise<void> {
+  if (isHealthCheck(payload)) return routes.health();
+  if (fixId(payload) === 'hooks') return routes.fixHooks();
+  if (isProfileSwitch(payload)) return routes.switchProfiles();
+  if (isToolDetail(payload)) return routes.toolDetail();
+  if (isBuildLayout(payload)) return routes.buildLayout();
+  if (isDiagnostics(payload)) return routes.diagnostics();
+  return routes.fleet(payload);
+}
+
+/** The copyable diagnostics report the inspector shows. Pure. */
+export function diagnosticsText(checks: CheckResult[], platform: string, nodeVersion: string): string {
+  return [
+    'Jetstream diagnostics',
+    `platform: ${platform}  node: ${nodeVersion}`,
+    '',
+    ...checks.map((c) => `${c.status === 'ok' ? 'OK  ' : 'WARN'} ${c.message}`),
+  ].join('\n');
+}
+
+/** Whether the face should show the amber "setup N/M" nudge. INFORMATIONAL only: it changes what
  * the key SHOWS, never what a press DOES. The press used to branch on this, which meant the key's
  * behaviour depended on invisible state: a check that warns permanently (the loopback-token grace
  * period does, for two whole releases) silently hijacked the key forever, so its other job was
  * unreachable and pressing it looked like nothing happened. */
 export function hasWarnings(checks: CheckResult[]): boolean {
   return checks.some((c) => c.status === 'warn');
+}
+
+/** How long the in-app editor waits for another writer's fleet lock. The wait blocks the plugin's
+ * only thread (keys, hooks), so it gives up quickly and the editor says try again. */
+const EDITOR_LOCK_WAIT_MS = 100;
+
+/** The in-app editor's projects.json write: only its own change (`base`), with a short lock wait. */
+export function writeFleetFromEditor(
+  path: string,
+  projects: ProjectConfig[],
+  settings: Partial<JetstreamConfig>,
+  base: FleetSnapshot,
+): FleetSnapshot {
+  return writeFleetFile(path, projects, settings, new Date(), base, EDITOR_LOCK_WAIT_MS);
 }
 
 /** The bin/ dir where the bundled hook scripts sit (this file bundles into bin/plugin.js). */
@@ -123,47 +176,27 @@ export class SettingsKey extends SingletonAction {
   // to @elgato/utils' JSON types, which aren't a resolvable dependency here — `{ payload }`
   // is all this handler needs, and is a valid (wider) override of the optional base method.
   override async onSendToPlugin(ev: { payload: unknown }): Promise<void> {
-    // Health check: the same read-only diagnostics as `jetstream doctor`, in-app, so a
-    // plugin-first user whose board stays dark gets an answer without a terminal.
-    if (isHealthCheck(ev.payload)) {
-      this.reply({ health: 'report', checks: await this.pluginHealth() });
-      return;
-    }
-    if (fixId(ev.payload) === 'hooks') {
-      await this.fixHooks();
-      return;
-    }
-    if (isProfileSwitch(ev.payload)) {
-      await this.switchProfiles();
-      return;
-    }
-    if (isToolDetail(ev.payload)) {
-      await this.enableToolDetail();
-      return;
-    }
-    if (isBuildLayout(ev.payload)) {
-      this.buildProfiles();
-      return;
-    }
-    if (isDiagnostics(ev.payload)) {
-      const checks = await runDoctor(pluginDoctorIO());
-      const text = [
-        'Jetstream diagnostics',
-        `platform: ${process.platform}  node: ${process.version}`,
-        '',
-        ...checks.map((c) => `${c.status === 'ok' ? 'OK  ' : 'WARN'} ${c.message}`),
-      ].join('\n');
-      this.reply({ diag: 'report', text });
-      return;
-    }
-    await handleFleetMessage(ev.payload, {
-      read: () => readConfigFile(),
-      write: (projects, settings) => writeFleetFile(resolveProjectsConfigPath(), projects, settings),
-      seed: (projects) => board.seed(projects),
-      // Reply to the current property inspector (the one that just sent to us).
-      reply: (msg) => this.reply(msg),
-      // expandHome so a typed `~/dev` resolves — the PI has no cwd/shell to expand it.
-      scan: (dir) => scanForGitRepos(expandHome(dir)),
+    await routeInspectorMessage(ev.payload, {
+      // Health check: the same read-only diagnostics as `jetstream doctor`, in-app, so a
+      // plugin-first user whose board stays dark gets an answer without a terminal.
+      health: async () => this.reply({ health: 'report', checks: await this.pluginHealth() }),
+      fixHooks: () => this.fixHooks(),
+      switchProfiles: () => this.switchProfiles(),
+      toolDetail: () => this.enableToolDetail(),
+      buildLayout: async () => this.buildProfiles(),
+      diagnostics: async () =>
+        this.reply({ diag: 'report', text: diagnosticsText(await runDoctor(pluginDoctorIO()), process.platform, process.version) }),
+      fleet: (payload) =>
+        handleFleetMessage(payload, {
+          read: () => readConfigFile(),
+          write: (projects, settings, base) =>
+            writeFleetFromEditor(resolveProjectsConfigPath(), projects, settings, base),
+          seed: (projects) => board.seed(projects),
+          // Reply to the current property inspector (the one that just sent to us).
+          reply: (msg) => this.reply(msg),
+          // expandHome so a typed `~/dev` resolves: the PI has no cwd/shell to expand it.
+          scan: (dir) => scanForGitRepos(expandHome(dir)),
+        }),
     });
   }
 
@@ -221,7 +254,7 @@ export class SettingsKey extends SingletonAction {
           : 'Per-tool detail was already enabled.',
       });
     } catch (error) {
-      this.reply({ hooks: 'error', note: `Couldn't enable: ${errMsg(error)}` });
+      this.reply({ hooks: 'error', note: `Couldn't enable: ${errorMessage(error)}` });
     }
   }
 
@@ -262,7 +295,7 @@ export class SettingsKey extends SingletonAction {
         written.push(out);
       }
     } catch (error) {
-      this.reply({ build: 'error', note: `Couldn't build the layout: ${errMsg(error)}` });
+      this.reply({ build: 'error', note: `Couldn't build the layout: ${errorMessage(error)}` });
       return;
     }
     const open = defaultOpenFile();
@@ -307,7 +340,7 @@ export class SettingsKey extends SingletonAction {
       });
     } catch (error) {
       const checks = await this.pluginHealth();
-      checks.push({ status: 'warn', message: `Couldn't install hooks: ${errMsg(error)}` });
+      checks.push({ status: 'warn', message: `Couldn't install hooks: ${errorMessage(error)}` });
       this.reply({ health: 'report', checks });
       return;
     }

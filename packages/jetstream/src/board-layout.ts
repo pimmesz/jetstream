@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { coordLabel } from './slot-command';
+import { stripControl } from './fleet';
 import type { Placement } from './layout';
 import { DECK_MODELS, type DeckModel } from './profile';
 import { readCurrentPage } from './profile-store';
@@ -42,14 +43,14 @@ const JETSTREAM_LABELS: Record<string, string> = {
   slot: 'slot',
 };
 
-/** Strip control characters (mirrors fleet.ts / init.ts): every string here is destined for the
+/** Strip control characters (fleet.ts stripControl): every string here is destined for the
  * terminal via `jetstream board` / `jetstream chat`, and slot labels are attacker-settable through
  * the unauthenticated /slot endpoint — ANSI escapes in one would let a planted key overprint rows
  * and forge the board map the user is reading. Also keeps the column-width maths honest, since
  * escape bytes count toward .length. */
 const asStr = (v: unknown): string | undefined => {
   if (typeof v !== 'string') return undefined;
-  const clean = v.replace(/[\x00-\x1f\x7f]/g, '').trim();
+  const clean = stripControl(v).trim();
   return clean === '' ? undefined : clean;
 };
 
@@ -104,6 +105,7 @@ export function labelForAction(uuid: string, settings: unknown): string {
     // an empty '·' (which would let the model overwrite a configured key it thinks is blank).
     const kindLabel: Record<string, string> = {
       build: 'build',
+      attention: 'attn',
       stopall: 'stop',
       fleet: 'fleet',
       volup: 'vol+',
@@ -115,6 +117,7 @@ export function labelForAction(uuid: string, settings: unknown): string {
       // overwrites a key the user deliberately placed.
       logo: 'logo',
     };
+    if (s.kind === 'usage') return s.provider === 'codex' ? 'codex' : 'usage';
     if (typeof s.kind === 'string' && kindLabel[s.kind]) return kindLabel[s.kind]!;
     return '·'; // empty slot
   }
@@ -399,6 +402,8 @@ export function toSlotKey(
   const folded: Record<string, string> = {
     'gg.pim.jetstream.fleet': 'fleet',
     'gg.pim.jetstream.build': 'build',
+    'gg.pim.jetstream.usage': 'usage',
+    'gg.pim.jetstream.attention': 'attention',
   };
   if (folded[uuid]) return { uuid: 'gg.pim.jetstream.slot', settings: { kind: folded[uuid] } };
   return null;
@@ -472,6 +477,7 @@ export function describeKeyForModel(k: BoardKey, catalogRef?: (k: BoardKey) => s
     }
     const foldedType: Record<string, string> = {
       build: 'build',
+      attention: 'attention',
       stopall: 'stop-all',
       fleet: 'fleet',
       volup: 'volup',
@@ -482,6 +488,7 @@ export function describeKeyForModel(k: BoardKey, catalogRef?: (k: BoardKey) => s
       chat: 'chat',
       logo: 'logo',
     };
+    if (s.kind === 'usage') return `${s.provider === 'codex' ? 'codex-usage' : 'usage'}${extra}`;
     if (typeof s.kind === 'string' && foldedType[s.kind]) return `${foldedType[s.kind]}${extra}`;
     return extra ? `slot${extra}` : 'empty';
   }

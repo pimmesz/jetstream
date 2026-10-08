@@ -40,6 +40,7 @@ const NO_SETTINGS: Record<string, string> = {
   fleet: 'gg.pim.jetstream.fleet',
   attention: 'gg.pim.jetstream.attention',
   usage: 'gg.pim.jetstream.usage',
+  'codex-usage': 'gg.pim.jetstream.slot',
   settings: 'gg.pim.jetstream.settings',
   build: 'gg.pim.jetstream.build',
   'stop-all': 'gg.pim.jetstream.interruptall',
@@ -61,6 +62,7 @@ const NO_SETTINGS_NAMES: Record<string, string> = {
   fleet: 'Fleet roll-up',
   attention: 'Attention',
   usage: 'Usage gauge',
+  'codex-usage': 'Codex usage gauge',
   settings: 'Jetstream settings',
   build: 'Build version',
   'stop-all': 'Stop all',
@@ -155,6 +157,21 @@ export const KEY_TYPES: Record<string, KeyType> = {
     uuid: 'gg.pim.jetstream.slot',
     name: 'Build version',
     build: (f) => ({ settings: { kind: 'build', ...slotCosmetics(f) } }),
+  },
+  attention: {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Attention',
+    build: (f) => ({ settings: { kind: 'attention', ...slotCosmetics(f) } }),
+  },
+  usage: {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Usage gauge',
+    build: (f) => ({ settings: { kind: 'usage', ...slotCosmetics(f) } }),
+  },
+  'codex-usage': {
+    uuid: 'gg.pim.jetstream.slot',
+    name: 'Codex usage gauge',
+    build: (f) => ({ settings: { kind: 'usage', provider: 'codex', ...slotCosmetics(f) } }),
   },
   'stop-all': {
     uuid: 'gg.pim.jetstream.slot',

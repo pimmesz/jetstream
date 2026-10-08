@@ -4,12 +4,13 @@ import type { Face } from '../render';
 import { keyFace } from '../render';
 import { paintKey } from '../paint';
 import { readInputVolume, writeInputVolume } from '../mic-control';
+import { DANGER_RED } from '@pimmesz/jetstream-status';
 
 /** The mic-mute key face: red + MUTED when the input is at 0, dark when live; a dim "n/a" when the
  * OS won't report an input volume (non-macOS). Pure. */
 export function micFace(muted: boolean, available: boolean): Face {
   if (!available) return { color: '#26262b', label: 'mic', sub: 'n/a' };
-  return muted ? { color: '#e5484d', emoji: '🎙', label: 'MUTED' } : { color: '#1c1c20', emoji: '🎙', label: 'mic' };
+  return muted ? { color: DANGER_RED, emoji: '🎙', label: 'MUTED' } : { color: '#1c1c20', emoji: '🎙', label: 'mic' };
 }
 
 /**
@@ -31,6 +32,9 @@ export class MicMuteKey extends SingletonAction<NoSettings> {
   /** renderBoard() calls renderAll on every hook event; each render spawns osascript. Single-flight so
    * a burst of events can't pile up overlapping subprocesses — the next tick just repaints. */
   private refreshing = false;
+  /** Bumped by every toggle, so a board repaint whose read started before it cannot paint the old
+   * state over the toggle's own (a MUTED face on a live mic). */
+  private generation = 0;
 
   override async onWillAppear(ev: WillAppearEvent<NoSettings>): Promise<void> {
     if (!ev.action.isKey()) return;
@@ -46,12 +50,14 @@ export class MicMuteKey extends SingletonAction<NoSettings> {
         await ev.action.showAlert(); // OS won't report/accept an input volume
         return;
       }
+      this.generation++;
       if (current > 0) {
         this.restoreLevel = current;
         await writeInputVolume(0);
       } else {
         await writeInputVolume(this.restoreLevel || 75);
       }
+      this.generation++; // a repaint that read while the write was in flight saw the old level
       if (ev.action.isKey()) await this.render(ev.action);
     } finally {
       this.toggling = false;
@@ -69,7 +75,9 @@ export class MicMuteKey extends SingletonAction<NoSettings> {
   }
 
   private async render(a: KeyAction<NoSettings>): Promise<void> {
+    const generation = this.generation;
     const level = await readInputVolume();
+    if (generation !== this.generation) return; // a toggle landed meanwhile and paints the truth itself
     await a.setTitle('');
     await paintKey(a, keyFace(micFace(level === 0, level !== undefined)));
   }

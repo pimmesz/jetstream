@@ -80,6 +80,8 @@ describe('toSlotKey (native → slot migration)', () => {
       settings: { kind: 'project', path: '/x', name: 'X' },
     });
     expect(toSlotKey('gg.pim.jetstream.fleet', null)?.settings).toEqual({ kind: 'fleet' });
+    expect(toSlotKey('gg.pim.jetstream.usage', null)?.settings).toEqual({ kind: 'usage' });
+    expect(toSlotKey('gg.pim.jetstream.attention', null)?.settings).toEqual({ kind: 'attention' });
     // The slot stopall kind is inert until allowStopKeys, so a working stop-all key stays native.
     expect(toSlotKey('gg.pim.jetstream.interruptall', null)).toBeNull();
     // A project key with no path is the bundled default board's placeholder: leave it native.

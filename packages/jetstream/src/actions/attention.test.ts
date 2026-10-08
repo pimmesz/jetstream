@@ -4,10 +4,11 @@ import { describe, it, expect, vi } from 'vitest';
 const h = vi.hoisted(() => ({ longPressMs: 0, waiting: [] as Array<{ id: string; name: string; path: string }> }));
 vi.mock('../config', () => ({ config: { get: () => ({ longPressMs: h.longPressMs, escalateAfterSec: 300 }) } }));
 vi.mock('../state', () => ({ board: { attention: () => h.waiting, byProject: () => ({}) } }));
-vi.mock('../switchto', () => ({ openProject: vi.fn(() => true) }));
+vi.mock('../switchto', () => ({ openProjectFromKey: vi.fn(async () => true) }));
 
-import { AttentionKey, pressAction, shouldFlash } from './attention';
-import { openProject } from '../switchto';
+import { AttentionKey } from './attention';
+import { doorbell, pressAction, shouldFlash } from '../doorbell';
+import { openProjectFromKey } from '../switchto';
 
 describe('pressAction (doorbell key-up)', () => {
   it('long hold with something waiting → snooze', () => {
@@ -50,36 +51,46 @@ describe('AttentionKey press routing', () => {
   it('short tap jumps to the neediest project', async () => {
     h.longPressMs = 999_999; // held ~0 < threshold → short tap
     h.waiting = [{ id: 'p1', name: 'proj', path: '/repo' }];
-    vi.mocked(openProject).mockClear();
+    vi.mocked(openProjectFromKey).mockClear();
     const att = new AttentionKey();
     const a = fakeKey();
     down(att, a);
     await up(att, a);
-    expect(openProject).toHaveBeenCalledWith('/repo');
+    expect(openProjectFromKey).toHaveBeenCalledWith('/repo');
   });
 
   it('long hold snoozes instead of jumping', async () => {
     h.longPressMs = 0; // held ~0 >= threshold → long hold
     h.waiting = [{ id: 'p1', name: 'proj', path: '/repo' }];
-    vi.mocked(openProject).mockClear();
-    const att = new AttentionKey();
-    const a = fakeKey();
-    down(att, a);
-    await up(att, a);
-    expect(openProject).not.toHaveBeenCalled();
+    vi.mocked(openProjectFromKey).mockClear();
+    const press = vi.spyOn(doorbell, 'press');
+    try {
+      const att = new AttentionKey();
+      const a = fakeKey();
+      down(att, a);
+      await up(att, a);
+      expect(openProjectFromKey).not.toHaveBeenCalled();
+      // Through the shared doorbell, so the attention slot kind shows the same snooze.
+      expect(press).toHaveBeenCalledTimes(1);
+      expect(doorbell.face().sub).toBe('snoozed');
+    } finally {
+      press.mockRestore();
+      h.waiting = [];
+      doorbell.face(); // an all clear ends the snooze for the tests below
+    }
   });
 
   // A jump whose editor-open FAILS must shake the key — silence reads as "nothing happened" on a
-  // repo whose folder moved. openProject was hard-pinned to true, so this branch never ran.
+  // repo whose folder moved. The opener was hard-pinned to true, so this branch never ran.
   it('shows an alert when the jump-to-project open fails', async () => {
     h.longPressMs = 999_999; // short tap → jump
     h.waiting = [{ id: 'p1', name: 'proj', path: '/gone' }];
-    vi.mocked(openProject).mockReturnValueOnce(false); // the repo moved / opener failed
+    vi.mocked(openProjectFromKey).mockResolvedValueOnce(false); // the repo moved / opener failed
     const att = new AttentionKey();
     const a = fakeKey();
     down(att, a);
     await up(att, a);
-    expect(openProject).toHaveBeenCalledWith('/gone');
+    expect(openProjectFromKey).toHaveBeenCalledWith('/gone');
     expect(a.showAlert).toHaveBeenCalled(); // feedback, not silence
   });
 
@@ -91,11 +102,11 @@ describe('AttentionKey press routing', () => {
       { id: 'p1', name: 'first', path: '/first' },
       { id: 'p2', name: 'second', path: '/second' },
     ];
-    vi.mocked(openProject).mockClear().mockReturnValue(true);
+    vi.mocked(openProjectFromKey).mockClear().mockResolvedValue(true);
     const att = new AttentionKey();
     const a = fakeKey();
     down(att, a);
     await up(att, a);
-    expect(openProject).toHaveBeenCalledWith('/first');
+    expect(openProjectFromKey).toHaveBeenCalledWith('/first');
   });
 });

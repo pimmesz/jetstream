@@ -1,4 +1,4 @@
-import { parseClaudeStatusline, writeCache, formatLine } from './index';
+import { parseClaudeStatusline, writeSessionCache, formatLine } from './index';
 
 /** Statusline hook entry (install into Claude Code settings.json as the status line
  * command). Claude pipes the session JSON on stdin each render; we parse it and, when
@@ -17,9 +17,12 @@ function readStdin(): Promise<string> {
 async function main(): Promise<void> {
   let line = '';
   try {
-    const feed = parseClaudeStatusline(JSON.parse(await readStdin()));
+    const payload: unknown = JSON.parse(await readStdin());
+    const feed = parseClaudeStatusline(payload);
     if (feed.available) {
-      await writeCache(feed);
+      // One snapshot per session: renders from different sessions must not overwrite each other.
+      const sessionId = (payload as { session_id?: unknown } | null)?.session_id;
+      await writeSessionCache(feed, sessionId);
       line = formatLine(feed);
     }
   } catch {

@@ -68,7 +68,7 @@ automation, usage, monitoring, permissions
 > - Stream Deck + dial (fleet scrubber) and two-page Board/Ops layouts
 > - Terminal-free setup: auto-wire + in-app fleet editor + Build-my-layout
 
-## Assets — generated in `marketing/` (regenerate with `node scripts/gen-store-assets.mjs`)
+## Assets: generated in `marketing/` (regenerate from `packages/jetstream` with `node scripts/gen-store-assets.mjs`)
 
 `scripts/gen-store-assets.mjs` composes the plugin's real key faces + brand into on-brand
 PNGs via headless Chrome (macOS, no deps). It writes:
@@ -99,7 +99,7 @@ sell the concept, a real deck sells that it's real.
 Jetstream turns your Stream Deck into a live cockpit for Claude Code.
 - Live status board — every project glows with its real state: working, needs you, done.
 - Attention doorbell + deck approve/deny for Claude permission prompts.
-- Usage gauge — live 5h / 7d subscription burn, plus model + context window.
+- Usage gauge: live 5h / 7d subscription burn and the next reset.
 - Fleet roll-up — one key summarizing every repo, colored by the worst state present.
 - Stream Deck + — a dial scrubs your whole fleet on the touchscreen.
 - Two-page deck — a status Board and a controls page (stop-all + your own shortcuts).

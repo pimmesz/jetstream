@@ -138,7 +138,7 @@ export function checkHooksPresent(raw: RawRead): CheckResult {
   if (raw === undefined) {
     return {
       status: 'warn',
-      message: 'no ~/.claude/settings.json — run `jetstream hooks install`',
+      message: "no Claude settings.json (~/.claude, or $CLAUDE_CONFIG_DIR) yet; run `jetstream hooks install`",
       fixId: 'hooks',
     };
   }
@@ -149,7 +149,7 @@ export function checkHooksPresent(raw: RawRead): CheckResult {
     // NOT auto-fixable: installing over a corrupt settings.json would fail the same parse.
     return {
       status: 'warn',
-      message: '~/.claude/settings.json is present but not valid JSON — fix or remove it',
+      message: "Claude's settings.json is present but not valid JSON; fix or remove it",
     };
   }
   // The STATUS hook specifically: it is the one that lights the board. A machine with only the
@@ -172,13 +172,13 @@ export function checkHooksPresent(raw: RawRead): CheckResult {
         fixId: 'hooks',
       };
     }
-    return { status: 'ok', message: 'Jetstream hooks present in ~/.claude/settings.json' };
+    return { status: 'ok', message: "Jetstream hooks present in Claude's settings.json" };
   }
   return hasJetstreamHooks(parsed)
     ? {
         status: 'warn',
         message:
-          'the per-project status hook (status-hook.js) is missing from ~/.claude/settings.json — other Jetstream hooks are wired, but the board cannot light up. Run `jetstream hooks install`',
+          "the per-project status hook (status-hook.js) is missing from Claude's settings.json. Other Jetstream hooks are wired, but the board cannot light up. Run `jetstream hooks install`",
         fixId: 'hooks',
       }
     : { status: 'warn', message: 'Jetstream hooks not found — run `jetstream hooks install`', fixId: 'hooks' };

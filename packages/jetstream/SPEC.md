@@ -1,8 +1,8 @@
 # Jetstream — SPEC (v1)
 
 **A physical command board for Claude Code across all your projects.** One Stream Deck key per
-project; each glows with that project's live Claude status — grey (no session), blue (idle), **red
-(working)**, **amber (needs you)**, **green (done)** — and pressing it jumps you into that project.
+project; each glows with that project's live Claude status: grey (no session), slate (idle), **orange
+(working)**, **amber (needs you)**, **green (done)**. Pressing it jumps you into that project.
 Plus a "needs you" doorbell and a usage gauge. It reads status from Claude Code lifecycle hooks, so
 it works for the interactive sessions you actually run all day.
 
@@ -20,9 +20,10 @@ amber keys (deck-answerable `!` vs keyboard-only `?`), a longer/legible **permis
 and a labelled **sooner-of 5h/7d reset** on the gauge. v1.3
 **item G** added the consolidated **`jetstream` CLI** (`hooks install` / `doctor` / `setup`) and
 **config-file projects** — a `projects.json` that seeds the board's fleet (so Fleet + Attention cover
-repos without a placed key) plus an optional settings preset. The plugin also **auto-wires its status + permission hooks on first launch** (`autoWireHooks`:
-a config-dir marker makes it truly once so manual removal sticks; same-script hook entries are
-refreshed across node-runtime changes, never duplicated; non-fatal; the statusline stays CLI-only),
+repos without a placed key) plus an optional settings preset. The plugin also **auto-wires its hooks on first launch** (`autoWireHooks`: status, permission, the
+`PreToolUse` stop gate, and the usage statusline when you have none; a config-dir marker records the
+hook-set version, so manual removal sticks until an update adds a hook; same-script hook entries are
+refreshed across node-runtime changes, never duplicated; non-fatal),
 so a fresh install lights up with no terminal step; the CLI `setup` stays for the `projects.json`
 template and manual re-wiring. On top sits
 **`jetstream init`** (init.ts) — the guided wizard (repos via scan or path-by-path, theme, timings →
@@ -42,8 +43,9 @@ then offers the generated key layout in the same conversation; a **two-page bund
 **live-process session discovery** (discover.ts) + **board restart-persistence** (state.ts) — see the
 status section; and the `projects.json`↔placed-key overlap fix (state.ts `projects()`: a placed key
 suppresses a seed claiming the same path and overrides by id, so a repo never shows twice — deck
-wins). Pressing a Project key now opens the project folder **in your editor** (switchto.ts:
-VS Code → Cursor → `$EDITOR`, else the OS opener — no shell, no terminal, never launches `claude`),
+wins). Pressing a Project key now opens the project folder **in your editor** (switchto.ts: on
+macOS VS Code, then Cursor, else Finder; elsewhere `code`, then `cursor`, then `$EDITOR`, else the OS
+opener; no shell, no terminal, never launches `claude`),
 replacing the planned jump-to-terminal UX. Remaining: on-device verification (a real deck + real
 `~/.claude/settings.json`) and the Windows gaps (interrupt + process discovery are macOS/Linux-only;
 the editor/folder open works everywhere).
@@ -52,10 +54,10 @@ the editor/folder open works everywhere).
 
 | Key                    | Face / colour                                                                                        | Press                                                                                             | Backed by                          |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **Project** (one each) | name + live colour: grey none · blue idle · **red working** (+ elapsed) · **amber needs you** (`!` deck-answerable / `?` keyboard) · **green done** (`done Xm · +120/-40`) · **magenta failed** (`✕`, `failed Xm` — the API killed the turn) | switch to it — open the project folder in an auto-detected editor (VS Code → Cursor → `$EDITOR`, else the OS opener) | `status` reducer ← hooks           |
+| **Project** (one each) | name + live colour: grey none · slate idle · **orange working** (+ elapsed) · **amber needs you** (sub-line `approve on deck` when the deck holds the prompt, else `answer in Claude`) · **green done** (`done Xm · +120/-40`) · **magenta failed** (`✕`, `failed Xm`: the API killed the turn) | switch to it: open the project folder in an auto-detected editor (VS Code, then Cursor, else Finder) | `status` reducer ← hooks           |
 | **Fleet** roll-up      | one always-visible key: `3w 1! 2✓` counts, coloured by the WORST state present (needsInput > failed > working > done) | lit board: ack blip · dark board: shows why (`add repos` / `wire hooks` / `all idle`)             | `status.summarize`/`worstStatus`   |
 | **Attention** doorbell | dim; lights **amber** (needs input) or **magenta** (a died turn) and names the project              | jump to that project                                                                              | `status.needsAttention`            |
-| **Usage** gauge        | 5h / 7d used %, sooner-of reset countdown                                                             | (read-only)                                                                                        | `usage.resolveUsage`               |
+| **Usage** gauge        | 5h / 7d used %, sooner-of reset countdown; a `usage` slot with `provider: "codex"` shows Codex instead, its long window labelled by length (`7d`, or `30d` for a monthly one) | re-read now                                                                                        | `usage.resolveUsage` / `resolveCodexUsage` |
 
 Projects are user-configured `{ id, name, path }` — whatever repos you run
 Claude in; each Project key's settings panel takes a name + path.
@@ -65,8 +67,9 @@ Claude in; each Project key's settings panel takes a name + path.
 **Approve** or **Deny** key is pressed (or ~90s passes, after which Claude shows its normal dialog).
 Place one Approve key + one Deny key; they act on the oldest pending request. You still can't answer
 a free-text question or drive the TUI — for those, amber = "go to your keyboard," and the press gets
-you there. **Interrupt (v1.1):** long-press a Project key to SIGINT its running Claude session (the
-lifecycle hook reports its parent PID for this).
+you there. **Stop (4.0):** long-press a working Project key to stop its current turn. The press writes a stop flag
+that the `PreToolUse` stop gate consumes at the next tool call, so the turn ends and the session stays
+open (an external SIGINT would end the whole session).
 
 ## The Ops page (post-item-G key set)
 
@@ -76,7 +79,7 @@ the Mini has no room for a second page).
 
 | Key                    | Face / colour                                                                     | Press                                                                          | Backed by                     |
 | ---------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------- |
-| **Stop all**           | `N working` — red while anything runs                                              | SIGINT every running Claude session across the fleet (the panic key)            | `board.allPids()` + switchto  |
+| **Stop all**           | `N working`, red while anything runs                                              | stop the current turn of every running Claude session (the panic key)          | `stopSessions(board.allActiveSessions())` |
 | **Fleet dial** (SD +)  | touchscreen: the selected project's name + live status line                        | rotate scrubs the fleet · tap / short press opens it · long press interrupts    | encoder.ts (dial.ts is glue)  |
 
 The **Fleet dial** (dial.ts) is the Stream Deck + encoder take on the board: one dial to scan the
@@ -108,7 +111,18 @@ neither the working orange nor the red reserved for deny/stop.
 The hook listener on `127.0.0.1` (`JETSTREAM_PORT`, default 41321) answers hook events, permission decisions and live board
 edits, so whatever can reach it can drive your deck. It is authenticated by a shared secret:
 32 random bytes written `0600` under the config dir (`listener-token.ts`), generated by the
-plugin on first run, sent by the hooks and the CLI in an **`x-jetstream-token`** header.
+plugin on first run. Current clients never send it. `/hook` carries no token (it only colours keys).
+The permission hook (`/permission`) and chat's live edits (`/slot`) sign each request instead: an
+**`x-jetstream-nonce`** of `<send time in ms>.<32 random hex>` and an **`x-jetstream-mac`**, the
+HMAC-SHA256 under the token of the kind (`req` or `slot`, so a MAC made for one endpoint is refused
+on the other), the nonce and the exact body. The plugin answers a permission request with its own
+MAC (`res`, the nonce and the decision), and the hook prints nothing unless it verifies. The plugin
+refuses a signed request whose nonce is malformed, more than 2 minutes from its clock, or already
+seen; it remembers up to 1024 nonces with a matching MAC for their 2-minute window, and refuses new
+ones when full rather than forget one. A hook or CLI older than signing still sends the token itself
+in an **`x-jetstream-token`** header, which the plugin still accepts. A newer hook or CLI against a
+plugin older than signing gets 401: prompts fall back to Claude's own dialog and chat to its
+restart write until the plugin is updated.
 **The mint path is authoritative.** `XDG_CONFIG_HOME` is normally set in a shell profile and absent
 from the desktop env, so every process derives its own candidate list — and readers take the FIRST
 candidate holding a token. Writing the right value in one place is therefore not enough: a stale
@@ -125,16 +139,21 @@ truncated or hand-edited file is healed, never spread. Creates are atomic — a 
 version. Browser-borne requests are blocked separately by the Origin/Referer guard in server.ts.
 
 **Honest scope — a bar-raiser, not a boundary.** It does not stop a process running AS you (it can
-read the file too). It also does not survive **port squatting**: the port is fixed and unprivileged,
-so another local user who binds it (`JETSTREAM_PORT`, default 41321) before Stream Deck starts is handed the token in
-the hooks' own request headers and can replay it later. Closing that needs a transport that never
-hands the secret to whoever answers — a `0700` unix socket, or challenge/response — which is the
-shape any future hardening should take. What the token DOES stop is the easy case it was written
+read the file too). **Port squatting:** the port is fixed and unprivileged, so another local user
+can bind it (`JETSTREAM_PORT`, default 41321) before Stream Deck starts. Current hooks and the CLI
+never hand it the token, and it cannot forge a signed permission answer, so the permission hook
+prints nothing and Claude asks in its own dialog. The squatter still reads what is sent to it
+(status events, permission prompts, chat's key edits), can tell chat an edit applied when it did
+not (a `/slot` answer is not signed), and receives the token from a hook or CLI older than signing
+until that one is updated. A signed request it captured, which the real plugin therefore never saw,
+can be replayed to the plugin once within its 2-minute window; closing that needs a challenge the
+plugin issues first (an extra round trip). What the token DOES stop is the easy case it was written
 for: another local process merely connecting to an already-running listener and driving your board.
 
 **Enforcement is ON** (`ENFORCE_TOKEN = true`). The token shipped in 2.0.0 — 2.0.2 was the first
 build that actually reached a deck — and the two-release grace period is long past. An untokened
-request is now refused on `/permission` and `/slot`; `/hook` stays served, so a hook older than the
+request (no valid signature and no valid token header) is now refused on `/permission` and `/slot`;
+`/hook` stays served, so a hook older than the
 token still colours keys instead of blacking out the board, and re-installing hooks restores the
 rest. A WRONG token was always rejected: no legitimate client sends one.
 
@@ -173,10 +192,19 @@ session re-shows immediately (with a live PID for interrupt), a finished one sta
 resurrected "working"), and an ambiguous cwd is left to hooks/discovery. Both are best-effort and
 non-fatal.
 
+**Hook spool** (status-hook.js, spool.ts in the status package): an event the plugin refused because
+it was not listening (Stream Deck restarting for a chat structural edit, say) is appended to
+`~/.jetstream/hook-spool.jsonl` and replayed once the plugin listens again, applied as of when it
+fired. Only the fields the board reads are kept (event name, session id, cwd, notification type,
+source, tool name, agent id, pid, fire time and the number of background tasks), never prompt text
+or tool input. Events over an hour old are not replayed, and the spool starts over when the next
+event would take it past 256 KB or its last append is over an hour old.
+
 ## Verified capability matrix (re-verify at build — these change)
 
-Sources: Claude Code headless/sessions/hooks/statusline docs; `@elgato/streamdeck` 2.1.0
-(Node ≥ 20.5.1); `@elgato/cli` 1.7.4 (`streamdeck` CLI: create / link / restart / pack / validate).
+Sources: Claude Code headless/sessions/hooks/statusline docs; `@elgato/streamdeck` 3 (the plugin runs
+on Stream Deck's bundled Node 24 runtime, Stream Deck app 7.1 or newer); the npm CLI needs Node 22.12 or
+newer; `@elgato/cli` 1.8 (`streamdeck` CLI: create / link / restart / pack / validate).
 
 **Feasible:** launch one-shot `claude -p` (model, permission-mode, allowedTools, append-system-
 prompt; prompt via **stdin**); stream `--output-format stream-json`; `session_id`/`result`/`is_error`

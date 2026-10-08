@@ -4,9 +4,12 @@ import { addToFleet, mergeFleet, writeFleetFile } from './fleet';
 import { projectsConfigPath, readConfigFile , resolveProjectsConfigPath } from './projects-config';
 import { DECK_MODELS, type DeckModel } from './profile';
 import { NO_SETTINGS_TYPE_NAMES, resolvePlacements, type Placement } from './layout';
-import { boardContext, renderBoardMap, type BoardLayout } from './board-layout';
-import { describePlan, planLayout, type ApplyOutcome } from './chat-apply';
+import { boardContext, labelForAction, renderBoardMap, type BoardLayout } from './board-layout';
+import { sameSlot, storedSlotSettings } from './slot-command';
+import { describePlan, planLayout, SLOT, type ApplyOutcome } from './chat-apply';
 import type { ForeignAction } from './plugin-catalog';
+import type { FleetSnapshot } from './fleet';
+import { errorMessage } from './errors';
 
 /**
  * `jetstream chat` — a CONVERSATIONAL alternative to the step-by-step `init` wizard: describe
@@ -84,7 +87,7 @@ export interface ChatDeps {
   ask: (prompt: string) => Promise<ModelReply>;
   configPath?: string;
   /** Injected in tests; defaults to the atomic projects.json writer. */
-  write?: (projects: ProjectConfig[], settings: Partial<JetstreamConfig>) => void;
+  write?: (projects: ProjectConfig[], settings: Partial<JetstreamConfig>, base: FleetSnapshot) => FleetSnapshot | void;
   /** After a fleet change when there is no board yet: offer a first, ready-made board. */
   onWritten?: (projects: ProjectConfig[]) => Promise<void>;
   /** Apply an approved layout (live, or by an in-place profile write) to the board and deck the user
@@ -225,6 +228,23 @@ function extractSettings(raw: unknown): Partial<JetstreamConfig> {
   return out;
 }
 
+/** The board with `placements` applied, as the plugin now holds them. Pure. */
+function withKeys(board: BoardLayout, placements: Placement[]): BoardLayout {
+  const keys = new Map(board.keys);
+  for (const p of placements) {
+    const settings = storedSlotSettings(p.settings); // what the plugin keeps, not what was sent
+    keys.set(`${p.column},${p.row}`, { uuid: p.uuid, settings, label: labelForAction(p.uuid, settings) });
+  }
+  return { ...board, keys };
+}
+
+/** A live edit Stream Deck may not have saved to disk yet. `before` is what disk can show there meanwhile:
+ * the settings the key held before each of chat's live edits to it. */
+interface PendingEdit {
+  placement: Placement;
+  before: unknown[];
+}
+
 /** A bound on model calls per session, so a conversation that never converges cannot loop forever. */
 const MAX_MODEL_TURNS = 20;
 
@@ -249,7 +269,7 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
     return 1;
   }
   const configPath = deps.configPath ?? resolveProjectsConfigPath();
-  const write = deps.write ?? ((p, s) => writeFleetFile(configPath, p, s));
+  const write = deps.write ?? ((p, s, base) => writeFleetFile(configPath, p, s, new Date(), base));
   const catalog = deps.catalog ?? [];
   let board = deps.board ?? null;
 
@@ -264,6 +284,8 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
 
   let transcript = '';
   let changed = false;
+  const pendingLive = new Map<string, PendingEdit>(); // `${col},${row}` → a live edit disk may not show yet
+  let liveTarget: { profileDir: string; pageId: string | undefined } | undefined;
   let correction: string | null = null; // a rejected-keys note sent back to the model once
   let corrected = false;
   for (let modelTurns = 0; modelTurns < MAX_MODEL_TURNS; ) {
@@ -381,10 +403,11 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
         }
         const merged = mergeFleet(current.projects, proposal.projects);
         // Settings MERGE over what is on disk: renderProjectsJson writes the block wholesale.
-        write(merged, { ...current.settings, ...proposal.settings });
-        fleet = merged;
+        // `current` is the base: anything another writer changed since this read is kept.
+        const saved = write(merged, { ...current.settings, ...proposal.settings }, current);
+        fleet = saved?.projects ?? merged;
       } catch (error) {
-        io.say(`Couldn't write the config: ${error instanceof Error ? error.message : String(error)}`);
+        io.say(`Couldn't write the config: ${errorMessage(error)}`);
         return 1;
       }
       if (proposal.projects.length > 0) io.say(`\nWrote ${fleet.length} project(s) to ${configPath}.`);
@@ -394,6 +417,22 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
     if (proposal.layout && deps.onLayout) {
       const outcome = await deps.onLayout(proposal.layout.placements, { deck: proposal.layout.deck, board });
       if (outcome !== 'declined' && outcome !== 'failed' && outcome !== 'unchanged') changed = true;
+      if (outcome === 'live' && board) {
+        // Remember what went live on THIS board, until disk shows it or another change there (see below).
+        // Only Jetstream slots the plan actually changed: an unchanged or native key was never written.
+        if (liveTarget?.profileDir !== board.profileDir || liveTarget?.pageId !== board.pageId) pendingLive.clear();
+        liveTarget = { profileDir: board.profileDir, pageId: board.pageId };
+        for (const k of planLayout(board, proposal.layout.placements)) {
+          if (k.route !== 'live') continue;
+          const coord = `${k.placement.column},${k.placement.row}`;
+          // Disk may still show this key as it was before this edit, or before an earlier unsaved one.
+          const before = [...(pendingLive.get(coord)?.before ?? []), board.keys.get(coord)?.settings];
+          pendingLive.set(coord, { placement: k.placement, before });
+        }
+      } else if (outcome === 'restarted' || outcome === 'imported') {
+        // A restart write put those keys on disk itself, so a remembered live edit there is obsolete.
+        for (const p of proposal.layout.placements) pendingLive.delete(`${p.column},${p.row}`);
+      }
     } else if (proposal.projects.length > 0) {
       // With a board already there, a fleet change needs no new profile: a repo gets a key on request.
       // A fresh fleet-only profile would drop every custom key if imported.
@@ -402,6 +441,22 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
       else io.say('Next: drag a Fleet + Attention key onto your deck.');
     }
     if (deps.readBoard) board = deps.readBoard() ?? board;
+    // Stream Deck may not have saved a live edit to disk yet, so the re-read can miss it: lay every live
+    // edit it does not show yet over it, or the next live edit would expect old settings and be refused.
+    // Only onto the same profile and page the edits went to.
+    if (board && liveTarget && board.profileDir === liveTarget.profileDir && board.pageId === liveTarget.pageId) {
+      for (const [coord, edit] of pendingLive) {
+        // Keep an edit only while disk still shows the key as it was before it. Anything else there (the
+        // edit itself, or a change made on the deck or by another chat) is what the key holds now.
+        const onDisk = board.keys.get(coord);
+        const isUnsaved =
+          onDisk?.uuid === SLOT &&
+          !sameSlot(onDisk.settings, storedSlotSettings(edit.placement.settings)) &&
+          edit.before.some((settings) => sameSlot(onDisk.settings, settings));
+        if (!isUnsaved) pendingLive.delete(coord);
+      }
+      board = withKeys(board, [...pendingLive.values()].map((edit) => edit.placement));
+    }
     if (board) transcript += `\nSystem: applied. The board now:\n${boardContext(board, catalog)}`;
     io.say('\nAnything else? (or "quit")');
   }

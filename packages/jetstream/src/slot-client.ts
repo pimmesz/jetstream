@@ -1,6 +1,7 @@
 import { request } from 'node:http';
+import { MAC_HEADER, NONCE_HEADER, newNonce, permissionMac } from '@pimmesz/jetstream-status';
 import { resolvedPort } from './server';
-import { readToken, TOKEN_HEADER } from './listener-token';
+import { readToken } from './listener-token';
 
 /** The loopback port the plugin's hook listener binds — the shared `resolvedPort()` so the CLI,
  * the plugin bind, and doctor's report can never drift. */
@@ -29,11 +30,15 @@ export function pluginAlive(timeoutMs = 800): Promise<boolean> {
 /** POST a slot command to the running plugin; resolves the HTTP status (200 = applied, 404 = no slot
  * at that coordinate on the active profile, 400 = rejected, 401 = token missing or stale), or -1 on
  * a connection failure. Read the token per call: the plugin writes it on first run, so a CLI that
- * cached it at import time would miss the very first one. */
+ * cached it at import time would miss the very first one.
+ * Signed like the permission hook: a nonce and an HMAC over the exact body, never the token itself,
+ * since whatever answers the /health probe could be another user squatting the port. */
 export function sendSlot(body: Record<string, unknown>, timeoutMs = 2000): Promise<number> {
   return new Promise((resolve) => {
-    const payload = Buffer.from(JSON.stringify(body), 'utf8');
+    const text = JSON.stringify(body);
+    const payload = Buffer.from(text, 'utf8');
     const token = readToken();
+    const nonce = newNonce();
     const req = request(
       {
         host: '127.0.0.1',
@@ -44,7 +49,7 @@ export function sendSlot(body: Record<string, unknown>, timeoutMs = 2000): Promi
         headers: {
           'content-type': 'application/json',
           'content-length': payload.length,
-          ...(token ? { [TOKEN_HEADER]: token } : {}),
+          ...(token ? { [NONCE_HEADER]: nonce, [MAC_HEADER]: permissionMac(token, 'slot', nonce, text) } : {}),
         },
       },
       (res) => {
