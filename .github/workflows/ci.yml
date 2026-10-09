@@ -466,14 +466,14 @@ jobs:
         env:
           VERSION: ${{ needs.bump-version.outputs.version }}
         run: |
-          # The registry can lag a version published seconds ago, so retry the fetch briefly.
-          for attempt in 1 2 3 4 5; do
+          # npm processes a new version for a few minutes before it can be fetched, so keep trying for up to 20.
+          for attempt in $(seq 1 40); do
             npm pack "@pimmesz/jetstream@${VERSION}" --ignore-scripts --pack-destination "$RUNNER_TEMP" && break
-            if [[ "$attempt" == 5 ]]; then
+            if [[ "$attempt" == 40 ]]; then
               echo "::error::npm has no @pimmesz/jetstream@${VERSION} tarball yet; re-run this job once npm view shows it."
               exit 1
             fi
-            sleep 15
+            sleep 30
           done
           tar -xzf "$RUNNER_TEMP/pimmesz-jetstream-${VERSION}.tgz" -C "$RUNNER_TEMP" --strip-components=2 \
             package/assets/gg.pim.jetstream.streamDeckPlugin
