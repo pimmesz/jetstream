@@ -19,7 +19,6 @@ import {
   runDoctor,
   type DoctorIO,
 } from './doctor';
-import { ENFORCE_TOKEN } from './listener-token';
 import type { BoardLayout } from './board-layout';
 import { DECK_MODELS } from './profile';
 
@@ -315,13 +314,12 @@ describe('checkListenerToken', () => {
     expect(r.message).toMatch(/differs between/);
   });
 
-  it('does NOT warn during the grace period — nothing the user does could clear it', () => {
-    // A warning whose prescribed command cannot change the outcome trains people to ignore
-    // doctor. The grace period is expected state, so it reports ok and says no action is needed;
-    // when ENFORCE_TOKEN flips, the same input stays ok with the stricter wording.
+  it('reports a healthy token as ok, and says what it is required for', () => {
+    // The token is enforced (DECISIONS.md 2026-07-25 #2) and untokened status events are accepted by
+    // design, so nothing here calls for action: a warning would only train people to ignore doctor.
     const r = checkListenerToken({ present: true, private: true, consistent: true });
     expect(r.status).toBe('ok');
-    expect(r.message).toMatch(ENFORCE_TOKEN ? /required/ : /no action needed/);
+    expect(r.message).toMatch(/required for permission answers and board edits/);
   });
 });
 

@@ -158,8 +158,19 @@ function makeIo(answers: string[]): {
 }
 
 describe('runChatSetup', () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+  /** A projects.json path in a fresh private folder, so the fleet read before a write is never a stranger's file. */
+  function absentConfigPath(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-chat-'));
+    dirs.push(dir);
+    return join(dir, 'projects.json');
+  }
+
   it('describe → propose → apply writes the validated fleet', async () => {
-    const { io } = makeIo(['3 repos in /dev', 'y']);
+    const { io, said } = makeIo(['3 repos in /dev', 'y']);
     const replies = ['{"projects":[{"name":"Falcon","path":"/dev/falcon"}]}'];
     let r = 0;
     const write = vi.fn();
@@ -167,11 +178,13 @@ describe('runChatSetup', () => {
       io,
       ask: async () => replies[r++] ?? null,
       write,
-      configPath: '/tmp/p.json',
+      configPath: absentConfigPath(),
     });
     expect(code).toBe(0);
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0]![0]).toHaveLength(1);
+    // The plugin reads projects.json only at startup, so the user is told the keys need a restart.
+    expect(said.some((l) => /Wrote 1 project\(s\) .*once the Stream Deck app restarts/.test(l))).toBe(true);
   });
 
   it('places a copy of a catalogued third-party key (Hue) with the settings from disk', async () => {
@@ -347,7 +360,7 @@ describe('runChatSetup', () => {
       io,
       ask,
       write,
-      configPath: '/tmp/p.json',
+      configPath: absentConfigPath(),
       claudeAvailable: () => true,
     });
     expect(code).toBe(0);
@@ -365,7 +378,7 @@ describe('runChatSetup', () => {
         '{"projects":[{"name":"Falcon","path":"/dev/falcon"},{"name":"Api","path":"/dev/api"}]}',
       write,
       onWritten,
-      configPath: '/tmp/p.json',
+      configPath: absentConfigPath(),
     });
     expect(code).toBe(0);
     expect(onWritten).toHaveBeenCalledTimes(1);
@@ -468,12 +481,52 @@ describe('runChatSetup', () => {
     expect(write.mock.calls[0]![0]).toHaveLength(2); // the refined fleet
   });
 
-  it('cancel writes nothing', async () => {
+  it('quit before any proposal writes nothing', async () => {
     const { io } = makeIo(['cancel']);
     const write = vi.fn();
     const code = await runChatSetup({ io, ask: async () => null, write });
     expect(code).toBe(0);
     expect(write).not.toHaveBeenCalled();
+  });
+
+  describe('discarding a proposal on screen writes nothing', () => {
+    const proposal =
+      '{"projects":[{"name":"New","path":"/dev/new"}],"layout":{"deck":"xl","keys":[{"coord":"a1","type":"usage"}]}}';
+
+    it('when the user answers n at the Apply prompt', async () => {
+      const { io, said } = makeIo(['add a repo', 'n']);
+      const write = vi.fn();
+      const onLayout = vi.fn(async () => {});
+      const code = await runChatSetup({ io, ask: async () => proposal, write, onLayout, configPath: absentConfigPath() });
+      expect(code).toBe(0);
+      expect(said).toContain('\nProposed fleet:'); // the proposal was on screen before it was discarded
+      expect(write).not.toHaveBeenCalled();
+      expect(onLayout).not.toHaveBeenCalled();
+      expect(said.some((l) => l.startsWith('Discarded.'))).toBe(true);
+    });
+
+    it('when the user picks Discard in the menu', async () => {
+      const { io, said } = makeIo(['add a repo']);
+      const write = vi.fn();
+      const onLayout = vi.fn(async () => {});
+      const prompts: string[] = [];
+      const select = async <T,>(prompt: string, choices: { label: string; value: T }[]): Promise<T> => {
+        prompts.push(prompt);
+        return choices.find((c) => c.label === 'Discard')!.value;
+      };
+      const code = await runChatSetup({
+        io: { ...io, select },
+        ask: async () => proposal,
+        write,
+        onLayout,
+        configPath: absentConfigPath(),
+      });
+      expect(code).toBe(0);
+      expect(prompts).toEqual(['Apply this?']);
+      expect(write).not.toHaveBeenCalled();
+      expect(onLayout).not.toHaveBeenCalled();
+      expect(said.some((l) => l.startsWith('Discarded.'))).toBe(true);
+    });
   });
 
   it('a failed model turn names the cause and keeps the conversation open', async () => {

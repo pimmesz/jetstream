@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { link, open, readFile, readdir, writeFile, mkdir, rename, stat, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 /** One rolling window's used percentage (0–100, counts up) + its reset time
@@ -122,8 +122,30 @@ export function defaultCacheDir(home = homedir()): string {
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 /** Older than the longest window (7 days) plus a day: it can say nothing about the current one. */
 const MAX_SNAPSHOT_AGE_MS = 8 * 24 * 3600_000;
+/** A live write renames its temp file within milliseconds, so one this old was left by a render that died. */
+const STALE_TMP_MS = 5 * 60_000;
 
-/** Write this session's snapshot, and drop snapshots too old to matter. */
+/** Remove writeCache temp files (`*.json.tmp-*`) in `dir` whose name starts with `prefix` and that
+ * are too old to belong to a write still in progress. Never throws. */
+async function removeStaleTmp(dir: string, prefix: string, now: number): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.includes('.json.tmp-')) continue;
+    const path = join(dir, name);
+    try {
+      if (now - (await stat(path)).mtimeMs > STALE_TMP_MS) await unlink(path);
+    } catch {
+      // another render removed it first
+    }
+  }
+}
+
+/** Write this session's snapshot, and drop snapshots and orphaned temp files too old to matter. */
 export async function writeSessionCache(
   feed: UsageFeed,
   sessionId: unknown,
@@ -168,6 +190,8 @@ export async function writeSessionCache(
       // removed by a later prune once it is old, and a fresh snapshot lost here is rewritten next render.
     }
   }
+  await removeStaleTmp(dir, '', now);
+  await removeStaleTmp(dirname(legacyPath), `${basename(legacyPath)}.tmp-`, now);
 }
 
 /** Read the cached feed, or null when absent/unreadable/invalid. Never throws. */

@@ -1,13 +1,16 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { SlotSettings } from './actions/slot';
 
-const run = promisify(execFile);
+const execFileP = promisify(execFile);
+// Bound every helper spawn like mic-control.ts: a wedged defaults or sips must reject, not leave a
+// slot render (and a live /slot edit waiting on it) pending forever.
+const run = (cmd: string, args: string[]) => execFileP(cmd, args, { encoding: 'utf8', timeout: 4000 });
 
 /** Cap on an explicit image-file icon: a key face is tiny, so refuse anything large rather than
  * base64 a huge file into memory / the SVG. */
@@ -65,16 +68,32 @@ export function resolveIcnsPath(
   return undefined;
 }
 
-/** Read an image file into a data URI, or undefined if it's missing, an unsupported type, or larger
- * than a key face has any business being. */
+/** Read an image file into a data URI, or undefined if it's missing, an unsupported type, not a
+ * regular file, or larger than a key face has any business being. */
 function fileToDataUri(path: string): string | undefined {
   const mime = imageMime(path);
   if (!mime || !existsSync(path)) return undefined;
+  let fd: number | undefined;
   try {
-    if (statSync(path).size > MAX_ICON_BYTES) return undefined;
-    return `data:${mime};base64,${readFileSync(path).toString('base64')}`;
+    // A device or FIFO behind an image name reports size 0, so check what was opened, not the path.
+    // O_NONBLOCK keeps a FIFO with no writer from hanging the open on the plugin's only thread.
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_ICON_BYTES) return undefined;
+    // Read one byte past the cap at most, so a file that grew after the fstat is still refused.
+    const buf = Buffer.alloc(MAX_ICON_BYTES + 1);
+    let size = 0;
+    while (size < buf.length) {
+      const n = readSync(fd, buf, size, buf.length - size, null);
+      if (n === 0) break;
+      size += n;
+    }
+    if (size > MAX_ICON_BYTES) return undefined;
+    return `data:${mime};base64,${buf.subarray(0, size).toString('base64')}`;
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -86,15 +105,29 @@ export async function appIconDataUri(
   platform: NodeJS.Platform = process.platform,
   // Injected so a test can drive the negative-cache lifecycle without shelling out to defaults/sips.
   // Same default-parameter DI as `platform` above; production always uses the real extractor.
+  // It resolves undefined for a definite miss (cached) and rejects for a transient one (retried).
   extract: (p: string) => Promise<string | undefined> = extractAppIcon,
 ): Promise<string | undefined> {
   if (platform !== 'darwin' || !appPath.endsWith('.app') || !existsSync(appPath)) return undefined;
   const hit = cache.get(appPath);
   if (hit !== undefined) return hit ?? undefined;
   const generation = cacheGeneration;
-  const uri = await extract(appPath);
+  let uri: string | undefined;
+  try {
+    uri = await extract(appPath);
+  } catch {
+    // A helper killed by its timeout says nothing about the app, so leave no negative entry: the
+    // next render retries. The reason is already in `failures`.
+    return undefined;
+  }
   if (generation === cacheGeneration) cache.set(appPath, uri ?? null);
   return uri;
+}
+
+/** True when a helper never gave an answer: killed by the timeout (no exit code) or never spawned (an
+ * errno string). A helper that exited non-zero did answer (no such key, an unconvertible icns). */
+function isTransient(error: unknown): boolean {
+  return typeof (error as { code?: unknown }).code !== 'number';
 }
 
 /** Why the last extraction failed, per app path — surfaced by `iconFailureReason` so a key stuck on
@@ -113,7 +146,12 @@ async function extractAppIcon(appPath: string): Promise<string | undefined> {
   try {
     const { stdout } = await run('defaults', ['read', join(appPath, 'Contents', 'Info'), 'CFBundleIconFile']);
     iconName = stdout.trim();
-  } catch {
+  } catch (error) {
+    if (isTransient(error)) {
+      const why = (error as Error).message;
+      failures.set(appPath, `defaults gave no CFBundleIconFile answer, retried next render: ${why}`);
+      throw error;
+    }
     // No CFBundleIconFile (the icon lives in an asset catalog) or an unreadable Info.plist.
     failures.set(appPath, 'no CFBundleIconFile — the icon is in an asset catalog, not a loose .icns');
     return undefined;
@@ -132,9 +170,17 @@ async function extractAppIcon(appPath: string): Promise<string | undefined> {
   try {
     // argv array, never a shell; -Z scales the longest side to 144 for a 144px key.
     await run('sips', ['-s', 'format', 'png', '-Z', '144', icns, '--out', out]);
+  } catch (error) {
+    rmSync(out, { force: true });
+    failures.set(appPath, `sips could not convert ${icns}: ${(error as Error).message}`);
+    if (isTransient(error)) throw error;
+    return undefined;
+  }
+  // sips answered, so a missing or unreadable PNG is a definite miss: cached, not re-spawned.
+  try {
     return `data:image/png;base64,${readFileSync(out).toString('base64')}`;
   } catch (error) {
-    failures.set(appPath, `sips could not convert ${icns}: ${(error as Error).message}`);
+    failures.set(appPath, `sips exited 0 but left no readable PNG for ${icns}: ${(error as Error).message}`);
     return undefined;
   } finally {
     rmSync(out, { force: true });

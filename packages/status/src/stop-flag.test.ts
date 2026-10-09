@@ -2,7 +2,14 @@ import { mkdirSync, mkdtempSync, existsSync, utimesSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { STOP_FLAG_TTL_MS, clearStopFlagOnTurnEnd, stopFlagDir, stopFlagPath, takeStopFlag } from './stop-flag';
+import {
+  STOP_FLAG_TTL_MS,
+  STOP_OUTPUT,
+  clearStopFlagOnTurnEnd,
+  stopFlagDir,
+  stopFlagPath,
+  takeStopFlag,
+} from './stop-flag';
 import { activeSessions, initialState, reduce, type HookEvent } from './index';
 
 function plant(home: string, sessionId: string, ageMs = 0): string {
@@ -39,6 +46,10 @@ describe('stop flags', () => {
     expect(existsSync(path)).toBe(false);
     expect(() => clearStopFlagOnTurnEnd('Stop', 'sess-3', home)).not.toThrow(); // nothing left
     expect(() => clearStopFlagOnTurnEnd('Stop', '../x', home)).not.toThrow();
+  });
+
+  it('the gate output tells Claude to stop processing, with a reason to show', () => {
+    expect(JSON.parse(STOP_OUTPUT)).toEqual({ continue: false, stopReason: expect.any(String) });
   });
 
   it('a session id that could escape the flag directory is refused', () => {

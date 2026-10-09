@@ -36,8 +36,8 @@ Shipped since item G: **`jetstream chat`** (chat-setup.ts + the CLI's `chat` com
 setup: describe your repos in plain English, Claude returns a structured proposal, the code validates
 it through the same fleet rules as the wizard and writes projects.json (the model never touches disk),
 then offers the generated key layout in the same conversation; a **two-page bundled deck**
-(profile.ts) — a **Board** page (status keys) and an **Ops** page (controls) ship in the manifest's
-`Profiles` for Mini/MK.2/XL, linked by a **page-nav key** (nav.ts); the formerly-deferred
+(profile.ts): a **Board** page (status keys) ships in the manifest's `Profiles` for Mini/MK.2/XL and
+an **Ops** page (controls) for MK.2/XL, linked by a **page-nav key** (nav.ts); the formerly-deferred
 **Stream Deck + dial** (dial.ts + encoder.ts); the Ops-page control key **stop-all**
 (interrupt-all.ts) — see the Ops-page table below;
 **live-process session discovery** (discover.ts) + **board restart-persistence** (state.ts) — see the
@@ -65,7 +65,20 @@ Claude in; each Project key's settings panel takes a name + path.
 **Deck approvals (v1.1):** you CAN approve/deny a permission prompt from the deck. Claude's
 `PermissionRequest` hook is synchronous, so Jetstream's hook holds its response open until an
 **Approve** or **Deny** key is pressed (or ~90s passes, after which Claude shows its normal dialog).
-Place one Approve key + one Deny key; they act on the oldest pending request. You still can't answer
+Place one Approve key + one Deny key; they act on the oldest pending request.
+**Always-Allow:** holding Approve for 1500 ms (fixed, independent of the long-press setting) turns the
+key red with `auto-allow <tool>?`. Releasing approves the request and arms a memory-only,
+session-scoped rule, keyed on the exact command for Bash and on the tool otherwise. A Bash rule
+covers only the exact same command run the same way (it also keys on `dangerouslyDisableSandbox`),
+so a rule armed inside the sandbox never covers that command with the sandbox disabled. A compound
+command is never armed: one with `;`, `|`, `||`, `&&`, a lone `&`, a backtick, a newline, or any
+`(`, `)`, `{`, `}` or `[[`. The brackets cover command and process substitution (`$(` `<(` `>(` `=(`)
+and the zsh forms (Claude runs Bash in the user's shell, zsh on macOS) of an `always` block, a glob
+qualifier that runs code (`(e:...:)`, `(+func)`), a `case x)` arm and the short `if [[ c ]] cmd`. The key then reads `chained: tap only` and the
+release only alerts. Deny is always one-shot. The face
+names the request's project on its top line and marks a summary cut at 18 characters (what fits the
+key at 14px) with a corner `*`. A Bash command that is compound and does not fit the face, or spans
+more than one line, is not held, so Claude shows its own dialog at once. You still can't answer
 a free-text question or drive the TUI — for those, amber = "go to your keyboard," and the press gets
 you there. **Stop (4.0):** long-press a working Project key to stop its current turn. The press writes a stop flag
 that the `PreToolUse` stop gate consumes at the next tool call, so the turn ends and the session stays
@@ -163,8 +176,9 @@ can bind it (`JETSTREAM_PORT`, default 41321) before Stream Deck starts. Current
 never hand it the token, and it cannot forge a signed answer, so the permission hook prints nothing
 and Claude asks in its own dialog, and chat never reports an edit applied on its word. A request it
 captured carries a challenge the squatter made up, which the real plugin never issued, so it cannot
-be replayed there. The squatter still reads what is sent to it (status events, permission prompts,
-chat's key edits). Older clients keep the older gaps until they are updated: a 4.1.0-format request
+be replayed there. The squatter still reads what is sent to it (status events, though only the
+fields the board reads; permission prompts; chat's key edits). Older clients keep the older gaps
+until they are updated: a 4.1.0-format request
 a squatter captured can be replayed to the plugin once within its 2-minute window, a squatter can
 tell a 4.1.0 CLI that an edit applied (its `/slot` answer is unsigned), and a hook or CLI older than
 signing hands it the token. What the token DOES stop is the easy case it was written for: another
@@ -195,8 +209,10 @@ clients on the older one would be rejected as presenting a WRONG token). Doctor 
 
 Claude Code hooks fire during **every** session (interactive included) and can run a command. Install
 Jetstream's hook globally in `~/.claude/settings.json` for `SessionStart` / `UserPromptSubmit` /
-`Notification` / `Stop` / `SessionEnd` (etc.); each fires `jetstream-status-hook`, which POSTs the
-payload (carrying `cwd` + `session_id`) to the plugin's **local HTTP server**. The `status` reducer
+`Notification` / `Stop` / `SessionEnd` (etc.); each runs the plugin's bundled status hook
+(`exec '<node>' '<plugin>/bin/status-hook.js'`, written by `jetstream hooks install` or the
+first-launch auto-wire), which POSTs the fields of the payload the board reads (carrying `cwd` +
+`session_id`) to the plugin's **local HTTP server**. The `status` reducer
 maps events → per-session status, `matchProject(cwd)` routes a session to its project key, and
 `statusByProject` aggregates (needsInput > failed > working > done > idle) into the key colour. The hook is
 **silent** (prints nothing — some hooks treat stdout as injected context) and always exits 0, so it
@@ -217,8 +233,8 @@ it was not listening (Stream Deck restarting for a chat structural edit, say) is
 `~/.jetstream/hook-spool.jsonl` and replayed once the plugin listens again, applied as of when it
 fired. Only the fields the board reads are kept (event name, session id, cwd, notification type,
 source, tool name, agent id, pid, fire time and the number of background tasks), never prompt text
-or tool input. Events over an hour old are not replayed, and the spool starts over when the next
-event would take it past 256 KB or its last append is over an hour old. The plugin writes to it too:
+or tool input. The live POST sends the same fields, since `/hook` is untokened. Events over an hour
+old are not replayed, and the spool starts over when the next event would take it past 256 KB or its last append is over an hour old. The plugin writes to it too:
 when Stream Deck closes it before the board restore has settled, it appends the live events its
 restore gate was still holding (already answered 204), with the same fields, so the next instance
 replays them in fire order.
@@ -256,17 +272,17 @@ anything that ever spawns again.
 
 ## Architecture (monorepo)
 
-- **`packages/usage`** — BUILT (12 tests). Reads Claude/Codex usage into a typed `UsageFeed`; ships a
+- **`packages/usage`**: BUILT, unit-tested. Reads Claude/Codex usage into a typed `UsageFeed`; ships a
   statusline hook that captures it to a cache the reader/resolver reads. Node built-ins only.
-- **`packages/claude`** — BUILT (9 tests). Drives `claude -p`: pure `buildArgs`, `sanitizeEnv`
+- **`packages/claude`**: BUILT, unit-tested. Drives `claude -p`: pure `buildArgs`, `sanitizeEnv`
   (strips the API key), `parseStreamLine`, and `runClaude` (injectable spawn). Node built-ins only.
-- **`packages/status`** — BUILT (9 tests). The hero core: `parseHookPayload`, `matchProject`,
+- **`packages/status`**: BUILT, unit-tested. The hero core: `parseHookPayload`, `matchProject`,
   `reduce`, `statusByProject`, `needsAttention`, `colorFor`, + the silent lifecycle hook that POSTs
   to the plugin. Pure reducer + a thin hook. Node built-ins only.
-- **`packages/jetstream`** — BUILT. The `@elgato/streamdeck` plugin: `<uuid>.sdPlugin` +
+- **`packages/jetstream`**: BUILT. The `@elgato/streamdeck` plugin: `<uuid>.sdPlugin` +
   `manifest.json`, one `SingletonAction` per key type (project / fleet / attention / usage /
-  approve-deny / settings / nav / build / stop-all / coord / grid / the generic slot, plus the SD+
-  fleet dial), the **local HTTP hook-listener server** feeding the `status` reducer, key rendering
+  approve-deny / settings / nav / build / stop-all / micmute / coord / grid / the generic slot, plus
+  the SD+ fleet dial), the **local HTTP hook-listener server** feeding the `status` reducer, key rendering
   (colour + label + elapsed), the switch actions, the consolidated **`jetstream` CLI** (`init` — the
   guided wizard: projects.json + hooks + an optional prebuilt key layout; `chat` — the conversational
   setup: the model proposes, the code validates + writes, then offers the layout; `hooks install`

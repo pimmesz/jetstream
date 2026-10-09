@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  boardContext,
   describeKeyForModel,
   labelForAction,
+  parsePreferredProfiles,
   pruneCustomProfiles,
   readBoardLayout,
   renderBoardMap,
@@ -61,6 +63,20 @@ describe('labelForAction', () => {
     expect(labelForAction('gg.pim.jetstream.slot', { kind: 'project', name: 'Falcon', path: '/dev/x' })).toBe('Falcon');
     expect(labelForAction('gg.pim.jetstream.slot', { kind: 'project', path: '/Users/me/loudini' })).toBe('loudini');
   });
+
+  // A run of quotes followed by another character made /^"+|"+$/ backtrack quadratically: seconds per call.
+  it('strips the quotes around an app path in linear time, even with 200k quotes inside it', () => {
+    const path = `x${'"'.repeat(200_000)}y`;
+    const timed = (run: () => unknown): number => {
+      const start = performance.now();
+      run();
+      return performance.now() - start;
+    };
+    expect(timed(() => labelForAction('com.elgato.streamdeck.system.open', { path }))).toBeLessThan(1000);
+    expect(timed(() => labelForAction('gg.pim.jetstream.slot', { kind: 'app', app: path }))).toBeLessThan(1000);
+    expect(timed(() => toSlotKey('com.elgato.streamdeck.system.open', { path }))).toBeLessThan(1000);
+    expect(toSlotKey('com.elgato.streamdeck.system.open', { path: `"${path}"` })?.settings.app).toBe(path);
+  });
 });
 
 describe('toSlotKey (native → slot migration)', () => {
@@ -92,6 +108,47 @@ describe('toSlotKey (native → slot migration)', () => {
     expect(toSlotKey('gg.pim.jetstream.slot', { kind: 'app', app: '/A.app' })).toBeNull();
     expect(toSlotKey('com.elgato.streamdeck.system.text', { pastedText: 'hi' })).toBeNull();
     expect(toSlotKey('com.elgato.streamdeck.system.open', {})).toBeNull(); // no path → nothing to migrate
+  });
+});
+
+describe('parsePreferredProfiles', () => {
+  // Shaped like `defaults read com.elgato.StreamDeck` on Stream Deck 7 with three devices; ids redacted.
+  const output = [
+    '{',
+    '    Devices =     {',
+    '        "device-1" =         {',
+    '            DeviceName = "Stream Deck";',
+    '            ESDProfilesInfo =             {',
+    '                ESDProfilesPreferred = "AAAAAAAA-1111-2222-3333-444444444444";',
+    '            };',
+    '        };',
+    '        "device-2" =         {',
+    '            DeviceName = "Stream Deck XL";',
+    '            ESDProfilesInfo =             {',
+    '                ESDProfilesPreferred = "BBBBBBBB-1111-2222-3333-444444444444";',
+    '                ESDProfilesSorting = "CCCCCCCC-1111-2222-3333-444444444444,DDDDDDDD-1111-2222-3333-444444444444";',
+    '            };',
+    '        };',
+    '        "device-3" =         {',
+    '            DeviceName = "Stream Deck Mobile";',
+    '            ESDProfilesInfo =             {',
+    '                ESDProfilesPreferred = "EEEEEEEE-1111-2222-3333-444444444444";',
+    '            };',
+    '        };',
+    '    };',
+    '}',
+  ].join('\n');
+
+  it('returns each device\'s preferred profile, lowercased, and never a profile from the sort order', () => {
+    expect(parsePreferredProfiles(output)).toEqual([
+      'aaaaaaaa-1111-2222-3333-444444444444',
+      'bbbbbbbb-1111-2222-3333-444444444444',
+      'eeeeeeee-1111-2222-3333-444444444444',
+    ]);
+  });
+
+  it('returns nothing for output without a preferred profile', () => {
+    expect(parsePreferredProfiles('{\n    ESDDebug = 0;\n}')).toEqual([]);
   });
 });
 
@@ -230,21 +287,30 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** Build a fake ProfilesV3 store with the given profiles (one Keypad page each). */
+type StoredKeys = Record<string, { UUID: string; Settings?: unknown }>;
+
+/** Build a fake ProfilesV3 store in the Stream Deck 7 shape: profile i shows page `page<i>` (`actions`),
+ * and `otherPage` adds a second page `page<i>-2` it does not show. `isLegacy` omits the `Pages` listing. */
 function fakeStore(
-  profiles: Array<{ name: string; model: string; actions: Record<string, { UUID: string; Settings?: unknown }> }>,
+  profiles: Array<{ name: string; model: string; actions: StoredKeys; otherPage?: StoredKeys; isLegacy?: boolean }>,
 ): string {
   const dir = mkdtempSync(join(tmpdir(), 'jetstream-store-'));
   tmpDirs.push(dir);
   profiles.forEach((p, i) => {
     const prof = join(dir, `PROFILE${i}.sdProfile`);
-    const page = join(prof, 'Profiles', `PAGE${i}`);
-    mkdirSync(page, { recursive: true });
+    const pages: Array<[string, StoredKeys]> = [[`page${i}`, p.actions]];
+    if (p.otherPage) pages.push([`page${i}-2`, p.otherPage]);
+    for (const [id, actions] of pages) {
+      // Stream Deck stores page directories upper-case while the manifest lists their ids lower-case.
+      const page = join(prof, 'Profiles', id.toUpperCase());
+      mkdirSync(page, { recursive: true });
+      writeFileSync(join(page, 'manifest.json'), JSON.stringify({ Controllers: [{ Type: 'Keypad', Actions: actions }] }));
+    }
+    const listing = p.isLegacy ? {} : { Pages: { Current: `page${i}`, Pages: pages.map(([id]) => id) } };
     writeFileSync(
       join(prof, 'manifest.json'),
-      JSON.stringify({ Name: p.name, Device: { Model: p.model, UUID: 'dev' }, Version: '3.0' }),
+      JSON.stringify({ Name: p.name, Device: { Model: p.model, UUID: 'dev' }, Version: '3.0', ...listing }),
     );
-    writeFileSync(join(page, 'manifest.json'), JSON.stringify({ Controllers: [{ Type: 'Keypad', Actions: p.actions }] }));
   });
   return dir;
 }
@@ -334,6 +400,44 @@ describe('readBoardLayout', () => {
     expect(layout?.profileName).toBe('Jetstream shortcuts'); // 1 configured slot > 0 → picked
     expect(layout?.keys.get('0,0')?.label).toBe('Telegram');
   });
+
+  it('reads only the page the deck shows, and names it, never keys from another page', () => {
+    const store = fakeStore([
+      {
+        name: 'Jetstream',
+        model: '20GAT9902',
+        actions: { '0,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'falcon', path: '/x/falcon' } } },
+        // The second page holds keys at coordinates the shown page leaves empty.
+        otherPage: {
+          '1,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'hidden', path: '/x/hidden' } },
+          '2,0': { UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'app', app: '/Applications/Telegram.app' } },
+        },
+      },
+    ]);
+    const layout = readBoardLayout(store, []);
+    expect(layout?.pageId).toBe('page0');
+    expect([...(layout?.keys.keys() ?? [])]).toEqual(['0,0']);
+    const map = renderBoardMap(layout!);
+    expect(map).toContain('a1 falcon');
+    expect(map).not.toContain('hidden');
+    expect(map).not.toContain('Telegram');
+  });
+
+  it('merges every page for a profile with no Pages listing (before Stream Deck 7)', () => {
+    const store = fakeStore([
+      {
+        name: 'Jetstream',
+        model: '20GAT9902',
+        isLegacy: true,
+        actions: { '0,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'falcon', path: '/x/falcon' } } },
+        otherPage: { '1,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'second', path: '/x/second' } } },
+      },
+    ]);
+    const layout = readBoardLayout(store, []);
+    expect(layout?.pageId).toBeUndefined();
+    expect(layout?.keys.get('0,0')?.label).toBe('falcon');
+    expect(layout?.keys.get('1,0')?.label).toBe('second');
+  });
 });
 
 describe('renderBoardMap', () => {
@@ -349,5 +453,26 @@ describe('renderBoardMap', () => {
     expect(map).toContain('a1 falcon'); // top-left, labelled
     expect(map).toContain('a8'); // XL has 8 columns → a8 present
     expect(map.split('\n')).toHaveLength(4); // XL has 4 rows
+  });
+
+  // Only chat's Apply preview shows a longer Text key; the board map and the model prompt stay short.
+  it('shows 8 characters of a long Text key, in the board map and in the model prompt', () => {
+    const store = fakeStore([
+      {
+        name: 'Jetstream',
+        model: '20GAT9902',
+        actions: {
+          '0,0': { UUID: 'com.elgato.streamdeck.system.text', Settings: { pastedText: 'git push --force origin main' } },
+          '1,0': { UUID: 'gg.pim.jetstream.project', Settings: { name: 'falcon', path: '/x/falcon' } },
+        },
+      },
+    ]);
+    const layout = readBoardLayout(store, [])!;
+    const map = renderBoardMap(layout);
+    expect(map).toContain('a1 git push ');
+    expect(map).not.toContain('git push -');
+    const context = boardContext(layout);
+    expect(context).toContain('  a1: git push (cannot be moved by chat)');
+    expect(context).not.toContain('git push -');
   });
 });

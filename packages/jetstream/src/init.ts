@@ -253,9 +253,10 @@ async function collectSettings(io: InitIo): Promise<Partial<JetstreamConfig>> {
     ' seconds',
   );
   if (escalate !== undefined) settings.escalateAfterSec = escalate;
+  io.say("  (Project keys and Approve's auto-allow always take a 1.5 s hold.)");
   const longPress = await askNumber(
     io,
-    'Long-press-to-interrupt hold time',
+    'Long-press time for the Fleet dial (interrupt) and the doorbell (snooze)',
     DEFAULTS.longPressMs,
     LIMITS.longPressMs,
     ' ms',
@@ -304,8 +305,9 @@ export async function runInit(deps: InitDeps): Promise<number> {
     if (!write) {
       io.say('Left the existing projects.json as-is.');
       if (Object.keys(settings).length > 0) {
-        io.say('  (note: your theme/timing answers were NOT saved — they only live in');
-        io.say('   projects.json; add a "settings" block there by hand, or re-run init)');
+        io.say("  (note: your theme/timing answers were NOT saved. Set them in the Jetstream settings key's");
+        io.say('   inspector, or add a "settings" block to projects.json and restart the Stream Deck app;');
+        io.say('   values set in the inspector win)');
       }
     }
   }
@@ -386,8 +388,8 @@ export async function runInit(deps: InitDeps): Promise<number> {
     io.say(`  • Import the layout: double-click ${safe(profilePath)} and pick your deck`);
     io.say('    in the dialog (it installs as a new profile — nothing is overwritten).');
   } else {
-    io.say('  • Drag a Fleet key and an Attention key onto your deck — they cover every');
-    io.say('    repo in projects.json.');
+    io.say('  • Drag a Fleet key and an Attention key onto your deck. They cover every repo in');
+    io.say('    projects.json, and pick up new repos once the Stream Deck app restarts.');
     io.say('  • Optionally add a Usage gauge, Approve/Deny keys, and per-project keys.');
   }
   io.say('  • Restart any running `claude` sessions so the hooks report in.');

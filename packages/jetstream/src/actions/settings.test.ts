@@ -195,10 +195,14 @@ describe('writeFleetFromEditor', () => {
     writeFleetFile(path, [p('a')]);
     writeFileSync(`${path}.lock`, 'live writer');
     setTimeout(() => rmSync(`${path}.lock`, { force: true }), 300); // the other writer finishes
-    const started = Date.now();
-    const pending = writeFleetFromEditor(path, [p('a'), p('b')], {}, readConfigFile(path));
-    expect(Date.now() - started).toBeLessThan(50); // handed back at once, nothing blocked
-    await pending;
+    let ticks = 0;
+    const ticker = setInterval(() => (ticks += 1), 10); // stands in for the plugin's keys and hooks
+    try {
+      await writeFleetFromEditor(path, [p('a'), p('b')], {}, readConfigFile(path));
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(ticks).toBeGreaterThan(0); // the thread kept running while the editor waited
     expect(readConfigFile(path).projects.map((x) => x.id)).toEqual(['a', 'b']);
   });
 

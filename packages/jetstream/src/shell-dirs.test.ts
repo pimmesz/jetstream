@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -237,7 +237,26 @@ describe('adoptShellDirs ignores a record it cannot trust', () => {
   it.skipIf(!isPosix)('ignores a FIFO without waiting for a writer', () => {
     const path = join(makeTmp(), 'shell-dirs.json');
     execFileSync('mkfifo', [path]);
-    expect(adopted(path)).toEqual({});
+    // A writer arriving after 1 s unblocks a read that lost O_NONBLOCK, so a regression fails on
+    // the clock instead of hanging the worker, which vitest's timeout cannot interrupt.
+    const writer = spawn('sh', ['-c', 'sleep 1; printf {} > "$1"', 'sh', path], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    try {
+      const started = Date.now();
+      expect(adopted(path)).toEqual({});
+      expect(Date.now() - started).toBeLessThan(500);
+    } finally {
+      // The whole group: a shell still blocked opening the FIFO would otherwise outlive the test.
+      try {
+        process.kill(-writer.pid!, 'SIGKILL');
+      } catch (error) {
+        // A writer that already exited leaves no group (ESRCH) or, on macOS, a zombie one (EPERM).
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH' && code !== 'EPERM') throw error;
+      }
+    }
   });
 
   it.skipIf(!isPosix)('ignores a record that another user could write', () => {

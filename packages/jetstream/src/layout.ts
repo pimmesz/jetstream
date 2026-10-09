@@ -122,6 +122,8 @@ export const KEY_TYPES: Record<string, KeyType> = {
     build: (f) => {
       const t = str(f.text);
       if (t === undefined) return { error: 'text needs "text"' };
+      // Stream Deck pastes this into whatever app has focus, where a newline or escape acts like a key press.
+      if (/[\u0000-\u001f\u007f]/.test(t)) return { error: 'text cannot hold control characters (a newline, tab or escape)' };
       return { settings: { isSendingEnter: false, pastedText: t } };
     },
   },
@@ -264,7 +266,8 @@ export function resolvePlacements(deck: DeckModel, keys: unknown, catalog: Forei
       }
       continue;
     }
-    const type = KEY_TYPES[typeName];
+    // Own keys only: an inherited name such as "constructor" or "__proto__" is not a key type.
+    const type = Object.hasOwn(KEY_TYPES, typeName) ? KEY_TYPES[typeName] : undefined;
     if (!type) {
       warnings.push(`skipped ${typeName || '(no type)'} at ${at}: unknown key type`);
       continue;

@@ -14,7 +14,7 @@
     "build": "pnpm build:cores && pnpm --filter '@pimmesz/jetstream' run build",
     "typecheck": "pnpm -r --filter './packages/*' run typecheck",
     "test": "pnpm -r --filter './packages/*' run test",
-    "check": "pnpm build:cores && pnpm -r --filter './packages/*' run check",
+    "check": "pnpm build:cores && pnpm -r --filter './packages/*' run check && pnpm lint",
     "format": "prettier --write .",
     "lint": "prettier --check ."
   },

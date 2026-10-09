@@ -16,25 +16,25 @@ export interface StatusHookDeps {
 export async function runStatusHook(deps: StatusHookDeps): Promise<void> {
   const body = await deps.readStdin();
   if (!body.trim()) return;
-  // Tag with the parent PID so the plugin can map session → process for interrupt.
-  // If the body isn't a JSON object, forward it unchanged.
+  // Only a JSON object can be projected, and the plugin reads nothing else. A body cut short may still
+  // hold the prompt, so it is dropped rather than sent raw to the untokened /hook.
   let payload: unknown;
   try {
     payload = JSON.parse(body);
   } catch {
-    await deps.post(body);
     return;
   }
-  if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
-    const fields = payload as Record<string, unknown>;
-    deps.clearStopFlag(fields.hook_event_name, fields.session_id);
-    fields._pid = deps.ppid;
-    fields._at = deps.now(); // fire time: hooks race to the plugin, so arrival order is not fire order
-    // The plugin replays a refused event once it is listening again.
-    if (!(await deps.post(JSON.stringify(fields)))) deps.appendSpool(JSON.stringify(spoolProjection(fields)));
-  } else {
-    await deps.post(body);
-  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return;
+  const fields = payload as Record<string, unknown>;
+  deps.clearStopFlag(fields.hook_event_name, fields.session_id);
+  // Tag with the parent PID so the plugin can map session → process for interrupt.
+  fields._pid = deps.ppid;
+  fields._at = deps.now(); // fire time: hooks race to the plugin, so arrival order is not fire order
+  // Only the fields the plugin reads, live and spooled alike: /hook is untokened, so whoever holds the
+  // port must not get prompt text or tool input.
+  const projected = JSON.stringify(spoolProjection(fields));
+  // The plugin replays a refused event once it is listening again.
+  if (!(await deps.post(projected))) deps.appendSpool(projected);
 }
 
 /** POST to the plugin; resolves false only when nothing was listening (the plugin is down). */

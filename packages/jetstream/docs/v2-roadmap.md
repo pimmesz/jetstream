@@ -43,14 +43,15 @@ in the tables below for the record — do not read them as open work and do not 
 - Earlier, v1.5.0 removed the **afterburner** integration and the **heartbeat** and **review** keys.
 
 Still shipping: Project status · Fleet roll-up · Attention doorbell · Usage gauge · Approve/Deny ·
-Jetstream settings · Build version · Stop all · page Nav · Coordinate · Grid · Fleet dial · the
-generic Slot key. The CLI is `install`, `setup`, `init`, `chat`, `hooks install`, `doctor`, `update`
-— with **`jetstream chat`**, the conversational board builder, as the headline surface.
+Jetstream settings · Build version · Stop all · Mic mute · page Nav · Coordinate · Grid · Fleet dial ·
+the generic Slot key (its kinds include volume, a Codex usage gauge and a Build-by-chat key). The CLI
+is `install`, `setup`, `init`, `chat`, `board`, `hooks install`, `doctor`, `update`, `version`, with
+**`jetstream chat`**, the conversational board builder, as the headline surface.
 
 ## Next Fable batch (v1.3) — SHIPPED
 
-_All six landed in v1.3 (commit `22f791d`, items A–F), except **#1**, which pre-dated v1.3 — it was in
-the original plugin; v1.3 item E only improved its legibility — and **#18**, a deliberate partial (only
+_All six landed in v1.3 (commit `d92694a`, items A to F), except **#1**, which pre-dated v1.3 (it was in
+the original plugin; v1.3 item E only improved its legibility), and **#18**, a deliberate partial (only
 Launch is marked; approve/deny and Settings are intentionally off). The remaining v1.3 piece, **item G**
 (onboarding CLI + config-file projects + doctor), is now built too.
 The fable tier is exhausted; the genuinely-remaining work is all Opus-tier below._

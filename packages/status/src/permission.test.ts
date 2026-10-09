@@ -106,9 +106,9 @@ describe('permissionDecisionJson', () => {
     expect(JSON.parse(permissionDecisionJson('allow'))).toEqual({
       hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
     });
-    expect(JSON.parse(permissionDecisionJson('deny')).hookSpecificOutput.decision.behavior).toBe(
-      'deny',
-    );
+    expect(JSON.parse(permissionDecisionJson('deny'))).toEqual({
+      hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny' } },
+    });
   });
 });
 

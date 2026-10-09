@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import streamDeck from '@elgato/streamdeck';
+import type { SlotSettings } from './slot';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,17 +24,24 @@ vi.mock('../slot-exec', async (orig) => ({
 import { runPlan } from '../slot-exec';
 // Keep icon resolution real, but spy forgetIcon so we can prove assign INVALIDATES the cache on a
 // retarget — the wiring, not just the cache lifecycle the slot-icon unit test covers.
-vi.mock('../slot-icon', async (orig) => ({
-  ...(await orig<typeof import('../slot-icon')>()),
-  forgetIcon: vi.fn(),
-}));
-import { forgetIcon } from '../slot-icon';
+// resolveSlotIcon stays real but is a spy, so a test can hold one extraction open.
+vi.mock('../slot-icon', async (orig) => {
+  const real = await orig<typeof import('../slot-icon')>();
+  return { ...real, forgetIcon: vi.fn(), resolveSlotIcon: vi.fn(real.resolveSlotIcon) };
+});
+import { forgetIcon, resolveSlotIcon } from '../slot-icon';
 vi.mock('../exec-terminal'); // spy openInTerminal — the 'logo'/'chat' kinds launch `jetstream chat`
 import { openInTerminal } from '../exec-terminal';
-// Never read the real ~/.jetstream usage snapshots: a usage refresh gets a fixed feed.
+// Never read the real ~/.jetstream usage snapshots or ~/.codex/sessions: a usage refresh gets a fixed feed.
 vi.mock('@pimmesz/jetstream-usage', async (orig) => ({
   ...(await orig<typeof import('@pimmesz/jetstream-usage')>()),
   resolveUsage: vi.fn(async () => ({ source: 'claude', available: false })),
+  resolveCodexUsage: vi.fn(async () => ({ source: 'codex', available: false })),
+}));
+// A blank Claude gauge checks settings.json for the statusline hook; point it away from the real home.
+vi.mock('../hooks-install', async (orig) => ({
+  ...(await orig<typeof import('../hooks-install')>()),
+  defaultSettingsPath: () => '/nonexistent/jetstream-slot-test/settings.json',
 }));
 import { resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
 import { openProject } from '../switchto';
@@ -103,6 +112,118 @@ function slotWith(keys: unknown[]): SlotKey {
   return slot;
 }
 
+describe('Slot inspector saves', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  async function inspector(initial: SlotSettings = {}) {
+    let stored = initial;
+    const key = {
+      ...fakeKey(0, 0), id: 'inspector-key',
+      getSettings: vi.fn(async () => stored),
+      setSettings: vi.fn(async (next: SlotSettings) => { stored = next; }),
+    };
+    const other = { ...fakeKey(0, 0), id: 'other-deck-key' };
+    const keys = [key, other];
+    const slot = slotWith(keys);
+    const render = vi.spyOn(slot as unknown as { render: (a: unknown, s: SlotSettings) => Promise<void> }, 'render').mockResolvedValue();
+    vi.spyOn(streamDeck.ui, 'action', 'get').mockReturnValue(key as unknown as NonNullable<typeof streamDeck.ui.action>);
+    const reply = vi.spyOn(streamDeck.ui, 'sendToPropertyInspector').mockResolvedValue();
+    await slot.onWillAppear({ action: key, payload: { settings: initial } } as unknown as Parameters<SlotKey['onWillAppear']>[0]);
+    const send = (payload: unknown) => slot.onSendToPlugin({ action: key, payload } as unknown as Parameters<SlotKey['onSendToPlugin']>[0]);
+    const save = (expect: SlotSettings, kind: string, target = '', label = '', color = '') => send({
+      slot: 'save', requestId: 'save-1', expect, edit: { kind, target, label, color },
+    });
+    return { key, other, keys, slot, render, reply, send, save, stored: () => stored };
+  }
+
+  it('reads without saving and edits only the originating action on two decks', async () => {
+    const current = { kind: 'usage' as const, provider: 'codex' as const, icon: 'X' };
+    const f = await inspector(current);
+    await f.send({ slot: 'read', requestId: 'read-1' });
+    expect(f.key.setSettings).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenLastCalledWith(expect.objectContaining({ actionId: f.key.id, requestId: 'read-1', settings: current }));
+    await f.save(current, 'usage', '', 'Budget', 'blue');
+    expect(f.other.setSettings).not.toHaveBeenCalled();
+    expect(f.stored()).toEqual({ ...current, label: 'Budget', color: '#0091ff' });
+    expect(f.render).toHaveBeenLastCalledWith(f.key, f.stored());
+    expect(forgetIcon).toHaveBeenCalledWith('X');
+  });
+
+  it('registers a newly configured project and deregisters it when cleared', async () => {
+    const f = await inspector();
+    try {
+      await f.save({}, 'project', '/Users/me/new-project');
+      expect(board.project(f.key.id)?.path).toBe('/Users/me/new-project');
+      await f.save(f.stored(), 'empty');
+      expect(board.project(f.key.id)).toBeUndefined();
+    } finally {
+      board.removeProject(f.key.id);
+    }
+  });
+
+  it('queues a stale inspector save behind a chat write and refuses it', async () => {
+    const f = await inspector();
+    Object.defineProperty(f.slot, 'actions', { value: [f.key] });
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const writing = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    f.key.setSettings.mockImplementationOnce(async () => { started(); await gate; });
+    const chat = f.slot.assign({ coord: 'a1', kind: 'url', url: 'https://example.com', expect: {} });
+    await writing;
+    const save = f.save({}, 'app', '/Applications/Telegram.app');
+    release();
+    await Promise.all([chat, save]);
+    expect(f.key.setSettings).toHaveBeenCalledTimes(1);
+    expect(f.reply).toHaveBeenLastCalledWith(expect.objectContaining({ ok: false, error: expect.stringContaining('changed') }));
+    await f.send({ slot: 'read', requestId: 'cancel' });
+    expect(f.reply).toHaveBeenLastCalledWith(expect.objectContaining({ settings: { kind: 'url', url: 'https://example.com' } }));
+  });
+
+  it('makes a later chat compare see the inspector save', async () => {
+    const f = await inspector();
+    Object.defineProperty(f.slot, 'actions', { value: [f.key] });
+    await f.save({}, 'url', 'https://example.com');
+    expect((await f.slot.assign({ coord: 'a1', kind: 'empty', expect: {} })).status).toBe(409);
+    expect(f.key.setSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not write invalid forms, missing snapshots or read-only slots', async () => {
+    const f = await inspector();
+    await f.save({}, 'url', 'javascript:alert(1)');
+    await f.send({ slot: 'save', requestId: 'missing', edit: { kind: 'empty', target: '', label: '', color: '' } });
+    expect(f.key.setSettings).not.toHaveBeenCalled();
+    const run = { kind: 'run' as const, command: 'echo' };
+    await f.slot.onDidReceiveSettings({ action: f.key, payload: { settings: run } } as unknown as Parameters<SlotKey['onDidReceiveSettings']>[0]);
+    await f.save(run, 'empty');
+    expect(f.key.setSettings).not.toHaveBeenCalled();
+  });
+
+  it('refuses a disappeared action and does not send its result to another inspector', async () => {
+    const f = await inspector();
+    f.keys.splice(0, 1);
+    await f.save({}, 'url', 'https://example.com');
+    expect(f.key.setSettings).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenLastCalledWith(expect.objectContaining({ ok: false }));
+    f.reply.mockClear();
+    vi.spyOn(streamDeck.ui, 'action', 'get').mockReturnValue(f.other as unknown as NonNullable<typeof streamDeck.ui.action>);
+    await f.send({ slot: 'read', requestId: 'old-inspector' });
+    expect(f.reply).not.toHaveBeenCalled();
+  });
+
+  it('reloads uncertain settings after a write failure and accepts a later valid edit', async () => {
+    const f = await inspector();
+    f.key.setSettings.mockRejectedValueOnce(new Error('timeout'));
+    await f.save({}, 'url', 'https://example.com');
+    expect(f.reply).toHaveBeenLastCalledWith(expect.objectContaining({ ok: false }));
+    f.key.getSettings.mockResolvedValueOnce({ kind: 'url', url: 'https://example.com' });
+    await f.send({ slot: 'read', requestId: 'reload' });
+    expect(f.reply).toHaveBeenLastCalledWith(expect.objectContaining({ settings: { kind: 'url', url: 'https://example.com' } }));
+    await f.save({ kind: 'url', url: 'https://example.com' }, 'empty');
+    expect(f.reply).toHaveBeenLastCalledWith(expect.objectContaining({ ok: true }));
+  });
+});
+
 describe('SlotKey.assign', () => {
   it('retargets the slot at the matching coordinate (setSettings full replace)', async () => {
     const key = fakeKey(7, 0);
@@ -149,6 +270,23 @@ describe('SlotKey.assign', () => {
     await first;
     expect(held).toEqual({ kind: 'app', app: '/Applications/Old.app' });
     expect(painted.at(-1)).toEqual({ kind: 'app', app: '/Applications/Old.app' }); // face matches settings
+  });
+
+  it('a render still resolving its icon does not paint over an edit that landed meanwhile', async () => {
+    const key = { ...fakeKey(0, 0), id: 'k-held-icon', setImage: vi.fn(async (_img: string) => {}) };
+    const slot = slotWith([key]);
+    const old = { kind: 'app', app: '/Applications/Old.app' };
+    let finishExtraction: (icon: string) => void = () => {};
+    vi.mocked(resolveSlotIcon)
+      .mockClear()
+      .mockImplementationOnce(() => new Promise((r) => (finishExtraction = r)));
+    const appear = slot.onWillAppear({ action: key, payload: { settings: old } } as unknown as Parameters<SlotKey['onWillAppear']>[0]);
+    await vi.waitFor(() => expect(resolveSlotIcon).toHaveBeenCalledWith(old));
+    expect((await slot.assign({ coord: 'a1', kind: 'url', url: 'https://new.dev' })).status).toBe(200);
+    finishExtraction('data:image/png;base64,OLD');
+    await appear;
+    expect(key.setImage).not.toHaveBeenCalledWith('data:image/png;base64,OLD');
+    expect(decodeURIComponent(key.setImage.mock.calls.at(-1)?.[0] ?? '')).toContain('new.dev');
   });
 
   it('keeps repainting until no newer edit landed during its own corrective repaint', async () => {
@@ -414,6 +552,57 @@ describe('SlotKey.onKeyDown run gate', () => {
     expect(showOk).not.toHaveBeenCalled(); // never reaches execPlan/runPlan
   });
 
+  it('the run-off notice still clears when its timer fires 1 ms before the deadline', async () => {
+    vi.useFakeTimers();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const run = { kind: 'run', command: 'echo' };
+      const setImage = vi.fn(async (_img: string) => {});
+      const key = { ...fakeKey(0, 0), id: 'k-early-notice', setImage, getSettings: vi.fn(async () => run) };
+      await new SlotKey().onKeyDown({ payload: { settings: run }, action: key } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+      expect(decodeURIComponent(setImage.mock.calls.at(-1)?.[0] ?? '')).toContain('run off');
+
+      now.mockReturnValue(1_000_000 + 2600 - 1);
+      await vi.advanceTimersByTimeAsync(2600);
+      const face = decodeURIComponent(setImage.mock.calls.at(-1)?.[0] ?? '');
+      expect(face).not.toContain('run off');
+      expect(face).toContain('echo');
+    } finally {
+      now.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('a key that reappears during its notice paints its live face, and the old timer cannot end a newer notice', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = { kind: 'run', command: 'echo' };
+      const setImage = vi.fn(async (_img: string) => {});
+      const key = { ...fakeKey(0, 0), id: 'k-reappear-notice', setImage, getSettings: vi.fn(async () => run) };
+      const slot = slotWith([key]);
+      const face = () => decodeURIComponent(setImage.mock.calls.at(-1)?.[0] ?? '');
+      const press = () => slot.onKeyDown({ payload: { settings: run }, action: key } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+      await press();
+      expect(face()).toContain('run off');
+
+      // A page switch away and back, well inside the first notice's 2.6 s.
+      slot.onWillDisappear({ action: key, payload: { settings: run } } as unknown as Parameters<SlotKey['onWillDisappear']>[0]);
+      await vi.advanceTimersByTimeAsync(1000);
+      await slot.onWillAppear({ action: key, payload: { settings: run } } as unknown as Parameters<SlotKey['onWillAppear']>[0]);
+      expect(face()).not.toContain('run off');
+      expect(face()).toContain('echo');
+
+      // A new press at 1 s owns the key until 3.6 s; the first timer fires at 2.6 s and must leave it.
+      await press();
+      await vi.advanceTimersByTimeAsync(1600);
+      expect(face()).toContain('run off');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(face()).toContain('echo');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('gates an app slot that points at a script exactly like a run key', async () => {
     const setImage = vi.fn(async (_img: string) => {});
     const showOk = vi.fn(async () => {});
@@ -647,6 +836,8 @@ describe('folded slot kinds: build + stopall', () => {
 
   it('stopall stops the fleet on press once allowStopKeys is enabled', async () => {
     vi.mocked(stopSessions).mockReturnValue(2); // pretend two sessions were stopped
+    // Working turns in two different projects: a fleet stop must target both, not one key's project.
+    const fleet = vi.spyOn(board, 'allActiveSessions').mockReturnValue(['s-api', 's-web']);
     config.set({ allowStopKeys: true });
     try {
       const showOk = vi.fn(async () => {});
@@ -660,10 +851,32 @@ describe('folded slot kinds: build + stopall', () => {
       };
       const ev = { payload: { settings: { kind: 'stopall' } }, action };
       await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
-      expect(stopSessions).toHaveBeenCalled();
+      expect(stopSessions).toHaveBeenCalledWith(['s-api', 's-web']);
       expect(showOk).toHaveBeenCalled(); // sent > 0 → ack
     } finally {
       config.set(undefined); // restore defaults so sibling tests see allowStopKeys=false
+      fleet.mockRestore();
+    }
+  });
+
+  it('stopall alerts instead of acking when no session was stopped', async () => {
+    vi.mocked(stopSessions).mockReturnValue(0);
+    config.set({ allowStopKeys: true });
+    try {
+      const action = {
+        showOk: vi.fn(async () => {}),
+        showAlert: vi.fn(async () => {}),
+        setImage: vi.fn(async () => {}),
+        setTitle: vi.fn(async () => {}),
+        isKey: () => true,
+        coordinates: { column: 0, row: 0 },
+      };
+      const ev = { payload: { settings: { kind: 'stopall' } }, action };
+      await new SlotKey().onKeyDown(ev as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+      expect(action.showAlert).toHaveBeenCalled();
+      expect(action.showOk).not.toHaveBeenCalled();
+    } finally {
+      config.set(undefined);
     }
   });
 });

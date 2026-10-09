@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
-import { action, SingletonAction } from '@elgato/streamdeck';
+import streamDeck, { action, SingletonAction } from '@elgato/streamdeck';
 import type {
+  Action,
   DidReceiveSettingsEvent,
   KeyAction,
   KeyDownEvent,
@@ -33,6 +34,7 @@ import { shouldInterrupt } from './project';
 import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
 import { openInTerminal } from '../exec-terminal';
 import { deckForDeviceType } from '../profile';
+import { editSlot, isRecord } from '../slot-inspector';
 
 // FOLDED structural keys + volume keys: rendered + handled here so `jetstream chat` retargets them LIVE
 // (POST /slot) instead of re-importing a profile. 'build' is a static stamp; 'stopall' (gated) stops
@@ -78,8 +80,7 @@ export type SlotSettings = {
   provider?: 'claude' | 'codex'; // kind 'usage': whose usage the gauge shows (default claude)
 };
 
-/** How long a transient notice ("run off", "why dark?") owns its key before the live face returns.
- * Matches the existing repaint timers below. */
+/** How long a transient notice ("run off", "why dark?") owns its key before the live face returns. */
 const NOTICE_MS = 2600;
 
 const appName = (app: string | undefined): string =>
@@ -179,6 +180,51 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     await this.render(ev.action, ev.payload.settings);
   }
 
+  override async onSendToPlugin(ev: { action: Action<SlotSettings>; payload: unknown }): Promise<void> {
+    const message = ev.payload;
+    if (!isRecord(message) || (message.slot !== 'read' && message.slot !== 'save') ||
+        typeof message.requestId !== 'string' || message.requestId.length > 100 || !ev.action.isKey()) return;
+    const requestId = message.requestId;
+    const key = ev.action;
+    const reply = async (payload: { ok: boolean; settings?: SlotSettings; error?: string }): Promise<void> => {
+      // The user may select another key while a write or render is pending.
+      if (streamDeck.ui.action?.id !== key.id) return;
+      await streamDeck.ui.sendToPropertyInspector({
+        slot: 'result', actionId: key.id, requestId, ...payload,
+      });
+    };
+    try {
+      const result = await this.queued(key.id, async () => {
+        if (![...this.actions].some((a) => a.id === key.id)) {
+          return { ok: false as const, error: 'This slot is no longer visible. Select it again.' };
+        }
+        const current = await this.settingsOf(key);
+        if (message.slot === 'read') {
+          this.heldSettings.set(key.id, current);
+          return { ok: true as const, settings: current };
+        }
+        const edit = editSlot(current, message.expect, message.edit);
+        if (!edit.ok) return edit;
+        const seq = (this.assignSeq.get(key.id) ?? 0) + 1;
+        this.assignSeq.set(key.id, seq);
+        try {
+          await key.setSettings(edit.settings);
+        } catch (error) {
+          // A timeout may follow a persisted write. Reload before accepting another edit.
+          this.heldSettings.delete(key.id);
+          throw error;
+        }
+        this.heldSettings.set(key.id, edit.settings);
+        this.syncProjectRegistry(key.id, edit.settings);
+        return { ...edit, seq };
+      });
+      await reply(result);
+      if (result.ok && 'seq' in result) await this.renderAssigned(key, result.settings, result.seq);
+    } catch {
+      await reply({ ok: false, error: 'Could not confirm the save or refresh. Choose Cancel to reload before trying again.' });
+    }
+  }
+
   /** A slot of kind 'project' represents a repo, so it must join the board registry (keyed by the
    * Stream Deck action id, like ProjectKey does) for its live Claude sessions to colour it and for the
    * Fleet/Attention roll-ups to cover it. Idempotent; deregisters + drops per-id state when a slot is
@@ -214,6 +260,9 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     this.clearHoldWarn(ev.action.id);
     this.pressAt.delete(ev.action.id); // WillDisappear doesn't call syncProjectRegistry — clear the gesture here too
     this.heldSettings.delete(ev.action.id);
+    // A key comes back blank, so its old notice must not block the live paint. The notice's timer
+    // then finds no matching entry and only repaints.
+    this.noticeUntil.delete(ev.action.id);
     if (board.project(ev.action.id)) {
       this.diffStats.delete(ev.action.id);
       this.diffPending.delete(ev.action.id);
@@ -238,9 +287,10 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     // inert until opted in, so a webpage that plants it via the unauthenticated /slot endpoint can't fire it.
     if (settings.kind === 'stopall') {
       if (!config.get().allowStopKeys) {
-        this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
+        const until = Date.now() + NOTICE_MS;
+        this.noticeUntil.set(ev.action.id, until);
         await paintKey(ev.action, keyFace({ color: '#b58900', label: 'stop off', sub: 'allow in projects.json', subMax: 22 }));
-        setTimeout(() => void this.repaint(ev.action), 2600);
+        setTimeout(() => this.endNotice(ev.action, until), NOTICE_MS);
         return;
       }
       const sent = stopSessions(board.allActiveSessions());
@@ -268,9 +318,10 @@ export class SlotKey extends SingletonAction<SlotSettings> {
         await ev.action.showOk();
         return;
       }
-      this.noticeUntil.set(ev.action.id, Date.now() + NOTICE_MS);
+      const until = Date.now() + NOTICE_MS;
+      this.noticeUntil.set(ev.action.id, until);
         await paintKey(ev.action, keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
-      setTimeout(() => void this.repaint(ev.action), 2600);
+      setTimeout(() => this.endNotice(ev.action, until), NOTICE_MS);
       return;
     }
     // Output-volume keys — benign (they only move the macOS output volume), so no /slot gate needed.
@@ -431,11 +482,19 @@ export class SlotKey extends SingletonAction<SlotSettings> {
 
   /** Say why a run-like key did nothing, then give the face back. */
   private async showRunOff(a: KeyAction<SlotSettings>): Promise<void> {
-    this.noticeUntil.set(a.id, Date.now() + NOTICE_MS);
+    const until = Date.now() + NOTICE_MS;
+    this.noticeUntil.set(a.id, until);
     await paintKey(a, keyFace({ color: '#b58900', label: 'run off', sub: 'allow in projects.json', subMax: 22 }));
     // Repaint from the slot's LIVE settings when the notice clears: if a chat live-edit retargeted
     // this coordinate within the 2.6s, we must not paint the stale run face back over the new key.
-    setTimeout(() => void this.repaint(a), 2600);
+    setTimeout(() => this.endNotice(a, until), NOTICE_MS);
+  }
+
+  /** Give a notice's key back. Release by identity, not the clock: the timer can fire 1 ms short of
+   * `until`, which the render guard would skip, and a newer notice keeps the key until its own timer. */
+  private endNotice(a: KeyAction<SlotSettings>, until: number): void {
+    if (this.noticeUntil.get(a.id) === until) this.noticeUntil.delete(a.id);
+    void this.repaint(a);
   }
 
   /** Clear a key's pending interrupt-warning timer; returns whether one was armed. */
@@ -506,20 +565,26 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       this.assignSeq.set(visible.id, next);
       await visible.setSettings(cmd.settings); // full replace
       this.heldSettings.set(visible.id, cmd.settings);
+      this.syncProjectRegistry(visible.id, cmd.settings);
       return next;
     });
     if (seq === undefined) {
       return { status: 409, body: JSON.stringify({ error: `${cmd.coord} holds a different key than expected` }) };
     }
-    this.syncProjectRegistry(visible.id, cmd.settings); // setSettings won't re-fire onDidReceiveSettings
+    await this.renderAssigned(visible, cmd.settings, seq);
+    return { status: 200, body: JSON.stringify({ ok: true, coord: cmd.coord }) };
+  }
+
+  /** Both the inspector and chat need the same icon refresh and stale-paint protection. */
+  private async renderAssigned(visible: KeyAction<SlotSettings>, settings: SlotSettings, seq: number): Promise<void> {
     // Re-resolve this key's icon instead of trusting the cache. A cached MISS is otherwise
     // permanent for the life of the plugin: an app that wasn't installed yet, or an extraction
     // that lost a race at startup, would leave the key on its text face with no way to recover
     // through the UI. Retargeting a key is an explicit user action and the one moment we know
     // the answer might have changed, so it is exactly where the cache should be dropped.
-    forgetIcon(cmd.settings.app);
-    forgetIcon(cmd.settings.icon);
-    await this.render(visible, cmd.settings);
+    forgetIcon(settings.app);
+    forgetIcon(settings.icon);
+    await this.render(visible, settings);
     // A newer edit (chat's rollback after this one timed out) landed while this render waited on an
     // icon, so this paint is stale: repaint from the settings the key really holds now.
     // Repeat until no edit landed during the repaint itself, so the last paint is always the newest.
@@ -527,8 +592,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       seen = this.assignSeq.get(visible.id) ?? seen;
       await this.repaint(visible);
     }
-    if (cmd.settings.kind === 'usage') void this.refreshUsage();
-    return { status: 200, body: JSON.stringify({ ok: true, coord: cmd.coord }) };
+    if (settings.kind === 'usage') void this.refreshUsage();
   }
 
   /** Key id → tail of its queue of compare-and-write steps. */
@@ -612,6 +676,9 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     // cached, so this costs nothing after the first paint; on a cold cache the key simply holds its
     // previous face a moment longer instead of flashing text at you.
     const icon = await resolveSlotIcon(settings);
+    // An edit that landed while the icon resolved owns the face now; this older snapshot must not undo it.
+    const held = this.heldSettings.get(a.id);
+    if (held !== undefined && !sameSlot(held, settings)) return;
     // A plain image paints as the raw icon (cleanest); with a glyph override we composite so the
     // corner badge isn't hidden by the image.
     const image = icon ? (face.glyph ? keyFace({ ...face, image: icon }) : icon) : keyFace(face);

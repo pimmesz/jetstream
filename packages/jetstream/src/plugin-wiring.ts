@@ -1,6 +1,8 @@
 import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import type { Socket } from 'node:net';
 import { parseHookPayload, spoolProjection } from '@pimmesz/jetstream-status';
+import { isAuthorized } from './listener-token';
+import type { HookServerHandlers } from './server';
 
 /**
  * The plugin's start-up and event plumbing, kept out of plugin.ts (which boots the Stream Deck SDK
@@ -33,6 +35,19 @@ export function createTokenSource(
       }
     }
     return token;
+  };
+}
+
+/** The listener's auth handlers, both reading the current `token`: `authorize` applies isAuthorized's
+ * endpoint split, and `permissionKey` checks signed requests. `onLegacy` hears only an untokened
+ * permission answer or key edit, since /hook is untokened by design. */
+export function listenerAuth(
+  token: () => string | undefined,
+  onLegacy: () => void,
+): Required<Pick<HookServerHandlers, 'authorize' | 'permissionKey'>> {
+  return {
+    authorize: (headers, endpoint) => isAuthorized(headers, token(), endpoint === 'sensitive' ? onLegacy : undefined, endpoint),
+    permissionKey: () => token(),
   };
 }
 

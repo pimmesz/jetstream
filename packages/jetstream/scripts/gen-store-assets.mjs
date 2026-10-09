@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { colorFor } from '@pimmesz/jetstream-status';
+import { colorFor, DANGER_RED } from '@pimmesz/jetstream-status';
 
 const PKG = dirname(dirname(fileURLToPath(import.meta.url)));
 const ROOT = dirname(dirname(PKG));
@@ -107,7 +107,7 @@ const boardCells = [
   K({ color: C.done, top: '5h 20%', label: '7d 42%', subMax: 22, sub: 'resets 3h45m' }),
   BLANK, BLANK, BLANK, BLANK, BLANK,
   TELEGRAM,
-  K({ color: '#e5484d', label: 'stop all', sub: '4 working' }),
+  K({ color: DANGER_RED, label: 'stop all', sub: '4 working' }),
 ];
 
 const PAGE = (inner, w, h) => `<!doctype html><html><head><meta charset="utf-8"/><style>

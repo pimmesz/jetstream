@@ -15,6 +15,7 @@ import {
   permissionDecisionJson,
   permissionMac,
 } from '@pimmesz/jetstream-status';
+import { isAuthorized } from './listener-token';
 import { challengeStore, nonceMemory, startHookServer } from './server';
 
 /** Raw POST so we can set an `Origin` header: undici's `fetch` silently drops it (forbidden name). */
@@ -148,6 +149,24 @@ describe('startHookServer', () => {
     expect(health.status).toBe(200);
   });
 
+  it('refuses a /hook body over 256 KB without handing it on, and still takes one of exactly 256 KB', async () => {
+    const seen: unknown[] = [];
+    server = await startHookServer(0, { onPayload: (raw) => seen.push(raw) });
+    /** A valid hook event padded to exactly `bytes`, so only its size can get it refused. */
+    const padded = (bytes: number): string => {
+      const head = '{"hook_event_name":"Stop","cwd":"/p","session_id":"s","pad":"';
+      return `${head}${'x'.repeat(bytes - head.length - 2)}"}`;
+    };
+    // Dropped like a body that is not JSON: the client gets the usual 204, or a cut connection if it
+    // is still sending when the listener stops reading. Either way nothing reaches the board.
+    await rawPost(port(server), '/hook', {}, padded(300 * 1024)).catch(() => 0);
+    expect(seen).toEqual([]);
+    // fetch, so this one cannot ride the keep-alive socket the listener just dropped.
+    const atCap = await fetch(`http://127.0.0.1:${port(server)}/hook`, { method: 'POST', body: padded(256 * 1024) });
+    expect(atCap.status).toBe(204);
+    expect(seen).toHaveLength(1);
+  });
+
   it('holds a /permission request open and answers with the resolved decision', async () => {
     server = await startHookServer(0, {
       onPayload: () => {},
@@ -267,6 +286,43 @@ describe('startHookServer', () => {
         expect(res.status, path).toBe(401);
       }
       expect(seen).toEqual([]); // no handler ran
+    });
+
+    it('wired with the real policy, serves an untokened /hook but refuses an untokened /permission and /slot', async () => {
+      const seen: string[] = [];
+      server = await startHookServer(0, {
+        authorize: (headers, endpoint) => isAuthorized(headers, 'secret', undefined, endpoint),
+        onPayload: () => void seen.push('/hook'),
+        onPermission: async () => {
+          seen.push('/permission');
+          return '{"decision":"allow"}';
+        },
+        onSlot: async () => {
+          seen.push('/slot');
+          return { status: 200, body: '{}' };
+        },
+      });
+      const post = async (path: string): Promise<number> =>
+        (await fetch(`http://127.0.0.1:${port(server as Server)}${path}`, { method: 'POST', body: '{}' })).status;
+      expect(await post('/hook')).toBe(204);
+      expect(await post('/permission')).toBe(401);
+      expect(await post('/slot')).toBe(401);
+      expect(seen).toEqual(['/hook']);
+    });
+
+    it('tells authorize that /hook is a status endpoint and /permission and /slot are sensitive', async () => {
+      const endpoints: string[] = [];
+      server = await startHookServer(0, {
+        onPayload: () => {},
+        authorize: (_headers, endpoint) => {
+          endpoints.push(endpoint);
+          return false;
+        },
+      });
+      for (const path of ['/hook', '/permission', '/slot']) {
+        await fetch(`http://127.0.0.1:${port(server)}${path}`, { method: 'POST', body: '{}' });
+      }
+      expect(endpoints).toEqual(['status', 'sensitive', 'sensitive']);
     });
 
     it('answers a signed /permission request with a signed decision, and never needs the token header', async () => {

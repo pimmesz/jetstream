@@ -59,3 +59,22 @@ export function takeStopFlag(sessionId: string, now = Date.now(), home = homedir
   }
   return now - mtimeMs < STOP_FLAG_TTL_MS;
 }
+
+export interface StopGateDeps {
+  readStdin: () => Promise<string>;
+  /** Consume a pending stop for the session (takeStopFlag). */
+  take: (sessionId: string) => boolean;
+  write: (output: string) => void;
+}
+
+/** The PreToolUse stop gate (stop-gate.ts), with its I/O injected so its contract is testable: prints
+ * STOP_OUTPUT when a fresh flag waits for the hook's session_id, and nothing otherwise. */
+export async function runStopGate(deps: StopGateDeps): Promise<void> {
+  let sessionId: unknown;
+  try {
+    sessionId = (JSON.parse(await deps.readStdin()) as { session_id?: unknown }).session_id;
+  } catch {
+    return;
+  }
+  if (typeof sessionId === 'string' && deps.take(sessionId)) deps.write(STOP_OUTPUT);
+}

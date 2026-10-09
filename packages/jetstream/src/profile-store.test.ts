@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { overlayActions, readCurrentPage, writeInPlace, type AppControl, type StoredAction } from './profile-store';
+import { backupProfile, overlayActions, processSignals, readCurrentPage, writeInPlace, type AppControl, type SignalSource, type StoredAction } from './profile-store';
 import { readForeignCatalog } from './plugin-catalog';
 import type { Placement } from './layout';
 import { applyLayout, type ApplyOutcome } from './chat-apply';
@@ -360,6 +360,257 @@ describe('writeInPlace lock', () => {
     expect(result).toMatchObject({ ok: false });
     expect((result as { reason: string }).reason).toContain(lockPath);
     expect(readCurrentPage(dir)?.actions).toEqual({}); // nothing written
+  });
+});
+
+describe('backupProfile', () => {
+  it('keeps the backups owner-only, tightening a root an older version left open', () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, { '0,0': slotAction({ kind: 'app' }) });
+    const backupRoot = join(root, 'backups');
+    mkdirSync(backupRoot);
+    chmodSync(backupRoot, 0o755);
+    const dest = backupProfile(dir, backupRoot);
+    expect(statSync(backupRoot).mode & 0o777).toBe(0o700);
+    expect(statSync(dest).mode & 0o777).toBe(0o700);
+  });
+});
+
+describe('writeInPlace signals', () => {
+  /** A stand-in for the process's signals. Like a real one, a sent signal reaches its handlers only once
+   * the loop's poll phase comes round (a nested setImmediate), never in the middle of synchronous code.
+   * A signal sent while nothing listens takes the default action, which a real process does not survive. */
+  function fakeSignals(log: string[], lockPath: string): SignalSource & { send: (s: NodeJS.Signals) => void; listening: () => number } {
+    const handlers = new Map<NodeJS.Signals, Set<(s: NodeJS.Signals) => void>>();
+    const held = (): string => (existsSync(lockPath) ? ' (lock still held)' : '');
+    return {
+      on: (signal, handler) => void handlers.set(signal, (handlers.get(signal) ?? new Set()).add(handler)),
+      off: (signal, handler) => void handlers.get(signal)?.delete(handler),
+      kill: (signal) => void log.push(`kill ${signal}${held()}`),
+      send: (signal) => {
+        if (!handlers.get(signal)?.size) return void log.push(`died of ${signal}${held()}`);
+        setImmediate(() => setImmediate(() => handlers.get(signal)?.forEach((handler) => handler(signal))));
+      },
+      listening: () => [...handlers.values()].reduce((count, set) => count + set.size, 0),
+    };
+  }
+
+  /** Stream Deck that never finishes quitting; `onSleep` runs at each poll of the quit-wait. */
+  function stuckApp(log: string[], onSleep: () => void): AppControl & { sleeps: number } {
+    const app = {
+      sleeps: 0,
+      isRunning: () => true,
+      quit: () => void log.push('quit'),
+      launch: () => void log.push('launch'),
+      sleep: async () => {
+        app.sleeps++;
+        onSleep();
+        // A real 250 ms sleep lets the poll phase pass, so a signal sent before it is heard by the end.
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+      },
+    };
+    return app;
+  }
+
+  it('a signal during the quit-wait stops it, writes nothing, relaunches and frees the lock, then re-sends the signal', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    const log: string[] = [];
+    const signals = fakeSignals(log, lockPath);
+    const app = stuckApp(log, () => signals.send('SIGINT'));
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app,
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      quitTimeoutMs: 60_000,
+      changedSincePlan: () => [],
+      signals,
+    });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('SIGINT') });
+    expect(app.sleeps).toBe(1); // the wait stopped at the signal, not at the 60 s deadline
+    expect(log).toEqual(['quit', 'launch', 'kill SIGINT']); // re-sent only once the deck is back and the lock is free
+    expect(signals.listening()).toBe(0);
+    expect(readCurrentPage(dir)?.actions).toEqual({});
+    expect(existsSync(join(root, 'backups'))).toBe(false);
+  });
+
+  it('a second signal while one is deferred exits at once, before the relaunch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    const log: string[] = [];
+    const signals = fakeSignals(log, lockPath);
+    const app = stuckApp(log, () => {
+      signals.send('SIGINT');
+      signals.send('SIGTERM');
+    });
+    await writeInPlace(dir, [placement({})], {
+      jetstreamVersion: '3.1.0.0',
+      app,
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      quitTimeoutMs: 60_000,
+      changedSincePlan: () => [],
+      signals,
+    });
+    // A real process is gone at the second kill; this fake carries on through the cleanup.
+    expect(log.slice(0, 2)).toEqual(['quit', 'kill SIGTERM (lock still held)']);
+  });
+
+  it('a signal that arrives during the write is re-sent after it, not dropped', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    const log: string[] = [];
+    const signals = fakeSignals(log, lockPath);
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app: { isRunning: () => false, quit: () => {}, launch: () => {}, sleep: async () => {} },
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      changedSincePlan: () => {
+        signals.send('SIGTERM'); // lands while the synchronous write runs
+        return [];
+      },
+      signals,
+    });
+    expect(result.ok).toBe(true);
+    expect(log).toEqual(['kill SIGTERM']);
+    expect(signals.listening()).toBe(0);
+  });
+
+  it('a signal during the quit itself, with the deck already gone, writes nothing and is re-sent after the relaunch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    const log: string[] = [];
+    const signals = fakeSignals(log, lockPath);
+    let isRunning = true;
+    // The quit-wait never polls: Stream Deck is gone by the time quit() returns.
+    const app: AppControl = {
+      isRunning: () => isRunning,
+      quit: () => {
+        log.push('quit');
+        signals.send('SIGTERM');
+        isRunning = false;
+      },
+      launch: () => void log.push('launch'),
+      sleep: async () => void log.push('sleep'),
+    };
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app,
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      changedSincePlan: () => [],
+      signals,
+    });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('SIGTERM') });
+    expect(log).toEqual(['quit', 'launch', 'kill SIGTERM']); // no '(lock still held)': freed before the re-send
+    expect(existsSync(lockPath)).toBe(false);
+    expect(signals.listening()).toBe(0);
+    expect(readCurrentPage(dir)?.actions).toEqual({});
+    expect(existsSync(join(root, 'backups'))).toBe(false);
+  });
+
+  it('a signal while the lock is held and Stream Deck is looked up is deferred, never fatal with the lock on disk', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    const log: string[] = [];
+    const signals = fakeSignals(log, lockPath);
+    let lookups = 0;
+    // The first lookup is the synchronous pgrep right after the lock is taken; the deck then quits at once.
+    const app: AppControl = {
+      isRunning: () => {
+        if (lookups++ > 0) return false;
+        signals.send('SIGTERM');
+        return true;
+      },
+      quit: () => void log.push('quit'),
+      launch: () => void log.push('launch'),
+      sleep: async () => void log.push('sleep'),
+    };
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app,
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      changedSincePlan: () => [],
+      signals,
+    });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('SIGTERM') });
+    expect(log).toEqual(['quit', 'launch', 'kill SIGTERM']);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(signals.listening()).toBe(0);
+    expect(readCurrentPage(dir)?.actions).toEqual({});
+  });
+
+  it('a busy lock answers without leaving a signal handler behind', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    writeFileSync(lockPath, '999');
+    const log: string[] = [];
+    const signals = fakeSignals(log, lockPath);
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app: { isRunning: () => true, quit: () => {}, launch: () => {}, sleep: async () => {} },
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      changedSincePlan: () => [],
+      signals,
+    });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('another `jetstream chat`') });
+    expect(signals.listening()).toBe(0);
+    expect(log).toEqual([]);
+  });
+
+  it('a write with no signal re-sends nothing and leaves no handler behind', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const lockPath = join(root, 'write.lock');
+    const log: string[] = [];
+    const signals = fakeSignals(log, lockPath);
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app: { isRunning: () => false, quit: () => {}, launch: () => {}, sleep: async () => {} },
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      changedSincePlan: () => [],
+      signals,
+    });
+    expect(result.ok).toBe(true);
+    expect(log).toEqual([]);
+    expect(signals.listening()).toBe(0);
+  });
+
+  it('the real signal source puts a raw terminal back to normal before it re-sends the signal', () => {
+    const log: string[] = [];
+    const stdin = { isTTY: true, isRaw: true, setRawMode: (mode: boolean) => void log.push(`setRawMode ${mode}`) };
+    processSignals(stdin, (signal) => void log.push(`kill ${signal}`)).kill('SIGINT');
+    expect(log).toEqual(['setRawMode false', 'kill SIGINT']);
+  });
+
+  it('the real signal source leaves a cooked or non-tty stdin alone and still re-sends the signal', () => {
+    const log: string[] = [];
+    const setRawMode = (mode: boolean): void => void log.push(`setRawMode ${mode}`);
+    const kill = (signal: NodeJS.Signals): void => void log.push(`kill ${signal}`);
+    processSignals({ isTTY: true, isRaw: false, setRawMode }, kill).kill('SIGTERM');
+    processSignals({ isTTY: false, isRaw: true, setRawMode }, kill).kill('SIGHUP');
+    expect(log).toEqual(['kill SIGTERM', 'kill SIGHUP']);
+  });
+
+  it('the real signal source still re-sends the signal when the terminal reset fails', () => {
+    const log: string[] = [];
+    const setRawMode = (): never => {
+      throw new Error('EIO: the terminal hung up');
+    };
+    processSignals({ isTTY: true, isRaw: true, setRawMode }, (signal) => void log.push(`kill ${signal}`)).kill('SIGHUP');
+    expect(log).toEqual(['kill SIGHUP']);
   });
 });
 

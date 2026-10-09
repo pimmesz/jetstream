@@ -1,0 +1,30 @@
+body {
+  margin: 0;
+  padding: 10px;
+  background: #2d2d2d;
+  color: #e5e5e5;
+  font: 13px -apple-system, "Segoe UI", sans-serif;
+}
+fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+legend { font-weight: 600; margin-bottom: 4px; }
+label { display: block; margin: 10px 0 4px; }
+input, select, button {
+  box-sizing: border-box;
+  border: 1px solid #777;
+  border-radius: 4px;
+  padding: 7px 8px;
+  background: #3d3d3d;
+  color: #fff;
+  font: inherit;
+}
+input, select { width: 100%; }
+input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid #75c3ff; outline-offset: 2px; }
+input::placeholder { color: #b9b9b9; }
+.hint { color: #bfbfbf; font-size: 12px; line-height: 1.45; }
+.buttons { display: flex; gap: 8px; margin-top: 12px; }
+button { cursor: pointer; min-width: 68px; }
+button:disabled { opacity: .55; cursor: default; }
+#save { background: #125d9b; }
+#status { line-height: 1.45; overflow-wrap: anywhere; }
+#status[data-error="true"] { color: #ffb7b7; }
+[hidden] { display: none; }

@@ -154,7 +154,7 @@ async function runSetup(binDir: string): Promise<number> {
       'Next, in the Stream Deck app:',
       '  • Drag a Fleet key and an Attention key onto your deck.',
       '  • Optionally drag a Project key per repo and set its name + path in the Property Inspector.',
-      '  • Placed keys are optional — the fleet & doorbell already cover every repo in projects.json.',
+      '  • Placed keys are optional: the Fleet and Attention keys cover every repo in projects.json,\n    and pick up new repos once the Stream Deck app restarts.',
     ].join('\n'),
   );
   return 0;
@@ -311,19 +311,31 @@ export async function run(argv: string[], binDir: string): Promise<number> {
               sendSlot,
               writeInPlace:
                 process.platform === 'darwin'
-                  ? (profileDir, edits, pageId, changedSincePlan) =>
-                      writeInPlace(profileDir, edits, {
-                        ...(pageId ? { pageId } : {}),
-                        // Compared after the quit, inside the lock: a key changed since the plan aborts the write.
-                        changedSincePlan,
-                        jetstreamVersion: pluginVersion(binDir).replace('unknown', '0.0.0.0'),
-                        // Clear the copies older chat imports left behind, keeping the board just written.
-                        whileQuit: () =>
-                          pruneCustomProfiles(defaultProfilesDir(), [
-                            ...activeProfileUuids(),
-                            basename(profileDir).replace(/\.sdProfile$/i, '').toLowerCase(),
-                          ]),
-                      })
+                  ? async (profileDir, edits, pageId, changedSincePlan) => {
+                      // readline holds the tty raw, so Ctrl-C only closes rl. A real SIGINT calls the write
+                      // off; closing rl first hands the tty back before that signal ends the process.
+                      const onCtrlC = (): void => {
+                        rl.close();
+                        process.kill(process.pid, 'SIGINT');
+                      };
+                      rl.once('SIGINT', onCtrlC);
+                      try {
+                        return await writeInPlace(profileDir, edits, {
+                          ...(pageId ? { pageId } : {}),
+                          // Compared after the quit, inside the lock: a key changed since the plan aborts the write.
+                          changedSincePlan,
+                          jetstreamVersion: pluginVersion(binDir).replace('unknown', '0.0.0.0'),
+                          // Clear the copies older chat imports left behind, keeping the board just written.
+                          whileQuit: () =>
+                            pruneCustomProfiles(defaultProfilesDir(), [
+                              ...activeProfileUuids(),
+                              basename(profileDir).replace(/\.sdProfile$/i, '').toLowerCase(),
+                            ]),
+                        });
+                      } finally {
+                        rl.off('SIGINT', onCtrlC);
+                      }
+                    }
                   : undefined,
               importProfile: (edits) => {
                 const merged = mergeBoard(current, edits);

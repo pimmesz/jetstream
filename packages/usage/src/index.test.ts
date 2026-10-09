@@ -189,25 +189,42 @@ describe('per-session snapshots', () => {
   it('merges sessions per window: the later reset wins, and within one window the higher reading', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
     const legacy = join(dir, 'absent-usage.json');
-    const a: UsageFeed = { source: 'claude', available: true, model: 'Opus', fiveHour: { usedPct: 40, resetsAt: 100 }, sevenDay: { usedPct: 20, resetsAt: 900 } };
+    // The older session holds the higher weekly reading, so a merge differs from "take the newest snapshot".
+    const a: UsageFeed = { source: 'claude', available: true, model: 'Opus', fiveHour: { usedPct: 40, resetsAt: 100 }, sevenDay: { usedPct: 30, resetsAt: 900 } };
     const b: UsageFeed = { source: 'claude', available: true, model: 'Sonnet', fiveHour: { usedPct: 5, resetsAt: 200 }, sevenDay: { usedPct: 22, resetsAt: 900 } };
-    await writeSessionCache(a, 'session-a', dir);
-    await writeSessionCache(b, 'session-b', dir);
+    await writeSessionCache(a, 'session-a', dir, Date.now(), legacy);
+    await writeSessionCache(b, 'session-b', dir, Date.now(), legacy);
+    const minuteAgo = (Date.now() - 60_000) / 1000;
+    await utimes(join(dir, 'session-a.json'), minuteAgo, minuteAgo); // an mtime tie would fall to listing order
     const merged = await readMergedCache(dir, legacy);
     expect(merged?.fiveHour).toEqual({ usedPct: 5, resetsAt: 200 }); // a newer 5h window started
-    expect(merged?.sevenDay).toEqual({ usedPct: 22, resetsAt: 900 }); // same week: the higher reading
+    expect(merged?.sevenDay).toEqual({ usedPct: 30, resetsAt: 900 }); // same week: the higher reading
     expect(merged?.model).toBe('Sonnet'); // the most recently written session
+  });
+
+  it('takes the model from the newest snapshot by mtime, not from whichever the folder lists last', async () => {
+    const minuteAgo = (Date.now() - 60_000) / 1000;
+    const snapshot = (id: string): UsageFeed => ({ source: 'claude', available: true, model: `model-${id}`, sevenDay: { usedPct: 10 } });
+    // Same names, both mtime orders: whatever order readdir returns, one run lists the newer file first.
+    for (const stale of ['a', 'z']) {
+      const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+      const legacy = join(dir, 'absent-usage.json');
+      for (const id of ['a', 'z']) await writeSessionCache(snapshot(id), id, dir, Date.now(), legacy);
+      await utimes(join(dir, `${stale}.json`), minuteAgo, minuteAgo);
+      const fresh = stale === 'a' ? 'z' : 'a';
+      expect((await readMergedCache(dir, legacy))?.model, `${stale}.json back-dated`).toBe(`model-${fresh}`);
+    }
   });
 
   it('drops snapshots older than eight days and refuses a session id that could leave the folder', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+    const legacy = join(dir, 'legacy-usage.json');
     const feed: UsageFeed = { source: 'claude', available: true, sevenDay: { usedPct: 10 } };
-    await writeSessionCache(feed, 'old', dir);
+    await writeSessionCache(feed, 'old', dir, Date.now(), legacy);
     const old = (Date.now() - 9 * 24 * 3600_000) / 1000;
     await utimes(join(dir, 'old.json'), old, old);
-    await writeSessionCache(feed, 'new', dir);
+    await writeSessionCache(feed, 'new', dir, Date.now(), legacy);
     expect(await readCache(join(dir, 'old.json'))).toBeNull();
-    const legacy = join(dir, 'legacy-usage.json');
     await writeSessionCache(feed, '../escape', dir, Date.now(), legacy);
     expect(await readCache(join(dir, '..', 'escape.json'))).toBeNull();
     expect(await readCache(legacy)).toEqual(feed); // the fallback stays inside the test's folder
@@ -269,6 +286,29 @@ describe('per-session snapshots', () => {
       await writeSessionCache(feed, 'p', dir, Date.now(), join(dir, 'legacy.json'));
       expect((await readdir(dir)).sort()).toEqual(['new.json.prune-4e5f6a7b', 'p.json']);
     });
+  });
+
+  it('removes temp files a dead render left behind, beside the snapshots and the legacy file, but keeps a fresh one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+    const home = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+    const tenMinutesAgo = (Date.now() - 10 * 60_000) / 1000;
+    // Just inside the five-minute cutoff, so a lower threshold removes a temp a slow write still owns.
+    const fourMinutesAgo = (Date.now() - 4 * 60_000) / 1000;
+    const files = {
+      [join(dir, 'dead.json.tmp-11-aaaaaaaa')]: tenMinutesAgo,
+      [join(dir, 'live.json.tmp-12-bbbbbbbb')]: fourMinutesAgo,
+      [join(home, 'usage.json.tmp-34167')]: tenMinutesAgo, // the older naming, pid only
+      [join(home, 'usage.json.tmp-13-cccccccc')]: fourMinutesAgo,
+      [join(home, 'board-state.json.tmp-14-dddddddd')]: tenMinutesAgo, // not the usage cache's to remove
+    };
+    for (const [path, mtime] of Object.entries(files)) {
+      await writeFile(path, '{');
+      await utimes(path, mtime, mtime);
+    }
+    const feed: UsageFeed = { source: 'claude', available: true, sevenDay: { usedPct: 10 } };
+    await writeSessionCache(feed, 'p', dir, Date.now(), join(home, 'usage.json'));
+    expect((await readdir(dir)).sort()).toEqual(['live.json.tmp-12-bbbbbbbb', 'p.json']);
+    expect((await readdir(home)).sort()).toEqual(['board-state.json.tmp-14-dddddddd', 'usage.json.tmp-13-cccccccc']);
   });
 
   it('reports a window whose reset already passed as restarted (0%, no stale reset time)', () => {

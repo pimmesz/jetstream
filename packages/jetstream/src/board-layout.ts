@@ -54,6 +54,16 @@ const asStr = (v: unknown): string | undefined => {
   return clean === '' ? undefined : clean;
 };
 
+/** Strip leading and trailing double quotes. A loop, not /^"+|"+$/: that regex backtracks quadratically on a
+ * long run of quotes followed by another character, and a profile setting can hold one. */
+function trimQuotes(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text.charCodeAt(start) === 34) start++;
+  while (end > start && text.charCodeAt(end - 1) === 34) end--;
+  return text.slice(start, end);
+}
+
 /** A short human label for a placed action (project name, launched app, "fleet", …). Pure. */
 export function labelForAction(uuid: string, settings: unknown): string {
   const s = (typeof settings === 'object' && settings !== null ? settings : {}) as Record<string, unknown>;
@@ -64,7 +74,7 @@ export function labelForAction(uuid: string, settings: unknown): string {
     const raw = asStr(s.path);
     if (!raw) return 'open';
     // system.open stores the path JSON-wrapped in literal quotes: "\"/Applications/Telegram.app\"".
-    return basename(raw.replace(/^"+|"+$/g, '')).replace(/\.app$/i, '') || 'open';
+    return basename(trimQuotes(raw)).replace(/\.app$/i, '') || 'open';
   }
   if (uuid === 'com.elgato.streamdeck.system.website') {
     const url = asStr(s.path);
@@ -76,6 +86,7 @@ export function labelForAction(uuid: string, settings: unknown): string {
     }
   }
   if (uuid === 'com.elgato.streamdeck.system.text') {
+    // Short on purpose: this label fills the board map and the model prompt. Chat's Apply preview shows more.
     return (asStr(s.pastedText) ?? 'text').slice(0, 8);
   }
   if (uuid === 'gg.pim.jetstream.permission') {
@@ -89,7 +100,7 @@ export function labelForAction(uuid: string, settings: unknown): string {
     }
     if (s.kind === 'app') {
       const app = asStr(s.app);
-      return app ? basename(app.replace(/^"+|"+$/g, '')).replace(/\.app$/i, '') || 'open' : 'open';
+      return app ? basename(trimQuotes(app)).replace(/\.app$/i, '') || 'open' : 'open';
     }
     if (s.kind === 'url') {
       const url = asStr(s.url);
@@ -186,11 +197,17 @@ function readProfileActions(profileDir: string): {
 export function activeProfileUuids(): string[] {
   if (process.platform !== 'darwin') return [];
   try {
-    const out = execFileSync('defaults', ['read', 'com.elgato.StreamDeck'], { encoding: 'utf8', timeout: 3000 });
-    return [...out.matchAll(/ESDProfilesPreferred\s*=\s*"?([0-9a-fA-F-]{36})"?/g)].map((m) => m[1]!.toLowerCase());
+    return parsePreferredProfiles(
+      execFileSync('defaults', ['read', 'com.elgato.StreamDeck'], { encoding: 'utf8', timeout: 3000 }),
+    );
   } catch {
     return [];
   }
+}
+
+/** Each device's `ESDProfilesPreferred` UUID in `defaults read com.elgato.StreamDeck` output, lowercased. Pure. */
+export function parsePreferredProfiles(output: string): string[] {
+  return [...output.matchAll(/ESDProfilesPreferred\s*=\s*"?([0-9a-fA-F-]{36})"?/g)].map((m) => m[1]!.toLowerCase());
 }
 
 /** Delete redundant "Jetstream Custom" profiles from the store, KEEPING the one Stream Deck currently
@@ -386,7 +403,7 @@ export function toSlotKey(
 ): { uuid: string; settings: Record<string, unknown> } | null {
   const s = (typeof settings === 'object' && settings !== null ? settings : {}) as Record<string, unknown>;
   if (uuid === 'com.elgato.streamdeck.system.open') {
-    const app = asStr(s.path)?.replace(/^"+|"+$/g, ''); // system.open stores the path quote-wrapped
+    const app = trimQuotes(asStr(s.path) ?? ''); // system.open stores the path quote-wrapped
     return app ? { uuid: 'gg.pim.jetstream.slot', settings: { kind: 'app', app, label: labelForAction(uuid, s) } } : null;
   }
   if (uuid === 'com.elgato.streamdeck.system.website') {

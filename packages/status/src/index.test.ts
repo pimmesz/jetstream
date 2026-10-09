@@ -139,6 +139,10 @@ describe('matchProject', () => {
       { id: 'falcon', name: 'h', path: '/Users/me/falcon' },
     ];
     expect(matchProject('/Users/me/falcon/x', nested)).toBe('falcon');
+    // The child listed first too, so last-match-wins cannot pass for longest-prefix.
+    const childFirst = [nested[1]!, nested[0]!];
+    expect(matchProject('/Users/me/falcon/x', childFirst)).toBe('falcon');
+    expect(matchProject('/Users/me/other', childFirst)).toBe('root');
   });
 
   it("does not match a sibling that shares a name prefix", () => {
@@ -199,9 +203,56 @@ describe('untrusted hook payload bounds', () => {
       s = reduce(s, ev({ event: 'SessionStart', sessionId: `flood-${i}`, at: i + 1 }));
     }
     const ids = Object.keys(s.sessions);
-    expect(ids.length).toBeLessThanOrEqual(256);
+    expect(ids).toHaveLength(256);
     expect(ids).toContain('flood-399'); // newest kept
-    expect(ids).not.toContain('flood-0'); // oldest evicted
+    expect(ids).toContain('flood-144'); // the oldest of the 256 kept
+    expect(ids).not.toContain('flood-143'); // and everything older evicted
+  });
+
+  it('caps the session map on the subagent path too', () => {
+    let s = initialState();
+    for (let i = 0; i < 400; i++) {
+      s = reduce(s, ev({ event: 'SubagentStart', sessionId: `sub-${i}`, at: i + 1, agentId: 'w1' }));
+    }
+    const ids = Object.keys(s.sessions);
+    expect(ids).toHaveLength(256);
+    expect(ids).toContain('sub-399');
+    expect(ids).toContain('sub-144');
+    expect(ids).not.toContain('sub-143');
+  });
+
+  it("caps one session's in-flight list at 64, keeping the newest agents", () => {
+    let s = initialState();
+    for (let i = 0; i < 100; i++) {
+      s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'h1', at: i + 1, agentId: `agent-${i}` }));
+    }
+    const ids = s.sessions.h1?.inflight?.map((a) => a.id) ?? [];
+    expect(ids).toHaveLength(64);
+    expect(ids[0]).toBe('agent-36');
+    expect(ids.at(-1)).toBe('agent-99');
+  });
+
+  // session_id keys the map, so an Object.prototype name must stay an ordinary own key.
+  it('keeps a session named __proto__ as an ordinary session instead of swapping the map prototype', () => {
+    const start = parseHookPayload({ hook_event_name: 'UserPromptSubmit', cwd: '/Users/me/falcon', session_id: '__proto__' }, 1);
+    expect(start).not.toBeNull();
+    let s = reduce(initialState(), start!);
+    expect(Object.keys(s.sessions)).toEqual(['__proto__']);
+    expect(JSON.stringify(s.sessions)).toBe('{"__proto__":{"cwd":"/Users/me/falcon","status":"working","since":1}}');
+    expect(statusByProject(s, PROJECTS).falcon).toEqual({ status: 'working', since: 1 });
+    // A later id that names a field of that session must not read the session through the prototype.
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'cwd', at: 2, agentId: 'w1' }));
+    expect(Object.keys(s.sessions)).toEqual(['__proto__']);
+    s = reduce(s, ev({ event: 'SessionEnd', sessionId: '__proto__', at: 3 }));
+    expect(Object.keys(s.sessions)).toEqual([]);
+    expect(statusByProject(s, PROJECTS).falcon).toEqual({ status: 'none' });
+  });
+
+  it('a SubagentStop for an unseen session named after an Object.prototype key seeds nothing', () => {
+    for (const sessionId of ['constructor', '__proto__', 'toString']) {
+      const start = initialState();
+      expect(reduce(start, ev({ event: 'SubagentStop', sessionId, at: 1, agentId: 'w1' })), sessionId).toBe(start);
+    }
   });
 });
 
@@ -231,6 +282,13 @@ describe('reduce + statusByProject', () => {
     s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 10 }));
     s = reduce(s, ev({ event: 'Notification', sessionId: 'h2', at: 20 }));
     expect(statusByProject(s, PROJECTS).falcon).toEqual({ status: 'needsInput', since: 20 });
+    // Two sessions with the SAME status: the earlier since wins, whichever was seen first.
+    let older = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 10 }));
+    older = reduce(older, ev({ event: 'UserPromptSubmit', sessionId: 'h2', at: 20 }));
+    expect(statusByProject(older, PROJECTS).falcon).toEqual({ status: 'working', since: 10 });
+    let newer = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'h2', at: 20 }));
+    newer = reduce(newer, ev({ event: 'UserPromptSubmit', sessionId: 'h1', at: 10 }));
+    expect(statusByProject(newer, PROJECTS).falcon).toEqual({ status: 'working', since: 10 });
   });
 });
 
@@ -391,9 +449,10 @@ describe('needsAttention', () => {
   });
 
   it('breaks ties on age — whoever has been waiting longest comes first', () => {
-    let s = reduce(initialState(), ev({ event: 'Notification', cwd: '/Users/me/osprey', sessionId: 'o1', at: 50 }));
-    s = reduce(s, ev({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 'f1', at: 10 }));
-    expect(needsAttention(s, PROJECTS)).toEqual(['falcon', 'osprey']);
+    // falcon is first in config order but waited less, so config order alone would get this wrong.
+    let s = reduce(initialState(), ev({ event: 'Notification', cwd: '/Users/me/falcon', sessionId: 'f1', at: 50 }));
+    s = reduce(s, ev({ event: 'Notification', cwd: '/Users/me/osprey', sessionId: 'o1', at: 10 }));
+    expect(needsAttention(s, PROJECTS)).toEqual(['osprey', 'falcon']);
   });
 });
 
@@ -531,6 +590,16 @@ describe('Notification triage', () => {
 
   it('an older Claude with no notification_type keeps the previous behaviour', () => {
     expect(notificationStatus(undefined)).toBe('needsInput');
+  });
+
+  // notification_type arrives on the unauthenticated /hook, so a prototype key must not read as a status.
+  it('a type named after an Object.prototype key leaves the status alone', () => {
+    for (const type of ['constructor', '__proto__', 'toString']) {
+      expect(notificationStatus(type), type).toBeUndefined();
+    }
+    let s = reduce(initialState(), ev({ event: 'Stop', sessionId: 'h1', at: 1 }));
+    s = reduce(s, ev({ event: 'Notification', sessionId: 'h1', at: 2, notificationType: 'constructor' }));
+    expect(s.sessions.h1).toEqual({ cwd: '/Users/me/falcon', status: 'done', since: 1 });
   });
 
   it('an idle nudge does not disturb a finished turn', () => {

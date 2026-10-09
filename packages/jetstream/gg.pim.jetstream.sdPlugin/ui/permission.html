@@ -24,6 +24,18 @@
   <p class="hint">Acts on the oldest pending Claude permission request. Place one Approve
   key and one Deny key. If you don't press within ~90s, Claude shows its normal dialog
   and you decide at the keyboard.</p>
+  <p class="hint">The key shows the project the request came from. A <b>*</b> in the corner
+  means the command is longer than the key can show: read it in Claude before you approve.
+  A chained command (one with <code>;</code> <code>|</code> <code>&amp;</code>, a backtick, a
+  newline, or any <code>(</code>, <code>)</code>, <code>{</code>, <code>}</code> or <code>[[</code>) is left to Claude's own dialog when it does not
+  fit on the key or spans more than one line. Any bracket counts, because zsh can run code from many
+  bracket forms; the <code>&amp;</code> of a redirection like <code>2&gt;&amp;1</code> does not.</p>
+  <p class="hint">Always-Allow: hold Approve for 1.5 seconds, until the key turns red and asks
+  "auto-allow &lt;tool&gt;?", then release. Later requests of this session are then approved
+  with no press. A Bash rule covers only this exact command, run the same way: a rule armed inside
+  the sandbox never covers that command with the sandbox disabled. Any other tool's rule covers
+  every call of that tool. A chained command cannot be armed (the key says so). The idle Approve key shows how
+  many rules are on; they end with the session or a plugin restart. Deny is always one-shot.</p>
   <script src="pi.js"></script>
 </body>
 </html>

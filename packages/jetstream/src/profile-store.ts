@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Placement } from './layout';
@@ -165,8 +165,12 @@ export function backupProfile(
   const name = profileDir.split('/').pop() ?? 'profile';
   const stamp = now.toISOString().replace(/[:.]/g, '-');
   const dest = join(backupRoot, `${name}.${stamp}`);
+  // The copies come out of owner-only ~/Library and carry other plugins' key settings, so they stay
+  // owner-only too; the chmod also tightens a root that already exists with a wider mode.
   mkdirSync(backupRoot, { recursive: true });
+  chmodSync(backupRoot, 0o700);
   cpSync(profileDir, dest, { recursive: true });
+  chmodSync(dest, 0o700);
   const old = readdirSync(backupRoot)
     .filter((d) => d.startsWith(`${name}.`))
     .sort()
@@ -194,6 +198,81 @@ export const macStreamDeck: AppControl = {
   },
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+
+/** Where writeInPlace hears SIGINT/SIGHUP/SIGTERM. Injectable so a test never signals its own runner. */
+export interface SignalSource {
+  on: (signal: NodeJS.Signals, handler: (signal: NodeJS.Signals) => void) => void;
+  off: (signal: NodeJS.Signals, handler: (signal: NodeJS.Signals) => void) => void;
+  kill: (signal: NodeJS.Signals) => void;
+}
+
+/** The part of stdin the tty reset reads. */
+interface RawModeInput {
+  isTTY?: boolean;
+  isRaw?: boolean;
+  setRawMode: (mode: boolean) => unknown;
+}
+
+/** The real process. stdin and the kill are injectable so a test checks the tty reset without a signal. */
+export function processSignals(
+  stdin: RawModeInput = process.stdin,
+  kill: (signal: NodeJS.Signals) => void = (signal) => void process.kill(process.pid, signal),
+): SignalSource {
+  return {
+    on: (signal, handler) => void process.on(signal, handler),
+    off: (signal, handler) => void process.off(signal, handler),
+    kill: (signal) => {
+      // Once our listener is off the signal takes its OS default, which skips Node's tty reset on exit.
+      try {
+        if (stdin.isTTY && stdin.isRaw) stdin.setRawMode(false);
+      } catch {
+        // A terminal that already hung up (the SIGHUP case) cannot be reset; the signal must still go out.
+      }
+      kill(signal);
+    },
+  };
+}
+
+const DEFERRED_SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGHUP', 'SIGTERM'];
+
+/** A signal that arrives during synchronous code reaches its handler in the event loop's poll phase.
+ * One setImmediate can resolve before that phase comes round; the second runs only after it. */
+async function turn(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Hold off SIGINT/SIGHUP/SIGTERM while the board lock is held, so a signal during the quit-wait cannot
+ * kill node before `finally` relaunches Stream Deck and frees the lock. A second signal exits at once. */
+function deferSignals(signals: SignalSource): {
+  caught: () => NodeJS.Signals | undefined;
+  release: () => Promise<void>;
+} {
+  let first: NodeJS.Signals | undefined;
+  function stop(): void {
+    for (const signal of DEFERRED_SIGNALS) signals.off(signal, onSignal);
+  }
+  function onSignal(signal: NodeJS.Signals): void {
+    if (first === undefined) {
+      first = signal;
+      return;
+    }
+    stop();
+    signals.kill(signal);
+  }
+  for (const signal of DEFERRED_SIGNALS) signals.on(signal, onSignal);
+  return {
+    caught: () => first,
+    release: async () => {
+      // A signal that came in during the synchronous write has not reached its handler yet; without
+      // this turn, taking the handlers off would drop it.
+      await turn();
+      // Handlers come off first, so the re-sent signal takes its default action (exit 130 for SIGINT).
+      stop();
+      if (first !== undefined) signals.kill(first);
+    },
+  };
+}
 
 export type InPlaceResult =
   | { ok: true; backup: string; removed: string[] }
@@ -227,6 +306,8 @@ export async function writeInPlace(
     /** Given the page as re-read after the quit (inside the lock), the keys that changed since the plan
      * was made. If it names any, nothing is written. Required, so no caller can drop the check. */
     changedSincePlan: (actions: Record<string, StoredAction>) => string[];
+    /** Where SIGINT/SIGHUP/SIGTERM are heard and re-sent; the real process unless a test injects one. */
+    signals?: SignalSource;
   },
 ): Promise<InPlaceResult> {
   const app = options.app ?? macStreamDeck;
@@ -236,18 +317,29 @@ export async function writeInPlace(
   // Two chat windows applying at once would both read the page while Stream Deck is down, and the
   // second rename would silently drop the first one's keys. One writer at a time.
   const lock = options.lockPath ?? join(homedir(), '.config', 'jetstream', 'profile-write.lock');
+  // Deferred before the lock is taken: a signal during the synchronous pgrep below would otherwise
+  // kill node with the lock still on disk.
+  const deferred = deferSignals(options.signals ?? processSignals());
   const held = takeWriteLock(lock);
-  if (!('token' in held)) return { ok: false, reason: held.reason };
+  if (!('token' in held)) {
+    await deferred.release();
+    return { ok: false, reason: held.reason };
+  }
   const wasRunning = app.isRunning();
   try {
     if (wasRunning) {
       app.quit();
       const deadline = Date.now() + (options.quitTimeoutMs ?? 20_000);
-      while (app.isRunning()) {
+      while (app.isRunning() && !deferred.caught()) {
         if (Date.now() > deadline) return { ok: false, reason: 'Stream Deck did not quit within 20 seconds' };
         await app.sleep(250);
       }
     }
+    // A signal sent during the synchronous quit is still queued when the wait above does not loop.
+    // This turn is the last await before the write; a signal after it is re-sent once the write is done.
+    await turn();
+    const stoppedBy = deferred.caught();
+    if (stoppedBy) return { ok: false, reason: `stopped by ${stoppedBy} before anything was written` };
     // Read and back up AFTER the quit: the app saves its own pending edits on the way out, and the
     // compare and the backup must both see them.
     const page = readCurrentPage(profileDir, options.pageId);
@@ -272,6 +364,7 @@ export async function writeInPlace(
       }
     }
     releaseWriteLock(lock, held.token);
+    await deferred.release();
   }
 }
 

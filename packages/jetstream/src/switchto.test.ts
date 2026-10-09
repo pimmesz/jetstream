@@ -89,9 +89,27 @@ describe('buildOpenCommand — open the project folder, no terminal, no claude',
 });
 
 describe('probeClaudeProcess (conclusive dead vs inconclusive unknown, for the reaper)', () => {
-  it("reports 'dead' for a live non-Claude process (this runner) — the pid moved on / was reused", () => {
-    // ps runs (exit 0) and the command isn't claude → the Claude session that had this pid is gone.
-    expect(probeClaudeProcess(process.pid)).toBe('dead');
+  it("reports 'dead' for a live non-Claude process (a neutral child): the pid moved on / was reused", () => {
+    // Not this runner: its command line holds the checkout path, which may have a `claude` segment.
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      const pid = child.pid as number;
+      // Wait until ps shows the child's own command, not the forked runner's before exec.
+      const deadline = Date.now() + 5000;
+      let seen = '';
+      while (!seen.includes('setTimeout') && Date.now() < deadline) {
+        try {
+          seen = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+        } catch {
+          /* not visible yet */
+        }
+      }
+      expect(seen, 'ps must show the neutral child').toContain('setTimeout');
+      // ps runs (exit 0) and the command isn't claude → the Claude session that had this pid is gone.
+      expect(probeClaudeProcess(pid)).toBe('dead');
+    } finally {
+      child.kill('SIGKILL');
+    }
   });
 
   it("reports 'dead' for an absent pid (ps exits 1 = no such process)", () => {

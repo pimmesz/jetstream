@@ -4,8 +4,9 @@ import { postHook, runStatusHook } from './status-hook';
 
 /**
  * Claude Code lifecycle-hook entry (install for SessionStart / UserPromptSubmit /
- * Notification / Stop / SessionEnd, etc.). It forwards the hook payload to the
- * Jetstream plugin's local server and exits silently. It also tags the payload with
+ * Notification / Stop / SessionEnd, etc.). It forwards the fields of the hook payload the
+ * board reads (never prompt text or tool input) to the Jetstream plugin's local server and
+ * exits silently. It also tags the payload with
  * `_pid` (this hook's parent, the `claude` process, since hooks are spawned via
  * argv, not a shell) so the plugin can map the session to its process.
  * It prints NOTHING to stdout (some hooks, e.g. UserPromptSubmit, treat stdout as

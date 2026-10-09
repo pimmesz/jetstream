@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -41,6 +42,18 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+const isPosix = process.platform !== 'win32';
+
+/** Resolve an image-file icon in a child Node that is killed after 2 s. If the guard regresses, a
+ * blocking open or an endless read stalls that child, never this test's thread. */
+function iconInChild(icon: string): string {
+  const module = new URL('./slot-icon.ts', import.meta.url).href;
+  const script = `const { resolveSlotIcon } = await import(${JSON.stringify(module)});
+process.stdout.write(String(await resolveSlotIcon({ kind: 'url', icon: process.argv[1] })));`;
+  const args = ['--experimental-strip-types', '--input-type=module', '-e', script, icon];
+  return spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL' }).stdout;
+}
+
 describe('resolveSlotIcon', () => {
   it('passes a data: URI icon through unchanged', async () => {
     expect(await resolveSlotIcon({ kind: 'app', app: '/x.app', icon: 'data:image/png;base64,AAA' })).toBe(
@@ -70,6 +83,21 @@ describe('resolveSlotIcon', () => {
     const big = join(dir, 'big.png');
     writeFileSync(big, Buffer.alloc(600 * 1024)); // > the 512 KB cap
     expect(await resolveSlotIcon({ kind: 'app', app: '/x.app', icon: big })).toBeUndefined();
+  });
+  // A device or FIFO reports size 0, so only a check of what was opened keeps these out.
+  it.skipIf(!isPosix)('refuses an image-named symlink to /dev/zero instead of reading it forever', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'slot-icon-'));
+    tmpDirs.push(dir);
+    const link = join(dir, 'zero.png');
+    symlinkSync('/dev/zero', link);
+    expect(iconInChild(link)).toBe('undefined');
+  });
+  it.skipIf(!isPosix)('refuses an image-named FIFO without waiting for a writer', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'slot-icon-'));
+    tmpDirs.push(dir);
+    const fifo = join(dir, 'pipe.png');
+    execFileSync('mkfifo', [fifo]);
+    expect(iconInChild(fifo)).toBe('undefined');
   });
   it('a logo slot paints the bundled mark, and an explicit icon still wins', async () => {
     // The default bundle asset can't be read from the source tree, so an explicit icon proves the

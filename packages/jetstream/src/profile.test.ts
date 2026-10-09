@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ACTION_UUIDS } from './action-uuids';
+import { registry } from './action-registry';
 import {
   DECK_MODELS,
   DEFAULT_PROFILE_IDS,
@@ -342,20 +343,9 @@ describe('buildOpsProfile (the shipped controls page)', () => {
     const manifest = JSON.parse(
       readFileSync(new URL('../gg.pim.jetstream.sdPlugin/manifest.json', import.meta.url), 'utf8'),
     ) as { Actions: Array<{ UUID: string }> };
-    const actionsDir = new URL('./actions/', import.meta.url);
-    // Strip line + block comments before scraping so a UUID mentioned in a comment (or a
-    // commented-out @action) does NOT count as implemented — that false-green ships a key the SDK
-    // never answers. Quote-agnostic ('…' or "…") so a prettier reflow can't false-red the build.
-    const stripComments = (src: string): string =>
-      src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-    const implemented = readdirSync(actionsDir)
-      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-      .flatMap((f) => [
-        ...stripComments(readFileSync(new URL(f, actionsDir), 'utf8')).matchAll(
-          /@action\(\{\s*UUID:\s*['"]([^'"]+)['"]/g,
-        ),
-      ])
-      .map((m) => m[1]!);
+    // Each registered instance's uuid as its @action decorator set it: what the SDK actually routes
+    // on, so a file move or a uuid constant changes nothing here and only a real binding change does.
+    const implemented = Object.values(registry).map((r) => r.manifestId);
     expect(new Set(manifest.Actions.map((a) => a.UUID))).toEqual(new Set(implemented));
 
     // THIRD surface: registration. action-registry.ts pairs one instance with each ACTION_UUIDS entry through a

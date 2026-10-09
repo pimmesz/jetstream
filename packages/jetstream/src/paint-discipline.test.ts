@@ -19,21 +19,31 @@ import { describe, expect, it } from 'vitest';
  * A static check is the right tool: both bugs are invisible at runtime in tests (no real deck) and
  * a reviewer reading a diff sees a perfectly ordinary `setImage` call.
  */
-const ACTIONS_DIR = new URL('./actions/', import.meta.url);
+const SRC_DIR = new URL('./', import.meta.url);
 
-/** Painting the deck's own OS-level surfaces, not a key face — nothing to cache. */
+/** Files allowed a direct setImage, each for a reason that is not a bypassed key face. */
 const ALLOWED = new Set<string>([
-  'dial.ts', // Stream Deck + touchscreen: setFeedback, not a key image
+  'actions/dial.ts', // Stream Deck + touchscreen: setFeedback, not a key image
+  'paint.ts', // paintKey itself: the one cached upload every other paint goes through
 ]);
 
+/** A raw upload, plain or optional-called (`a.setImage(x)`, `a.setImage?.(x)`). */
+const RAW_SET_IMAGE = /\.setImage\??\.?\s*\(/;
+
+/** Every non-test .ts under src, at any depth, as a path relative to src (`actions/slot.ts`). */
+const sourceFiles = (): string[] =>
+  readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' }).filter(
+    (f) => f.endsWith('.ts') && !f.endsWith('.test.ts'),
+  );
+
 describe('paint discipline', () => {
-  it('no action paints a key with a raw setImage — every paint goes through paintKey', () => {
+  it('no source file paints a key with a raw setImage: every paint goes through paintKey', () => {
     const offenders: string[] = [];
-    for (const file of readdirSync(ACTIONS_DIR)) {
-      if (!file.endsWith('.ts') || file.endsWith('.test.ts') || ALLOWED.has(file)) continue;
-      const src = readFileSync(new URL(file, ACTIONS_DIR), 'utf8');
+    for (const file of sourceFiles()) {
+      if (ALLOWED.has(file)) continue;
+      const src = readFileSync(new URL(file, SRC_DIR), 'utf8');
       for (const [i, line] of src.split('\n').entries()) {
-        if (/\.setImage\s*\(/.test(line)) offenders.push(`${file}:${i + 1}`);
+        if (RAW_SET_IMAGE.test(line)) offenders.push(`${file}:${i + 1}`);
       }
     }
     expect(
@@ -46,8 +56,11 @@ describe('paint discipline', () => {
 
   it('the guard actually looks at files (it would catch a real offender)', () => {
     // A directory rename or a bad URL would make the loop above silently pass forever.
-    const scanned = readdirSync(ACTIONS_DIR).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+    const scanned = sourceFiles();
     expect(scanned.length).toBeGreaterThan(5);
-    expect(scanned).toContain('slot.ts');
+    expect(scanned).toContain('actions/slot.ts'); // nested: the scan recurses
+    expect(scanned).toContain('paint.ts'); // top level: not just actions/
+    for (const raw of ['a.setImage(x)', 'a.setImage?.(x)', 'a.setImage (x)']) expect(RAW_SET_IMAGE.test(raw), raw).toBe(true);
+    expect(RAW_SET_IMAGE.test('paintKey(a, x)')).toBe(false);
   });
 });

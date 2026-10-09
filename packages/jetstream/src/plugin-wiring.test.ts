@@ -1,11 +1,23 @@
+import { randomBytes } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
 import { EventEmitter, once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
+import type { Server } from 'node:http';
 import { connect, createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendSpool, initialState, reduce, takeSpool, type HookEvent } from '@pimmesz/jetstream-status';
-import { describe, it, expect, vi } from 'vitest';
+import {
+  CHALLENGE_HEADER,
+  MAC_HEADER,
+  NONCE_HEADER,
+  appendSpool,
+  challengeMac,
+  initialState,
+  reduce,
+  takeSpool,
+  type HookEvent,
+} from '@pimmesz/jetstream-status';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   bindWithRetry,
   coalesce,
@@ -14,9 +26,11 @@ import {
   exitOnStreamDeckClose,
   flushOnExit,
   handleHookPayload,
+  listenerAuth,
   onStreamDeckClose,
   replaySpool,
 } from './plugin-wiring';
+import { startHookServer } from './server';
 
 describe('createTokenSource', () => {
   it('retries a failed mint at most once a minute, reports the failure once, and keeps the token once it exists', () => {
@@ -40,6 +54,70 @@ describe('createTokenSource', () => {
     expect(token()).toBe('tok');
     expect(token()).toBe('tok');
     expect(ensure).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('listenerAuth', () => {
+  let server: Server | undefined;
+  afterEach(() => {
+    server?.close();
+    server = undefined;
+  });
+
+  /** A listener wired the way plugin.ts wires it, with `token` as the plugin's token source. */
+  async function listen(token: () => string | undefined) {
+    const served: string[] = [];
+    let legacy = 0;
+    server = await startHookServer(0, {
+      ...listenerAuth(token, () => legacy++),
+      onPayload: () => void served.push('/hook'),
+      onPermission: async () => {
+        served.push('/permission');
+        return '{"decision":"allow"}';
+      },
+      onSlot: async () => {
+        served.push('/slot');
+        return { status: 200, body: '{}' };
+      },
+    });
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const post = async (path: string, headers: Record<string, string> = {}, body = '{}'): Promise<number> =>
+      (await fetch(`${base}${path}`, { method: 'POST', headers, body })).status;
+    /** A /permission request signed with `key` over a challenge from this listener, as the hook sends it. */
+    const postSigned = async (key: string): Promise<number> => {
+      const challenge = await (await fetch(`${base}/challenge`)).text();
+      const nonce = `${Date.now()}.${randomBytes(16).toString('hex')}`;
+      const body = '{"tool_name":"Bash"}';
+      const mac = challengeMac(key, 'req', challenge, nonce, body);
+      return post('/permission', { [CHALLENGE_HEADER]: challenge, [NONCE_HEADER]: nonce, [MAC_HEADER]: mac }, body);
+    };
+    return { served, legacyCount: () => legacy, post, postSigned };
+  }
+
+  it('serves an untokened /hook without a warning, and refuses and reports an untokened /permission and /slot', async () => {
+    const { served, legacyCount, post } = await listen(() => 'secret');
+    expect(await post('/hook')).toBe(204);
+    expect(legacyCount()).toBe(0);
+    expect(await post('/permission')).toBe(401);
+    expect(await post('/slot')).toBe(401);
+    expect(legacyCount()).toBe(2);
+    expect(served).toEqual(['/hook']);
+  });
+
+  it('answers a /permission request signed with the plugin token', async () => {
+    const { served, postSigned } = await listen(() => 'secret');
+    expect(await postSigned('guess')).toBe(401);
+    expect(await postSigned('secret')).toBe(200);
+    expect(served).toEqual(['/permission']);
+  });
+
+  it('with no token, still serves /hook and refuses the rest, signed or not', async () => {
+    const { served, post, postSigned } = await listen(() => undefined);
+    expect(await post('/hook')).toBe(204);
+    expect(await post('/permission')).toBe(401);
+    expect(await post('/slot')).toBe(401);
+    expect(await postSigned('secret')).toBe(401);
+    expect(served).toEqual(['/hook']);
   });
 });
 

@@ -10,10 +10,11 @@
 // 2. A createRequire banner: bundling CJS deps into ESM output leaves `require()`
 //    shims that throw "Dynamic require is not supported" at runtime without it.
 import { build } from 'esbuild';
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { neutralizeRepoPaths, repoPrefix } from './bundle-paths.mjs';
 
 const pkg = join(dirname(fileURLToPath(import.meta.url)), '..');
 const bin = join(pkg, 'gg.pim.jetstream.sdPlugin', 'bin');
@@ -51,6 +52,21 @@ const bundle = await build({
   },
   logLevel: 'info',
 });
+
+// esbuild names each module by its path from absWorkingDir, which runs through the builder's
+// home (`../../Users/<name>/...`). Swap that prefix for a neutral one; never ship it.
+const workDir = realpathSync(tmpdir()); // esbuild resolves symlinks too (macOS /var is /private/var)
+const prefix = repoPrefix(workDir, realpathSync(join(pkg, '..', '..')));
+for (const out of Object.keys(bundle.metafile.outputs)) {
+  const file = resolve(workDir, out);
+  const code = neutralizeRepoPaths(readFileSync(file, 'utf8'), prefix);
+  if (code.includes(homedir())) {
+    throw new Error(
+      `${file} still contains your home directory after the path rewrite: a bundled module resolved outside the repo; find it in the bundle and vendor it or extend scripts/bundle-paths.mjs`,
+    );
+  }
+  writeFileSync(file, code);
+}
 
 // The bundle inlines third-party code (MIT and similar), whose licences require their notices to
 // travel with it. Collect each bundled package's own LICENSE into one file inside the plugin.

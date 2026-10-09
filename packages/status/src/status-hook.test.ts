@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { initialState, parseHookPayload, reduce, type StatusState } from './index';
 import { postHook, runStatusHook, type StatusHookDeps } from './status-hook';
 
 /** One hook run with `stdin` as its input; `isDelivered` is what the POST reports. */
@@ -33,9 +34,9 @@ const STOP = JSON.stringify({
 });
 
 describe('runStatusHook', () => {
-  it('stamps the fire time and the parent pid on the posted event, and spools nothing once delivered', async () => {
+  it('stamps the fire time and the parent pid on the posted event, posts only the fields the plugin reads, and spools nothing once delivered', async () => {
     const { posted, spooled, deps } = await run(STOP, true);
-    expect(posted.map((p) => JSON.parse(p))).toEqual([{ ...JSON.parse(STOP), _pid: 42, _at: 1_000 }]);
+    expect(posted.map((p) => JSON.parse(p))).toEqual([{ hook_event_name: 'Stop', session_id: 's', cwd: '/r', _pid: 42, _at: 1_000 }]);
     expect(spooled).toEqual([]);
     expect(deps.clearStopFlag).toHaveBeenCalledWith('Stop', 's');
   });
@@ -47,9 +48,17 @@ describe('runStatusHook', () => {
     ]);
   });
 
-  it('forwards a body that is not a JSON object unchanged, and never spools it', async () => {
-    const { posted, spooled } = await run('not json', false);
-    expect(posted).toEqual(['not json']);
+  // The plugin reads only a JSON object's fields, so anything else would reach the untokened /hook raw.
+  const PROMPT = { hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: '/r', prompt: 'private prompt' };
+  it.each([
+    ['text that is not JSON', 'not json'],
+    ['JSON cut short with the prompt in it', JSON.stringify(PROMPT).slice(0, -5)],
+    ['a JSON array', JSON.stringify([PROMPT])],
+    ['a JSON string', JSON.stringify('private prompt')],
+  ])('posts and spools nothing for %s', async (_name, stdin) => {
+    // Refused, so a raw post that fell through to the spool would show up too.
+    const { posted, spooled } = await run(stdin, false);
+    expect(posted).toEqual([]);
     expect(spooled).toEqual([]);
   });
 });
@@ -66,6 +75,79 @@ describe('postHook', () => {
   };
   const portOf = (server: Server): number => (server.address() as AddressInfo).port;
   const close = (server: Server): Promise<void> => new Promise((resolve) => server.close(() => resolve()));
+  /** A fake plugin that answers only once the whole body is in, and records what arrived where. */
+  const recorder = async (): Promise<{ server: Server; received: Array<{ method?: string; url?: string; body: string }> }> => {
+    const received: Array<{ method?: string; url?: string; body: string }> = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        received.push({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString('utf8') });
+        res.writeHead(204);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { server, received };
+  };
+
+  it('POSTs the body to /hook byte for byte, multi-byte text included', async () => {
+    const { server, received } = await recorder();
+    try {
+      const body = JSON.stringify({ hook_event_name: 'Stop', cwd: '/p', session_id: 's', x: 'héllo' });
+      expect(await postHook(body, portOf(server))).toBe(true);
+      // A content-length counted in characters, not bytes, would cut this body short.
+      expect(received).toEqual([{ method: 'POST', url: '/hook', body }]);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('sends /hook only the fields the plugin reads, and the board reduces them to the same state', async () => {
+    const { server, received } = await recorder();
+    const events = [
+      { hook_event_name: 'SessionStart', session_id: 's', cwd: '/r', source: 'resume', transcript_path: '/private/t.jsonl' },
+      { hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: '/r', prompt: 'private prompt' },
+      // Compaction re-fires SessionStart mid-turn: only `source` keeps the key from reading idle.
+      { hook_event_name: 'SessionStart', session_id: 's', cwd: '/r', source: 'compact', transcript_path: '/private/t.jsonl' },
+      { hook_event_name: 'PreToolUse', session_id: 's', cwd: '/r', tool_name: 'Bash', tool_input: { command: 'cat private' } },
+      { hook_event_name: 'SubagentStart', session_id: 's', cwd: '/r', agent_id: 'ag' },
+      { hook_event_name: 'Notification', session_id: 's', cwd: '/r', notification_type: 'idle_prompt', message: 'private' },
+      // A non-empty list keeps the agent in flight, so its length must survive the projection.
+      { hook_event_name: 'Stop', session_id: 's', cwd: '/r', background_tasks: [{ description: 'private' }], last_assistant_message: 'private' },
+      // An empty list while the agent is in flight ends it.
+      { hook_event_name: 'Stop', session_id: 's', cwd: '/r', background_tasks: [], last_assistant_message: 'private' },
+    ];
+    // One fire time per event, so agent stamps and the reducer's fire-order guard see a real sequence.
+    const firedAt = (index: number): number => 1_000 + index * 1_000;
+    try {
+      for (const [index, event] of events.entries()) {
+        await runStatusHook({
+          readStdin: async () => JSON.stringify(event),
+          post: (body) => postHook(body, portOf(server)),
+          appendSpool: () => {},
+          clearStopFlag: () => {},
+          now: () => firedAt(index),
+          ppid: 42,
+        });
+      }
+    } finally {
+      await close(server);
+    }
+    expect(received.map(({ url }) => url)).toEqual(events.map(() => '/hook'));
+    expect(received.map(({ body }) => body).join('\n')).not.toContain('private');
+    const posted = received.map(({ body }) => JSON.parse(body) as Record<string, unknown>);
+    const read = ['hook_event_name', 'session_id', 'cwd', 'notification_type', 'source', 'tool_name', 'agent_id', 'background_tasks', '_pid', '_at'];
+    for (const payload of posted) expect(Object.keys(payload).filter((key) => !read.includes(key))).toEqual([]);
+    // The state after EVERY event, not only the last: a later event overwrites a tool name or a status.
+    const scan = (payloads: unknown[]): StatusState[] =>
+      payloads.reduce<StatusState[]>((states, raw, index) => {
+        const state = states.at(-1) ?? initialState();
+        const event = parseHookPayload(raw, firedAt(index));
+        return [...states, event ? reduce(state, event) : state];
+      }, []);
+    expect(scan(posted)).toEqual(scan(events.map((event, index) => ({ ...event, _pid: 42, _at: firedAt(index) }))));
+  });
 
   it('sends no token header, and reports a delivered event', async () => {
     let seen: IncomingHttpHeaders = {};

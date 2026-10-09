@@ -5,6 +5,81 @@ Newest first. A decision here is settled — re-open it only against its stated 
 
 ---
 
+## 2026-10-09: verdicts on the 2026-10-08 audits' needs-decision items
+
+The maintainer walked the needs-decision items of the security, test-suite, concurrency,
+docs-drift and release-readiness audits one at a time: sixteen are to be built (ledger
+`audit-decide-2026-10-09.md`), one is deferred and two are accepted. Two calls from the Claude x
+Codex cross-review of that build are recorded at the end. Where a verdict below
+contradicts an older entry, this one wins.
+
+- **Always-Allow scope** (security `authz-authn-1`, `permissions.ts:67`): DO IT. A Bash rule is keyed
+  on the exact command and on whether the sandbox was off, and a compound command cannot be armed.
+  Compound means `;`, `|`, `&` (not `2>&1` or `&>`), a backtick, a newline or any `(`, `)`, `{`, `}` or `[[`: zsh can
+  run code from many bracket forms (`=(`, `always` blocks, glob qualifiers), so any bracket is the
+  simple safe line, and a bracketed one-liner such as `jq 'map(.x)'` is the accepted false positive.
+  A compound command that does not fit the face or spans lines is left to Claude's own dialog. The
+  fit is estimated from rough character widths (18 average characters; capitals, CJK and emoji count
+  wider) and errs toward marking: an extra `*` or an extra trip to Claude's dialog is the accepted cost. Other tools keep the session + tool key. Replaces "TOOL-scoped" in the permissions.ts note.
+- **Live /hook payload** (security `secrets-1`, `status-hook.ts:34`): DO IT. The live POST sends the
+  same projection as the spool, and a stdin body that is not a JSON object is neither posted nor
+  spooled. Supersedes "the live POST is unchanged" in the hook spool entry.
+- **MCP Actions profile** (security `authz-authn-4`, `README.md:165`): DO IT. The README stops
+  suggesting APPROVE there and warns against it: an agent could approve its own prompt.
+- **Chat Text key** (security `input-validation-1`, `layout.ts:125`): DO IT. Control characters are
+  refused and the preview shows up to 40 characters, ending in an ellipsis when it cuts.
+- **Home path in the bundles** (security `info-disclosure-4`, `build.mjs:32`): DO IT. The build
+  rewrites the repo-root prefix after esbuild runs; `absWorkingDir: tmpdir()` stays.
+- **installHooks compare and rename** (concurrency `check-then-act-1`, `file-write-races-1`,
+  `hooks-install.ts:339`): DO IT, and the residual is accepted. The compare and the rename run
+  synchronously back to back, which narrows the window but cannot close it: POSIX has no
+  compare-and-rename and Claude Code takes no lock.
+- **Ctrl-C during chat's restart write** (concurrency `cancellation-cleanup-1`, `profile-store.ts`):
+  DO IT. While the profile-write lock is held, a signal is deferred until Stream Deck is relaunched
+  and the lock released, then the CLI exits 130; a second signal exits at once. The lock is still
+  never taken over automatically.
+- **Token tests** (test-suite `name-vs-behavior-1`, `listener-token.test.ts:287`): DO IT. They pin
+  the settled values from 2026-07-25 #2; the "both arms" reason expired with the flip.
+- **Paint lint** (test-suite `source-text-asserts-1`, `paint-discipline.test.ts:30`): DO IT. The
+  lint stays and widens to `src/**` and `.setImage?.(`; fake-timer revert tests for the transient
+  faces are added beside it.
+- **Store-asset red** (test-suite `source-text-asserts-2`, `store-assets.test.ts:52`): DO IT. The
+  generator imports `DANGER_RED`. Amends #5: the danger-red check now asserts that import.
+- **Action UUIDs** (test-suite `source-text-asserts-3`, `profile.test.ts:354`): DO IT. The
+  implemented set comes from the registry's `manifestId`s. Amends #6 again.
+- **Prefs regex** (test-suite `coverage-gaps-8`, `board-layout.ts:190`): DO IT. Checked by hand
+  against real Stream Deck 7 output on 2026-10-09; the parser becomes a pure function with a test.
+- **Lock test stopwatch** (test-suite `flaky-patterns-5`, `settings.test.ts:200`): DO IT. A tick
+  counter replaces the 50 ms bound.
+- **Multi-actions** (docs-drift `claims-features-2`, `docs/v2-roadmap.md:54`): DO IT. Approve/Deny
+  and Settings set `SupportedInMultiActions: false`.
+- **Stale core builds in tests** (test-suite `harness-correctness-2`, `vitest.config.ts:10`):
+  ACCEPTED. Only a bare local `pnpm test` after a core src edit can read an old build; `pnpm check`
+  and CI build the cores first. Reopen if a mutation run needs cross-package targets.
+- **Release ships main's tip** (release-readiness `gates-2`, `install-repro-2`, `artifacts-2`,
+  `smoke-2`, `ci.yml:147`): DO IT. A run skips its release when main moved past the gated commit
+  in shipped paths (bot bump and landing-sync commits ignored); the newer run releases. Narrows
+  the ci.yml:145 "main's tip" choice to the version number it was meant for.
+- **Marketplace build** (release-readiness `gates-5`, `install-repro-3`, `artifacts-4`,
+  `metadata-3`): DO IT. CI attaches the `.streamDeckPlugin` prepack built to the GitHub Release
+  and the manual upload uses that file. "Manual by design" (MARKETPLACE.md:118) now covers the
+  upload only.
+- **Unverifiable release checks** (release-readiness `gates-1`, `install-repro-1`,
+  `artifacts-1`, `secrets-scan-1`, `secrets-scan-2`, `smoke-1`): DEFERRED. The audit collector
+  cannot execute on a pnpm 11 workspace, so CI's build job on the pushed commit is the gate
+  record. TRIGGER: the collector is fixed for workspaces; then re-run release-readiness.
+- **Slot inspector label and colour on app keys** (cross-review X5, `slot-inspector.ts:49`): HINT ONLY.
+  An app key keeps showing the app's own icon; the inspector says its label and colour show only when
+  the app has no icon. Rendering them over the icon would change every app key that chat styled.
+- **Early relaunch after a deferred signal** (cross-review C11, `profile-store.ts:307`): ACCEPTED.
+  A signal ends the quit-wait, so Stream Deck can be told to launch while the old instance is still
+  closing. Plausible in every check and never reproduced; reopen if a relaunch is seen to be lost.
+- **4.1.1 as a patch** (release-readiness `semver-3`, DECISIONS.md "deferred fixes built"):
+  ACCEPTED. Every item in that batch fixes a residual recorded at the 4.1.0 ship and adds no
+  command, flag or setting; adopting the shell's config dirs fixes a documented limitation.
+
+---
+
 ## 2026-10-08 (later): deferred fixes built (4.1.1)
 
 The maintainer asked for eight items that the review fixes below left as residuals to be built,

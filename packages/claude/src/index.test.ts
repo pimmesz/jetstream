@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildArgs,
   sanitizeEnv,
@@ -167,16 +167,17 @@ describe('parseStreamLine', () => {
 });
 
 /** A fake child that emits the given stdout lines then a close code, so runClaude is
- * exercised without spawning a real `claude`. */
+ * exercised without spawning a real `claude`. `stdin` records what was written to it. */
 function fakeSpawn(
   lines: string[],
   exitCode: number | null,
-): { spawnFn: RunDeps['spawnFn']; fire: () => void; fail: (err: Error) => void } {
+): { spawnFn: RunDeps['spawnFn']; fire: () => void; fail: (err: Error) => void; stdin: Array<string | undefined> } {
   const stdout = new EventEmitter();
   const proc = new EventEmitter();
+  const stdin: Array<string | undefined> = [];
   const child = {
     stdout,
-    stdin: { end() {} },
+    stdin: { end: (data?: string) => stdin.push(data) },
     on: proc.on.bind(proc),
   } as unknown as SpawnLike;
   const fire = (): void => {
@@ -186,12 +187,12 @@ function fakeSpawn(
   const fail = (err: Error): void => {
     proc.emit('error', err);
   };
-  return { spawnFn: () => child, fire, fail };
+  return { spawnFn: () => child, fire, fail, stdin };
 }
 
 describe('runClaude', () => {
   it('streams events and resolves with the result', async () => {
-    const { spawnFn, fire } = fakeSpawn(
+    const { spawnFn, fire, stdin } = fakeSpawn(
       [
         JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }),
         JSON.stringify({ type: 'result', session_id: 'abc', result: 'ok', is_error: false }),
@@ -199,11 +200,12 @@ describe('runClaude', () => {
       0,
     );
     const events: ClaudeEvent[] = [];
-    const pending = runClaude({ prompt: 'x' }, (e) => events.push(e), { spawnFn, env: {} });
+    const pending = runClaude({ prompt: 'summarize the diff' }, (e) => events.push(e), { spawnFn, env: {} });
     fire();
     const result = await pending;
     expect(events.some((e) => e.type === 'text' && e.text === 'hi')).toBe(true);
     expect(result).toEqual({ sessionId: 'abc', result: 'ok', isError: false, exitCode: 0 });
+    expect(stdin).toEqual(['summarize the diff']); // the prompt goes on stdin, once
   });
 
   it('carries costUsd from the result event when present', async () => {
@@ -230,13 +232,14 @@ describe('runClaude', () => {
   it('spawns claude with API-key credentials stripped from the child env, and exactly buildArgs', async () => {
     const stdout = new EventEmitter();
     const proc = new EventEmitter();
-    const child = { stdout, stdin: { end() {} }, on: proc.on.bind(proc) } as unknown as SpawnLike;
+    const stdin: Array<string | undefined> = [];
+    const child = { stdout, stdin: { end: (data?: string) => stdin.push(data) }, on: proc.on.bind(proc) } as unknown as SpawnLike;
     let captured: { command: string; args: string[]; options: { cwd?: string; env?: NodeJS.ProcessEnv } } | undefined;
     const spawnFn: RunDeps['spawnFn'] = (command, args, options) => {
       captured = { command, args, options };
       return child;
     };
-    const opts = { prompt: 'x', model: 'sonnet', appendSystemPrompt: 'sys' };
+    const opts = { prompt: 'malicious; rm -rf ~', model: 'sonnet', appendSystemPrompt: 'sys' };
     const pending = runClaude(opts, () => {}, {
       spawnFn,
       env: { ANTHROPIC_API_KEY: 'sk-x', ANTHROPIC_AUTH_TOKEN: 't', CLAUDE_CODE_OAUTH_TOKEN: 'ok', PATH: '/usr/bin' },
@@ -252,6 +255,9 @@ describe('runClaude', () => {
     // And the launch argv is exactly the buildArgs contract — no drift.
     expect(captured?.command).toBe('claude');
     expect(captured?.args).toEqual(buildArgs(opts));
+    // The prompt never reaches argv; it is written to the child's stdin instead.
+    expect(captured?.args).not.toContain(opts.prompt);
+    expect(stdin).toEqual([opts.prompt]);
   });
 
   it('handles a result split across stdout chunks (line buffering)', async () => {
@@ -283,51 +289,65 @@ describe('runClaude', () => {
     });
   });
 
+  // Fake timers: the SIGKILL grace (5 s) and the watchdog (10 s) must actually be reached for
+  // "never killed" to mean anything; a few real milliseconds of waiting could not fail.
   it('kills a wedged run at the timeout and resolves isError (never a bricked key or orphan)', async () => {
-    const stdout = new EventEmitter();
-    const proc = new EventEmitter();
-    const kills: string[] = [];
-    // A child that never closes on its own — SIGTERM then makes it exit shortly after (async, as
-    // a real signal delivery does), so the watchdog's SIGKILL grace timer is cancelled.
-    const child = {
-      stdout,
-      stdin: { end() {} },
-      on: proc.on.bind(proc),
-      kill: (sig?: string) => {
-        kills.push(sig ?? 'SIGTERM');
-        setTimeout(() => proc.emit('close', null), 0);
-      },
-    } as unknown as SpawnLike;
-    const result = await runClaude({ prompt: 'x' }, () => {}, {
-      spawnFn: () => child,
-      env: {},
-      timeoutMs: 5,
-    });
-    expect(result).toEqual({ isError: true, exitCode: null });
-    await new Promise((r) => setTimeout(r, 5)); // let the post-SIGTERM close land
-    expect(kills).toEqual(['SIGTERM']); // SIGTERM sufficed — SIGKILL never needed
+    vi.useFakeTimers();
+    try {
+      const stdout = new EventEmitter();
+      const proc = new EventEmitter();
+      const kills: string[] = [];
+      // A child that never closes on its own. SIGTERM then makes it exit shortly after (async, as
+      // a real signal delivery does), so the watchdog's SIGKILL grace timer is cancelled.
+      const child = {
+        stdout,
+        stdin: { end() {} },
+        on: proc.on.bind(proc),
+        kill: (sig?: string) => {
+          kills.push(sig ?? 'SIGTERM');
+          setTimeout(() => proc.emit('close', null), 0);
+        },
+      } as unknown as SpawnLike;
+      const pending = runClaude({ prompt: 'x' }, () => {}, {
+        spawnFn: () => child,
+        env: {},
+        timeoutMs: 5,
+      });
+      await vi.advanceTimersByTimeAsync(5); // the watchdog fires
+      expect(await pending).toEqual({ isError: true, exitCode: null });
+      await vi.advanceTimersByTimeAsync(0); // the post-SIGTERM close lands
+      await vi.advanceTimersByTimeAsync(5_001); // past the SIGKILL grace
+      expect(kills).toEqual(['SIGTERM']); // SIGTERM sufficed, SIGKILL never needed
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not kill a run that finishes before the timeout', async () => {
-    const stdout = new EventEmitter();
-    const proc = new EventEmitter();
-    const kills: string[] = [];
-    const child = {
-      stdout,
-      stdin: { end() {} },
-      on: proc.on.bind(proc),
-      kill: (sig?: string) => kills.push(sig ?? 'SIGTERM'),
-    } as unknown as SpawnLike;
-    const pending = runClaude({ prompt: 'x' }, () => {}, {
-      spawnFn: () => child,
-      env: {},
-      timeoutMs: 10_000,
-    });
-    stdout.emit('data', `${JSON.stringify({ type: 'result', result: 'r', is_error: false })}\n`);
-    proc.emit('close', 0);
-    expect((await pending).isError).toBe(false);
-    await new Promise((r) => setTimeout(r, 5));
-    expect(kills).toEqual([]); // the watchdog was cleared on close — nothing killed
+    vi.useFakeTimers();
+    try {
+      const stdout = new EventEmitter();
+      const proc = new EventEmitter();
+      const kills: string[] = [];
+      const child = {
+        stdout,
+        stdin: { end() {} },
+        on: proc.on.bind(proc),
+        kill: (sig?: string) => kills.push(sig ?? 'SIGTERM'),
+      } as unknown as SpawnLike;
+      const pending = runClaude({ prompt: 'x' }, () => {}, {
+        spawnFn: () => child,
+        env: {},
+        timeoutMs: 10_000,
+      });
+      stdout.emit('data', `${JSON.stringify({ type: 'result', result: 'r', is_error: false })}\n`);
+      proc.emit('close', 0);
+      expect((await pending).isError).toBe(false);
+      await vi.advanceTimersByTimeAsync(10_001); // past where the watchdog would fire
+      expect(kills).toEqual([]); // the watchdog was cleared on close, nothing killed
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -496,11 +496,8 @@ export function checkListenerToken(token: {
       message: `loopback token differs between ${listenerTokenPaths().join(' and ')} — delete the one outside your config dir, then restart Stream Deck`,
     };
   }
-  // NOT a warning. During the grace period this state is expected and nothing the user does can
-  // clear it — the flag flips in a later release. Reporting it as a warning meant doctor
-  // permanently showed a "problem" with a prescribed command (`jetstream hooks install`) that
-  // could not change the outcome, which is exactly the trap the usage-statusline check fell into:
-  // a diagnostic must never hand you an action that leaves it saying the same thing.
+  // This state is expected (untokened status events are accepted by design) and nothing the
+  // user does can change it.
   return ENFORCE_TOKEN
     ? {
         status: 'ok',

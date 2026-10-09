@@ -41,21 +41,15 @@ export const PUBLIC_REGISTRY = 'https://registry.npmjs.org/';
  * exclude. A base registry URL has no need to percent-encode, so forbidding it costs nothing. */
 const SAFE_REGISTRY = /^https?:\/\/[A-Za-z0-9._~:/@+-]+$/;
 
-/** Hide `user:password@` before a registry URL is printed — npm redacts these in its own output
- * and a terminal log or a pasted bug report must not be where they leak. */
+/** Print only a registry's origin: a token rides in `user:password@` or, Gemfury-style, as a path
+ * segment, and a terminal log or a pasted bug report must not be where either leaks. */
 export function redactRegistry(url: string): string {
   try {
-    const parsed = new URL(url);
-    if (!parsed.username && !parsed.password) return url;
-    parsed.username = '';
-    parsed.password = '';
-    return `${parsed.toString()} (credentials hidden)`;
+    const { origin } = new URL(url);
+    // A non-http(s) scheme has no origin (the string 'null'), so it is named generically too.
+    return origin === 'null' ? '(custom registry)' : origin;
   } catch {
-    // Unparseable, so strip anything that looks like `user:password@` after the scheme by hand: this
-    // is exactly the malformed value the caller is about to print in an error.
-    // Up to the LAST `@` before the path: a password may itself contain `@`.
-    const stripped = url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, '$1');
-    return stripped === url ? url : `${stripped} (credentials hidden)`;
+    return '(custom registry)';
   }
 }
 

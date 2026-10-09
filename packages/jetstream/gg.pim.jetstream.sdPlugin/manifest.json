@@ -130,6 +130,7 @@
       "Icon": "imgs/permission",
       "Tooltip": "Approve or deny the oldest pending Claude permission request from the deck. Place one Approve key and one Deny key.",
       "PropertyInspectorPath": "ui/permission.html",
+      "SupportedInMultiActions": false,
       "Controllers": [
         "Keypad"
       ],
@@ -145,6 +146,7 @@
       "Icon": "imgs/settings",
       "Tooltip": "Plugin settings + manage your fleet (add/scan repos, no terminal) + a health check + switch to the Jetstream layout. A press opens jetstream doctor; toggle high-contrast colours in the inspector.",
       "PropertyInspectorPath": "ui/settings.html",
+      "SupportedInMultiActions": false,
       "Controllers": [
         "Keypad"
       ],
@@ -214,6 +216,7 @@
       "UUID": "gg.pim.jetstream.slot",
       "Name": "Slot",
       "Icon": "imgs/plugin",
+      "PropertyInspectorPath": "ui/slot.html",
       "Tooltip": "A board slot: configure it as an app / URL / command shortcut, or retarget it live from jetstream chat. An empty slot stays blank; the Grid key shows coordinates.",
       "Controllers": [
         "Keypad"

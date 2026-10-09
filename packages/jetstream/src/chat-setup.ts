@@ -447,8 +447,15 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
         io.say(`Couldn't write the config: ${errorMessage(error)}`);
         return 1;
       }
-      if (proposal.projects.length > 0) io.say(`\nWrote ${fleet.length} project(s) to ${configPath}.`);
-      else io.say(`\nUpdated settings in ${configPath}.`);
+      if (proposal.projects.length > 0) {
+        // The plugin reads projects.json only when it starts.
+        io.say(
+          `\nWrote ${fleet.length} project(s) to ${configPath}. ` +
+            'The Fleet and Attention keys pick up the new repos once the Stream Deck app restarts.',
+        );
+      } else {
+        io.say(`\nUpdated settings in ${configPath}.`);
+      }
       changed = true;
     }
     if (proposal.layout && deps.onLayout) {

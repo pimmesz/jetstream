@@ -18,8 +18,8 @@ const MAX_SPOOL_BYTES = 256 * 1024;
 /** Events older than this are history by the time they would be replayed. */
 const MAX_EVENT_AGE_MS = 60 * 60_000;
 
-/** The payload fields the plugin reads back (parseHookPayload, handleHookPayload, the replay filter).
- * Nothing else is spooled, so prompt text and tool input never wait on disk. */
+/** The payload fields the plugin reads (parseHookPayload, handleHookPayload, the replay filter).
+ * Nothing else is posted to /hook or spooled, so prompt text and tool input never leave the hook. */
 const SPOOLED_FIELDS = [
   'hook_event_name',
   'session_id',
@@ -32,7 +32,8 @@ const SPOOLED_FIELDS = [
   '_at',
 ] as const;
 
-/** What the spool keeps of one hook payload: only the fields the plugin reads back. */
+/** What the hook sends of one payload, as the live /hook body and as the spooled line alike:
+ * only the fields the plugin reads. */
 export function spoolProjection(payload: Record<string, unknown>): Record<string, unknown> {
   const kept: Record<string, unknown> = {};
   for (const field of SPOOLED_FIELDS) {

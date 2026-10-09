@@ -9,7 +9,7 @@ import { config } from './config';
 import { readConfigFile } from './projects-config';
 import { resolvedPort, startHookServer, type HookServerHandlers } from './server';
 import { isListenerBound, setListenerBound } from './listener-status';
-import { ensureToken, isAuthorized } from './listener-token';
+import { ensureToken } from './listener-token';
 import { discoverClaudeSessions } from './discover';
 import { doorbell } from './doorbell';
 import { ACTION_UUIDS } from './action-uuids';
@@ -34,6 +34,7 @@ import {
   exitOnStreamDeckClose,
   flushOnExit,
   handleHookPayload,
+  listenerAuth,
   replaySpool,
 } from './plugin-wiring';
 import { appendSpool, takeSpool } from '@pimmesz/jetstream-status';
@@ -199,10 +200,7 @@ const liveHooks = createHookGate((raw, at) => handleHookPayload(raw, { ...hookPa
 });
 
 const hookHandlers: HookServerHandlers = {
-  authorize: (headers, endpoint) =>
-    // /hook is untokened by design, so only an untokened permission answer or key edit is worth a warning.
-    isAuthorized(headers, currentToken(), endpoint === 'sensitive' ? noteLegacyRequest : undefined, endpoint),
-  permissionKey: () => currentToken(),
+  ...listenerAuth(currentToken, noteLegacyRequest),
   onPayload: (raw) => liveHooks.accept(raw),
   onPermission: (raw, abort) => permissions.request(raw, undefined, abort),
   // Live board edits from `jetstream chat`: retarget the slot at a coordinate (setSettings + repaint),

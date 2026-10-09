@@ -25,7 +25,7 @@
     "prepack": "node scripts/prepack.mjs",
     "check": "pnpm typecheck && pnpm test",
     "pack": "streamdeck pack gg.pim.jetstream.sdPlugin",
-    "repack": "pnpm build && streamdeck validate gg.pim.jetstream.sdPlugin && streamdeck pack gg.pim.jetstream.sdPlugin --force --no-update-check",
+    "repack": "pnpm -w build && streamdeck validate gg.pim.jetstream.sdPlugin && streamdeck pack gg.pim.jetstream.sdPlugin --force --no-update-check",
     "link": "streamdeck link gg.pim.jetstream.sdPlugin",
     "install:dev": "pnpm build && streamdeck link gg.pim.jetstream.sdPlugin",
     "reload": "pnpm -w build && (streamdeck unlink gg.pim.jetstream || true) && (pkill -f 'gg.pim.jetstream.sdPlugin/bin/plugin.js' || true) && streamdeck link gg.pim.jetstream.sdPlugin",

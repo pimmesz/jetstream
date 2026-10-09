@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { action, SingletonAction } from '@elgato/streamdeck';
-import type { KeyAction, KeyDownEvent } from '@elgato/streamdeck';
+import type { KeyAction, KeyDownEvent, WillAppearEvent } from '@elgato/streamdeck';
 import { colorFor, glyphFor, summarize, worstStatus } from '@pimmesz/jetstream-status';
 import { board } from '../state';
 import { config } from '../config';
@@ -52,9 +52,19 @@ export function darkReason(): string {
 /** This key keeps no per-key settings (SDK 3 requires the settings type to be named). */
 type NoSettings = Record<string, never>;
 
+/** How long the "why dark?" diagnosis owns its key before the live face returns. */
+const NOTICE_MS = 2600;
+
 @action({ UUID: 'gg.pim.jetstream.fleet' })
 export class FleetKey extends SingletonAction<NoSettings> {
-  override onWillAppear(): void {
+  /** Key id → epoch ms until which "why dark?" owns the key, so a routine board render does not
+   * repaint the live face over it before it can be read. */
+  private noticeUntil = new Map<string, number>();
+
+  override onWillAppear(ev: WillAppearEvent<NoSettings>): void {
+    // A reappearing key is blank, so a notice from before it left has nothing to protect: paint the
+    // live face now. That notice's pending timer then finds no matching entry and only repaints.
+    this.noticeUntil.delete(ev.action.id);
     void this.renderAll();
   }
 
@@ -69,8 +79,15 @@ export class FleetKey extends SingletonAction<NoSettings> {
     // Through paintKey, NOT a raw setImage: a raw upload leaves the cache still remembering the
     // previous fleet face, so the revert below would paint an "identical" face, be skipped, and
     // strand the key on this diagnostic forever.
+    const until = Date.now() + NOTICE_MS;
+    this.noticeUntil.set(ev.action.id, until);
     await paintKey(ev.action, keyFace({ color: '#b58900', label: 'why dark?', sub: darkReason() }));
-    setTimeout(() => void this.renderOne(ev.action), 2600);
+    // Release by identity, not the clock: the timer can fire 1 ms short of `until`, and a newer press
+    // keeps its own notice.
+    setTimeout(() => {
+      if (this.noticeUntil.get(ev.action.id) === until) this.noticeUntil.delete(ev.action.id);
+      void this.renderOne(ev.action);
+    }, NOTICE_MS);
   }
 
   async renderAll(): Promise<void> {
@@ -80,6 +97,7 @@ export class FleetKey extends SingletonAction<NoSettings> {
   }
 
   private async renderOne(a: KeyAction<NoSettings>): Promise<void> {
+    if ((this.noticeUntil.get(a.id) ?? 0) > Date.now()) return;
     await a.setTitle('');
     await paintKey(a, keyFace(fleetFace()));
   }

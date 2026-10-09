@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { colorFor, glyphFor, type ProjectStatus } from '@pimmesz/jetstream-status';
+import { colorFor, DANGER_RED, glyphFor, type ProjectStatus } from '@pimmesz/jetstream-status';
 
 // The store/marketing generator paints mock Stream Deck keys that people judge the product by.
 // It used to restate the status palette as its own literal table, which silently drifted: every
@@ -43,19 +43,22 @@ describe('gen-store-assets palette (static source checks)', () => {
     expect(hexesInCode.filter((h) => statusHexes.has(h))).toEqual([]);
   });
 
-  it('mentions the reserved danger red only on stop-all lines, never a status', () => {
-    // #e5484d is `stopFace`'s danger red (interrupt-all); the REAL stop-all key is red too, so the
-    // mockup mirrors it. But it must never restate a project STATUS in that red (the old bug).
-    const redLines = code.split('\n').filter((l) => l.includes('#e5484d'));
+  it('paints the stop-all key in the imported DANGER_RED, never a status', () => {
+    // DANGER_RED is `stopFace`'s red (interrupt-all); the REAL stop-all key is red too, so the mockup
+    // mirrors it. Imported, not copied: a hex literal would ship a stale red the day DANGER_RED moves.
+    expect(code).toMatch(/import \{[^}]*\bDANGER_RED\b[^}]*\} from '@pimmesz\/jetstream-status'/);
+    expect(code.toLowerCase()).not.toContain('#e5484d');
+    const redLines = code.split('\n').filter((l) => l.includes('DANGER_RED') && !l.startsWith('import '));
     // Guard the loop: with zero matches it runs zero times and the claim below is vacuous, so
     // recolouring the stop-all key would leave this test green while asserting nothing.
     expect(redLines.length).toBeGreaterThan(0);
     for (const line of redLines) {
       expect(line).toMatch(/stop all/i);
     }
+    // It must never restate a project STATUS in that red (the old bug).
     for (const status of STATUSES) {
-      expect(colorFor(status)).not.toBe('#e5484d');
-      expect(colorFor(status, 'highContrast')).not.toBe('#e5484d');
+      expect(colorFor(status)).not.toBe(DANGER_RED);
+      expect(colorFor(status, 'highContrast')).not.toBe(DANGER_RED);
     }
   });
 

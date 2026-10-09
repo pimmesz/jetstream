@@ -55,6 +55,29 @@ describe('Board', () => {
     expect(calls).toBe(2);
   });
 
+  it('caps the pid map at 256 sessions, evicting the first noted, so a /hook flood cannot grow the checkpoint', () => {
+    const file = tmpFile();
+    const board = new Board(file);
+    for (let i = 0; i < 300; i++) board.notePid(`s-${i}`, 1000 + i, '/U/x');
+    board.flush();
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { sessions: Array<[string, { pid: number; cwd: string }]> };
+    const ids = saved.sessions.map(([id]) => id);
+    expect(ids).toHaveLength(256);
+    expect(ids).toContain('s-299'); // the newest kept
+    expect(ids).toContain('s-44'); // the oldest of the 256 kept
+    expect(ids).not.toContain('s-43'); // and everything noted before it evicted
+  });
+
+  it('allActiveSessions covers every project and leaves out finished sessions (the stop-all key)', () => {
+    const board = makeBoard();
+    board.setProject('key-a', { name: 'falcon', path: '/Users/me/falcon' });
+    board.setProject('key-b', { name: 'osprey', path: '/Users/me/osprey' });
+    board.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/falcon', sessionId: 'f1', at: 1 });
+    board.dispatch({ event: 'UserPromptSubmit', cwd: '/Users/me/osprey', sessionId: 'o1', at: 2 });
+    board.dispatch({ event: 'Stop', cwd: '/Users/me/osprey', sessionId: 'o2', at: 3 });
+    expect(board.allActiveSessions().sort()).toEqual(['f1', 'o1']);
+  });
+
   it('seeds a fleet that feeds byProject/attention without a placed key', () => {
     const board = makeBoard();
     board.seed([{ id: 'falcon', name: 'Falcon', path: '/Users/me/falcon' }]);

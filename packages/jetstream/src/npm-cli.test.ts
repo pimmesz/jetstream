@@ -797,6 +797,19 @@ describe('updatePackage', () => {
     expect(npmEnv['npm_config_@pimmesz:registry']).toBe('https://npm-proxy.fury.io/s3cret/acme/');
   });
 
+  it('prints only the mirror origin, so a token in its path never reaches the terminal', () => {
+    const { said } = run(0, { JETSTREAM_REGISTRY: 'https://npm-proxy.fury.io/s3cret/acme/' });
+    expect(said.join('\n')).toContain('(checked https://npm-proxy.fury.io)');
+    expect(said.join('\n')).not.toContain('s3cret');
+  });
+
+  it('a rejected registry with a path token is reported by origin only', () => {
+    const said: string[] = [];
+    resolveRegistry({ JETSTREAM_REGISTRY: 'https://npm-proxy.fury.io/s3cret/acme/;id' }, (m) => said.push(m));
+    expect(said.join('\n')).toContain('(got https://npm-proxy.fury.io)');
+    expect(said.join('\n')).not.toContain('s3cret');
+  });
+
   it('drops every spelling of the registry keys before pinning them (Windows env is case-insensitive)', () => {
     const env = registryEnv('https://registry.npmjs.org/', { NPM_CONFIG_REGISTRY: 'https://stale/', 'NPM_CONFIG_@PIMMESZ:REGISTRY': 'https://stale/', PATH: '/bin' });
     expect(Object.keys(env).filter((k) => k.toLowerCase().includes('registry'))).toEqual(['npm_config_registry', 'npm_config_@pimmesz:registry']);
@@ -892,7 +905,7 @@ describe('updatePackage', () => {
     const { said, installed } = run();
     const out = said.join('\n');
     expect(out).toMatch(/Already on \d+\.\d+\.\d+/);
-    expect(out).toContain(PUBLIC_REGISTRY); // and names WHICH registry it asked
+    expect(out).toContain('(checked https://registry.npmjs.org)'); // and names WHICH registry it asked
     expect(out).not.toMatch(/Updated \d/);
     expect(installed).toBe(true); // still re-hands the plugin to Stream Deck
   });
@@ -959,14 +972,15 @@ describe('resolveRegistry / redactRegistry', () => {
     expect(seen).toHaveLength(1);
   });
 
-  it('hides credentials when a registry URL is printed', () => {
-    expect(redactRegistry('https://u:secret@nexus.internal/npm/')).not.toContain('secret');
-    expect(redactRegistry('https://u:secret@nexus.internal/npm/')).toContain('credentials hidden');
-    expect(redactRegistry(PUBLIC_REGISTRY)).toBe(PUBLIC_REGISTRY); // untouched when there are none
-    // An unparseable URL (bad port) is exactly what the error path prints, so it is stripped too.
-    expect(redactRegistry('https://u:secret@mirror:99999/')).not.toContain('secret');
-    expect(redactRegistry('https://u:secret@mirror:99999/')).toContain('credentials hidden');
-    expect(redactRegistry('https://user:secret@tail@mirror:99999/')).toBe('https://mirror:99999/ (credentials hidden)');
+  it('prints only the origin of a registry URL, hiding credentials in userinfo or the path', () => {
+    expect(redactRegistry('https://u:secret@nexus.internal/npm/')).toBe('https://nexus.internal');
+    expect(redactRegistry('https://npm-proxy.fury.io/s3cret/acme/')).toBe('https://npm-proxy.fury.io');
+    expect(redactRegistry('http://nexus:8081/repository/npm-all/')).toBe('http://nexus:8081');
+    expect(redactRegistry(PUBLIC_REGISTRY)).toBe('https://registry.npmjs.org');
+    // An unparseable URL (bad port) or one with no origin is exactly what the error path prints.
+    expect(redactRegistry('https://u:secret@mirror:99999/')).toBe('(custom registry)');
+    expect(redactRegistry('https://user:secret@tail@mirror:99999/')).toBe('(custom registry)');
+    expect(redactRegistry('file:///home/me/s3cret/')).toBe('(custom registry)');
   });
 
 });

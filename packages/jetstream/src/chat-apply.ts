@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { labelForAction, legacyMigrations, type BoardKey, type BoardLayout } from './board-layout';
+import { stripControl } from './fleet';
 import type { Placement } from './layout';
 import type { InPlaceResult, StoredAction } from './profile-store';
 import { coordLabel, parseSlotCommand, sameSlot, storedSlotSettings } from './slot-command';
@@ -28,6 +29,13 @@ export interface PlannedKey {
 /** A short label for a placement: Jetstream and built-in keys by their settings, a copied
  * third-party key by its catalogue title. */
 function placementLabel(p: Placement): string {
+  // The board label keeps 8 characters of a Text key; the preview shows 40, so the user sees what it will type.
+  // A longer text ends in an ellipsis, so a cut command never reads as the whole thing.
+  if (p.uuid === 'com.elgato.streamdeck.system.text') {
+    const text = p.settings?.pastedText;
+    const shown = typeof text === 'string' ? stripControl(text).trim() : '';
+    return (shown.length > 40 ? `${shown.slice(0, 39)}…` : shown) || 'text';
+  }
   if (p.uuid.startsWith('gg.pim.jetstream.') || p.uuid.startsWith('com.elgato.streamdeck.')) {
     const label = labelForAction(p.uuid, p.settings);
     return label === '·' ? 'empty' : label;
@@ -122,6 +130,24 @@ interface LiveResult {
  * no answer at all) may have changed the key, so it is rolled back like a success. */
 const UNTOUCHED = new Set([400, 401, 404, 409]);
 
+/** Live edits in flight at once. Each makes the plugin draw its key against a fixed deadline, so a large
+ * edit sent all at once can time out and roll back for no real reason. */
+const LIVE_IN_FLIGHT = 4;
+
+/** `run` over every item with at most `limit` in flight; results in input order. */
+async function mapPool<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await run(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 async function sendLive(keys: PlannedKey[], deps: ApplyDeps, confirms: PlannedKey[] = []): Promise<LiveResult> {
   const touched: PlannedKey[] = [];
   const conflicts: string[] = [];
@@ -140,12 +166,12 @@ async function sendLive(keys: PlannedKey[], deps: ApplyDeps, confirms: PlannedKe
   };
   // Confirms first and on their own: a refused one stops the apply before any key changes. Then destinations,
   // and clears only once every destination landed: a move must never lose the key it moved.
-  let failures = (await Promise.all(confirms.map((k) => send(k, true)))).filter(Boolean);
+  let failures = (await mapPool(confirms, LIVE_IN_FLIGHT, (k) => send(k, true))).filter(Boolean);
   if (failures.length === 0) {
-    failures = (await Promise.all(keys.filter((k) => !isClear(k.placement)).map((k) => send(k)))).filter(Boolean);
+    failures = (await mapPool(keys.filter((k) => !isClear(k.placement)), LIVE_IN_FLIGHT, (k) => send(k))).filter(Boolean);
   }
   if (failures.length === 0) {
-    failures = (await Promise.all(keys.filter((k) => isClear(k.placement)).map((k) => send(k)))).filter(Boolean);
+    failures = (await mapPool(keys.filter((k) => isClear(k.placement)), LIVE_IN_FLIGHT, (k) => send(k))).filter(Boolean);
   }
   if (failures.length === 0) return { ok: true, failures: [], unrestored: [], stripped: [], conflicts: [] };
   // All or nothing: put back every key that already changed, so a half-done swap cannot leave the

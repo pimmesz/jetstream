@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { autoWireHooks, WIRE_VERSION } from './auto-setup';
-import { HOOK_EVENTS } from './hooks-install';
+import { HOOK_EVENTS, hookCommands, mergeHooks } from './hooks-install';
 import type { InstallOptions, InstallResult } from './hooks-install';
 
 const BIN = '/plugin/bin';
@@ -210,5 +210,41 @@ describe('WIRE_VERSION tracks the hook set', () => {
       [...HOOK_EVENTS],
       'HOOK_EVENTS changed without bumping WIRE_VERSION — existing installs would never get the new hook',
     ).toEqual([...expected]);
+  });
+
+  it('was bumped for the full auto-wired set: lifecycle hooks, PermissionRequest, stop gate and statusline', () => {
+    // Everything the auto-wire installs, as `event:script` pairs plus the statusline script.
+    const scriptOf = (command: string): string => /([^/'"]+)['"]\s*$/.exec(command)?.[1] ?? command;
+    const { next } = mergeHooks({}, hookCommands(BIN, false));
+    const hooks = next.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    const current = [
+      ...Object.entries(hooks).flatMap(([event, entries]) =>
+        entries.flatMap((entry) => entry.hooks.map((hook) => `${event}:${scriptOf(hook.command)}`)),
+      ),
+      `statusLine:${scriptOf((next.statusLine as { command: string }).command)}`,
+    ].sort();
+
+    const v2 = [
+      'Notification:status-hook.js',
+      'PermissionRequest:permission-hook.js',
+      'SessionEnd:status-hook.js',
+      'SessionStart:status-hook.js',
+      'Stop:status-hook.js',
+      'SubagentStart:status-hook.js',
+      'SubagentStop:status-hook.js',
+      'UserPromptSubmit:status-hook.js',
+      'statusLine:usage-hook.js',
+    ];
+    const v4 = [...v2, 'StopFailure:status-hook.js'].sort();
+    const WIRED_SET: Record<number, string[]> = { 2: v2, 3: v2, 4: v4, 5: [...v4, 'PreToolUse:stop-gate.js'].sort() };
+    // v3 changed only the command quoting, which these pairs cannot show.
+    const FORMAT_ONLY = new Set([3]);
+
+    expect(WIRED_SET[WIRE_VERSION], `WIRE_VERSION is ${WIRE_VERSION} but WIRED_SET has no entry for it; add one`).toBeDefined();
+    expect(current, 'the auto-wired set changed without bumping WIRE_VERSION').toEqual(WIRED_SET[WIRE_VERSION]);
+    for (let version = 3; version <= WIRE_VERSION; version++) {
+      if (FORMAT_ONLY.has(version)) continue;
+      expect(WIRED_SET[version], `v${version} wires the same set as v${version - 1}`).not.toEqual(WIRED_SET[version - 1]);
+    }
   });
 });

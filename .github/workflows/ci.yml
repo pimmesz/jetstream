@@ -11,9 +11,15 @@ on:
 permissions:
   contents: read
 
+env:
+  # Paths the npm tarball never contains. The changes job and bump-version's guard share it, so
+  # "shipped" means the same thing to both.
+  UNSHIPPED_PATHS: '^(\.github/|docs/|scripts/|README\.md$|LICENSE$|DECISIONS\.md$)'
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         # Floor is Node 22 (pnpm 11 requires >=22.12); 24 is current.
@@ -35,12 +41,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `check` builds the cores first (the plugin typechecks against their dist types),
-      # then typechecks + tests every package.
+      # then typechecks + tests every package, and lints the repo last.
       - name: Check
         run: pnpm check
-
-      - name: Lint
-        run: pnpm lint
 
       # The real publish gate: `npm pack` runs prepack, so this proves the exact tarball
       # (plugin bundle + packed .streamDeckPlugin + the `jetstream` bin) still builds on
@@ -68,6 +71,22 @@ jobs:
             "$expected"*) echo "bin ok: $actual" ;;
             *) echo "::error::bin printed '$actual', expected it to start with '$expected'"; exit 1 ;;
           esac
+
+      # The esbuild bundles users run (prepack built them above): the plugin CLI must load and answer
+      # --help, and each hook that does nothing on empty stdin must load and exit 0. plugin.js and
+      # hooks-install.js are left out: they talk to Stream Deck or write the user's settings.
+      - name: Load the plugin CLI and hook bundles
+        working-directory: packages/jetstream/gg.pim.jetstream.sdPlugin/bin
+        run: |
+          help="$(node jetstream.js --help)" || { echo "::error::bin/jetstream.js --help exited non-zero"; exit 1; }
+          case "$help" in
+            jetstream*) echo "plugin CLI ok: $(head -n 1 <<< "$help")" ;;
+            *) echo "::error::bin/jetstream.js --help printed '$(head -n 1 <<< "$help")', expected it to start with 'jetstream'"; exit 1 ;;
+          esac
+          for hook in status-hook permission-hook stop-gate usage-hook; do
+            node "${hook}.js" < /dev/null > /dev/null \
+              || { echo "::error::bin/${hook}.js failed on empty stdin"; exit 1; }
+          done
 
   changes:
     name: Detect published-file changes
@@ -112,7 +131,7 @@ jobs:
           if [ -z "${files}" ]; then
             echo "no file delta — nothing to publish"
             echo "shipped=false" >> "$GITHUB_OUTPUT"
-          elif grep -qvE '^(\.github/|docs/|scripts/|README\.md$|LICENSE$|DECISIONS\.md$)' <<< "${files}"; then
+          elif grep -qvE "${UNSHIPPED_PATHS}" <<< "${files}"; then
             echo "a published file changed — release will proceed"
             echo "shipped=true" >> "$GITHUB_OUTPUT"
           else
@@ -124,12 +143,14 @@ jobs:
     name: Auto-bump version
     needs: [build, changes]
     outputs:
+      skip: ${{ steps.guard.outputs.skip || steps.commit.outputs.skip }}
       version: ${{ steps.bump.outputs.version }}
       commit: ${{ steps.commit.outputs.sha }}
     # The only job that may push; the workflow default is contents: read.
     permissions:
       contents: write
-    # Serialized: back-to-back merges queue here instead of racing each other's push.
+    # Serialized so merges never race each other's push. GitHub cancels a pending run for a newer one,
+    # which releases the cancelled run's commits too when its own push changed a shipped file.
     concurrency:
       group: bump-version-main
       cancel-in-progress: false
@@ -142,30 +163,76 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          # main's tip, not the triggering SHA: an earlier queued bump may have
-          # already moved the version this run builds on.
+          # main's tip, so the version builds on any bump already pushed; the guard below skips
+          # the release when that tip holds shipped changes this run's build never tested.
           ref: main
+          # Full history: the guard reads past the tested commit, the bump back to the last release.
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Release only what this run's build tested. When main gained shipped changes after this push
+      # (the bot's own commits aside), the newer push's run, whose build saw them, releases instead.
+      - name: Skip when main moved past the tested commit
+        id: guard
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" HEAD; then
+            echo "main no longer contains ${GITHUB_SHA}; the run for main's tip releases"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          untested=""
+          for sha in $(git rev-list --no-merges "${GITHUB_SHA}..HEAD"); do
+            subject="$(git show -s --format=%s "$sha")"
+            case "$subject" in
+              'chore(release): bump version'* | 'docs: sync landing page'*) continue ;;
+            esac
+            files="$(git diff-tree --no-commit-id --no-renames --name-only -r "$sha")"
+            if [ -n "$files" ] && grep -qvE "$UNSHIPPED_PATHS" <<< "$files"; then
+              untested+="${sha:0:7} ${subject}"$'\n'
+            fi
+          done
+          if [ -n "$untested" ]; then
+            echo "main has shipped changes this run's build did not test; the newer push's run releases them:"
+            printf '%s' "$untested"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Bump package version
         id: bump
+        if: steps.guard.outputs.skip != 'true'
         env:
-          # EVERY commit in the push, not just the tip. A merge-commit tip has a
-          # "Merge branch ..." subject that matches no conventional-commit type, so
-          # reading only head_commit silently drops a feat to a patch. Scan the whole
-          # pushed range; the highest bump wins.
+          # Fallback only, when history gives no shipped commit since a last bump: every commit in the
+          # push (a merge tip's subject matches no type), then head_commit, as GitHub truncates past 2048.
           COMMIT_MESSAGES: ${{ toJSON(github.event.commits.*.message) }}
-          # Fallback only: GitHub truncates the commits array past 2048 commits.
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           node --input-type=module <<'EOF'
+          import { execFileSync } from 'node:child_process';
           import { readFile, writeFile } from 'node:fs/promises';
 
-          let messages;
-          try {
-            messages = JSON.parse(process.env.COMMIT_MESSAGES ?? '[]');
-          } catch {
-            messages = [];
+          // The level comes from every commit since the last bump that touches a shipped path: a
+          // cancelled or skipped run leaves its feat or `!` to this one, a docs-only feat raises nothing.
+          // A merge counts by what it brought to main (its first-parent diff), so a `feat!` merge
+          // subject over `fix` children still raises a major.
+          const git = (args) => execFileSync('git', args, { encoding: 'utf8' });
+          const unshipped = new RegExp(process.env.UNSHIPPED_PATHS);
+          const touchesShipped = (sha) =>
+            git(['diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', '--diff-merges=first-parent', sha])
+              .split('\n')
+              .some((path) => path !== '' && !unshipped.test(path));
+          const lastBump = git(['log', '-1', '--format=%H', '--grep=^chore(release): bump version', 'HEAD']).trim();
+          let messages = lastBump
+            ? git(['rev-list', `${lastBump}..HEAD`])
+                .split('\n')
+                .filter((sha) => sha !== '' && touchesShipped(sha))
+                .map((sha) => git(['show', '-s', '--format=%B', sha]).trim())
+            : [];
+          if (messages.length === 0) {
+            try {
+              messages = JSON.parse(process.env.COMMIT_MESSAGES ?? '[]');
+            } catch {
+              messages = [];
+            }
           }
           if (!Array.isArray(messages) || messages.length === 0) {
             messages = [process.env.HEAD_COMMIT_MESSAGE ?? ''];
@@ -176,10 +243,11 @@ jobs:
             (m) => typeof m === 'string' && !/^chore\(release\): bump version/.test(m),
           );
 
-          // `!` rides the subject (first line); a BREAKING CHANGE footer rides the body.
+          // The same two signs the release notes list under Breaking changes: a line opening with a
+          // BREAKING CHANGE (or BREAKING-CHANGE) footer, or a `!` subject.
           const subject = (m) => m.split('\n', 1)[0] ?? '';
           const isMajor = (m) =>
-            /BREAKING CHANGE/.test(m) || /^[a-z]+(?:\([^)]+\))?!:/.test(subject(m));
+            /^BREAKING[ -]CHANGE:/m.test(m) || /^[a-z]+(?:\([^)]+\))?!:/.test(subject(m));
           const isMinor = (m) => /^feat(?:\([^)]+\))?:/.test(subject(m));
 
           const pkgPath = 'packages/jetstream/package.json';
@@ -238,10 +306,12 @@ jobs:
       # reach sync-landing.yml — re-render here or the landing page's JSON-LD
       # softwareVersion goes stale on every release.
       - name: Re-render the landing page for the new version
+        if: steps.guard.outputs.skip != 'true'
         run: node scripts/render-landing.mjs
 
       - name: Commit version bump
         id: commit
+        if: steps.guard.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
@@ -254,15 +324,39 @@ jobs:
                   packages/jetstream/gg.pim.jetstream.sdPlugin/manifest.json \
                   docs/index.html docs/llms.txt
           git commit -m "chore(release): bump version to ${VERSION} [skip ci]"
-          # Belt and braces against pushes that landed since checkout; only the
-          # version line can conflict, and only this bot edits it.
-          git pull --rebase origin main
-          git push
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # A rejected push rebases over the bots' commits and any commit that touches no shipped path, as no
+          # run releases those. A shipped change (a merge by what it brought) would go out untested, so skip.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git fetch origin main
+            for sha in $(git rev-list HEAD..origin/main); do
+              subject="$(git show -s --format=%s "$sha")"
+              case "$subject" in
+                'chore(release): bump version'* | 'docs: sync landing page'*) continue ;;
+              esac
+              files="$(git diff-tree --no-commit-id --no-renames --name-only -r --diff-merges=first-parent "$sha")"
+              if [ -n "$files" ] && grep -qvE "$UNSHIPPED_PATHS" <<< "$files"; then
+                echo "::warning::main gained ${sha:0:7} '${subject}' during the release, so this run skips; the next run that changes a shipped file releases these commits."
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+            git rebase origin/main || {
+              git rebase --abort
+              echo "::error::the version bump does not rebase onto main's newer commits; re-run this job to bump from main's tip."
+              exit 1
+            }
+          done
+          echo "::error::main rejected the version bump push ${attempt} times; check the push log above, then re-run this job."
+          exit 1
 
   publish:
     name: Publish to npm
     needs: bump-version
+    if: needs.bump-version.outputs.skip != 'true'
     # OIDC trusted publishing: npmjs.org trusts this workflow's identity directly
     # (configured under the package's Trusted Publisher settings), so no long-lived
     # npm token exists to leak. id-token is the only grant.
@@ -304,6 +398,7 @@ jobs:
     # the version/commit outputs. The bump commit's [skip ci] and GITHUB_TOKEN push mean
     # no other run ever fires for it, so the tag must be cut here.
     needs: [bump-version, publish]
+    if: needs.bump-version.outputs.skip != 'true'
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -333,8 +428,26 @@ jobs:
           # every release body came out empty. List the commits since the previous tag instead.
           PREV="$(git describe --tags --abbrev=0 "${TARGET}^" 2>/dev/null || true)"
           RANGE="${PREV:+${PREV}..}${TARGET}"
-          # Captured, not `grep -q`: an early grep exit SIGPIPEs git log, which pipefail reads as no match.
-          BREAKING="$(git log --format='%B' "$RANGE" | grep '^BREAKING CHANGE:' | sed 's/^BREAKING CHANGE: */- /' || true)"
+          # Each BREAKING CHANGE footer in full, from its line to the next blank one (%n closes a
+          # footer that ends its commit), as a list item with its continuation lines indented.
+          BREAKING="$(git log --format='%B%n' "$RANGE" | awk '
+            on && !NF { on = 0 }
+            /^BREAKING[ -]CHANGE:/ { on = 1; sub(/^BREAKING[ -]CHANGE: */, "- "); print; next }
+            on { print "  " $0 }')"
+          # Every change with its body indented under it, so what the commit explains reaches the
+          # release; a `!` subject with no footer still lands under Breaking changes.
+          bang='^[a-z]+(\([^)]+\))?!:'
+          CHANGES=""
+          for sha in $(git rev-list --no-merges "$RANGE"); do
+            subject="$(git show -s --format=%s "$sha")"
+            case "$subject" in 'chore(release)'*) continue ;; esac
+            body="$(git show -s --format=%b "$sha")"
+            if [[ "$subject" =~ $bang ]] && ! grep -qE '^BREAKING[ -]CHANGE:' <<< "$body"; then
+              BREAKING+="${BREAKING:+$'\n'}- ${subject}"
+            fi
+            CHANGES+="- ${subject} ($(git show -s --format=%h "$sha"))"$'\n'
+            if [ -n "$body" ]; then CHANGES+="$(sed 's/^/  /' <<< "$body")"$'\n'; fi
+          done
           {
             if [ -n "$BREAKING" ]; then
               echo '## Breaking changes'
@@ -342,7 +455,35 @@ jobs:
               echo
             fi
             echo '## Changes'
-            git log --no-merges --format='- %s (%h)' "$RANGE" | grep -v '^- chore(release)' || true
+            printf '%s' "$CHANGES"
           } > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
             --target "$TARGET" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+
+      # Taken from the published npm tarball, so the marketplace file is the exact build users install
+      # and a re-run of this job alone can always fetch it again.
+      - name: Fetch the packed plugin from the published tarball
+        env:
+          VERSION: ${{ needs.bump-version.outputs.version }}
+        run: |
+          # The registry can lag a version published seconds ago, so retry the fetch briefly.
+          for attempt in 1 2 3 4 5; do
+            npm pack "@pimmesz/jetstream@${VERSION}" --ignore-scripts --pack-destination "$RUNNER_TEMP" && break
+            if [[ "$attempt" == 5 ]]; then
+              echo "::error::npm has no @pimmesz/jetstream@${VERSION} tarball yet; re-run this job once npm view shows it."
+              exit 1
+            fi
+            sleep 15
+          done
+          tar -xzf "$RUNNER_TEMP/pimmesz-jetstream-${VERSION}.tgz" -C "$RUNNER_TEMP" --strip-components=2 \
+            package/assets/gg.pim.jetstream.streamDeckPlugin
+
+      # Its own step, after the idempotent create above, so a re-run still attaches the file.
+      # --clobber replaces only an earlier upload of this same published file.
+      - name: Attach the packed plugin to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.bump-version.outputs.version }}
+        run: |
+          gh release upload "v${VERSION}" "$RUNNER_TEMP/gg.pim.jetstream.streamDeckPlugin" \
+            --repo "$GITHUB_REPOSITORY" --clobber

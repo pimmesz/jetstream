@@ -1,8 +1,33 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { defaultSettingsPath, installHooks, mergeHooks, HOOK_EVENTS, TOOL_DETAIL_EVENTS } from './hooks-install';
+
+// Lets a test land a foreign write at the worst moment: after installHooks wrote its temp file and
+// before it re-reads settings.json. Every write still goes through to the real fs.
+const afterTempWrite = vi.hoisted(() => ({ run: undefined as (() => void) | undefined }));
+// Lets a test fail the mode lookup of settings.json with an error other than a missing file.
+const statFailure = vi.hoisted(() => ({ code: undefined as string | undefined }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...real,
+    writeFile: async (...args: Parameters<typeof real.writeFile>): Promise<void> => {
+      await real.writeFile(...args);
+      if (String(args[0]).includes('.jetstream-tmp-')) afterTempWrite.run?.();
+    },
+    stat: async (...args: Parameters<typeof real.stat>) => {
+      const { code } = statFailure;
+      if (code !== undefined) throw Object.assign(new Error(`${code}: stat ${String(args[0])}`), { code });
+      return real.stat(...args);
+    },
+  };
+});
+afterEach(() => {
+  afterTempWrite.run = undefined;
+  statFailure.code = undefined;
+});
 
 // Realistic jetstream commands: node + a script under the gg.pim.jetstream.sdPlugin dir
 // (the marker the same-script matcher requires so it can't hijack a user's own hook).
@@ -194,12 +219,17 @@ describe('installHooks read failures', () => {
     const dir = mkdtempSync(join(tmpdir(), 'jetstream-hooks-'));
     try {
       const settingsPath = join(dir, 'settings.json');
+      // Disjoint contributions, so a rename that dropped the other install's work would show.
       await Promise.all([
-        installHooks({ settingsPath, commands: { status: STATUS } }),
+        installHooks({ settingsPath, commands: { status: STATUS, usage: USAGE } }),
         installHooks({ settingsPath, commands: { status: STATUS, permission: PERMISSION } }),
       ]);
-      const written = JSON.parse(readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown> };
-      expect(written.hooks.PermissionRequest).toBeDefined();
+      const written = JSON.parse(readFileSync(settingsPath, 'utf8')) as {
+        hooks: Record<string, unknown>;
+        statusLine?: unknown;
+      };
+      expect(written.statusLine).toEqual({ type: 'command', command: USAGE });
+      expect(written.hooks.PermissionRequest).toEqual([{ hooks: [{ type: 'command', command: PERMISSION }] }]);
       expect(written.hooks.Stop).toBeDefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -222,6 +252,115 @@ describe('installHooks read failures', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe('installHooks write guards', () => {
+  const withSettings = async (run: (settingsPath: string) => Promise<void>): Promise<void> => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-hooks-'));
+    try {
+      await run(join(dir, 'settings.json'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('refuses a settings.json that is not valid JSON and leaves its bytes alone', () =>
+    withSettings(async (settingsPath) => {
+      writeFileSync(settingsPath, '{"model":"x",}');
+      await expect(installHooks({ settingsPath, commands: { status: STATUS } })).rejects.toThrow(/not valid JSON/);
+      expect(readFileSync(settingsPath, 'utf8')).toBe('{"model":"x",}');
+    }));
+
+  it('a write that lands before the rename is merged over on the retry, not reverted', () =>
+    withSettings(async (settingsPath) => {
+      writeFileSync(settingsPath, '{"model":"x"}\n');
+      let hasLanded = false;
+      afterTempWrite.run = () => {
+        if (hasLanded) return;
+        hasLanded = true;
+        writeFileSync(settingsPath, '{"model":"x","theme":"dark"}\n'); // a `claude` session saving a setting
+      };
+      const result = await installHooks({ settingsPath, commands: { status: STATUS } });
+      expect(result.changed).toBe(true);
+      const written = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+      expect(written.theme).toBe('dark');
+      expect((written.hooks as Record<string, unknown>).Stop).toEqual([
+        { hooks: [{ type: 'command', command: STATUS }] },
+      ]);
+    }));
+
+  it('gives up with a clear error when the file changes before every rename', () =>
+    withSettings(async (settingsPath) => {
+      writeFileSync(settingsPath, '{}\n');
+      let edits = 0;
+      afterTempWrite.run = () => writeFileSync(settingsPath, JSON.stringify({ edit: ++edits }));
+      await expect(installHooks({ settingsPath, commands: { status: STATUS } })).rejects.toThrow(/keeps changing/);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf8'))).toEqual({ edit: edits }); // the last foreign write stands
+    }));
+
+  // The umask masks a mode passed at creation, so the modes must hold under a strict one too.
+  describe.each([
+    ['022', 0o022],
+    ['077', 0o077],
+  ])('under umask %s', (_label, mask) => {
+    let previousMask = 0;
+    beforeEach(() => {
+      previousMask = process.umask(mask);
+    });
+    afterEach(() => {
+      process.umask(previousMask);
+    });
+
+    it.each([
+      ['0600', 0o600],
+      ['0640', 0o640],
+    ])('a %s settings.json keeps its mode, and the backup is owner-only', (_label, mode) =>
+      withSettings(async (settingsPath) => {
+        writeFileSync(settingsPath, '{"env":{"API_TOKEN":"secret"}}\n');
+        chmodSync(settingsPath, mode);
+        await installHooks({ settingsPath, commands: { status: STATUS } });
+        expect(statSync(settingsPath).mode & 0o777).toBe(mode);
+        expect(statSync(`${settingsPath}.jetstream-bak`).mode & 0o777).toBe(0o600);
+      }));
+
+    it('a new settings.json is created owner-only', () =>
+      withSettings(async (settingsPath) => {
+        await installHooks({ settingsPath, commands: { status: STATUS } });
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      }));
+  });
+
+  it('a temp file a crashed run left behind does not lend its mode to settings.json', () =>
+    withSettings(async (settingsPath) => {
+      writeFileSync(settingsPath, '{"env":{"API_TOKEN":"secret"}}\n');
+      chmodSync(settingsPath, 0o600);
+      const leftover = `${settingsPath}.jetstream-tmp-${process.pid}-0`;
+      writeFileSync(leftover, 'stale');
+      chmodSync(leftover, 0o644);
+      await installHooks({ settingsPath, commands: { status: STATUS } });
+      expect(existsSync(leftover)).toBe(false); // the install wrote through this very path
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+    }));
+
+  it('tightens a backup an older version left readable to others, keeping its content', () =>
+    withSettings(async (settingsPath) => {
+      writeFileSync(settingsPath, '{"model":"x"}\n');
+      const backupPath = `${settingsPath}.jetstream-bak`;
+      writeFileSync(backupPath, '{"original":true}\n');
+      chmodSync(backupPath, 0o644);
+      const result = await installHooks({ settingsPath, commands: { status: STATUS } });
+      expect(result.backupCreated).toBe(false);
+      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+      expect(readFileSync(backupPath, 'utf8')).toBe('{"original":true}\n');
+    }));
+
+  it('a mode lookup that fails for any reason but a missing file stops the install', () =>
+    withSettings(async (settingsPath) => {
+      writeFileSync(settingsPath, '{"model":"x"}\n');
+      statFailure.code = 'EACCES';
+      await expect(installHooks({ settingsPath, commands: { status: STATUS } })).rejects.toThrow(/EACCES/);
+      expect(readFileSync(settingsPath, 'utf8')).toBe('{"model":"x"}\n');
+    }));
 });
 
 describe('stop gate, tool-failure detail and CLAUDE_CONFIG_DIR', () => {

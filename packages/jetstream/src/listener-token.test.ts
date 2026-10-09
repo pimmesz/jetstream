@@ -266,16 +266,21 @@ describe('classifyRequest', () => {
 describe('isAuthorized', () => {
   const secret = 'a'.repeat(64);
 
+  it('enforces the token, as settled in DECISIONS.md 2026-07-25 #2', () => {
+    // The cases below pin the enforced policy, so they fail rather than pass if the flag flips back.
+    expect(ENFORCE_TOKEN).toBe(true);
+  });
+
   it('always serves a correct token and always rejects a wrong one', () => {
     expect(isAuthorized({ [TOKEN_HEADER]: secret }, secret)).toBe(true);
     // A wrong token is rejected in the grace period too — no legitimate client sends one.
     expect(isAuthorized({ [TOKEN_HEADER]: 'b'.repeat(64) }, secret)).toBe(false);
   });
 
-  it('serves an untokened request only while the grace period is open, and reports it once', () => {
+  it('refuses an untokened request on a sensitive endpoint, and reports it once', () => {
     let noticed = 0;
-    expect(isAuthorized({}, secret, () => noticed++)).toBe(!ENFORCE_TOKEN);
-    expect(noticed).toBe(1); // the caller gets told, so doctor/logs can surface the open window
+    expect(isAuthorized({}, secret, () => noticed++)).toBe(false);
+    expect(noticed).toBe(1); // the caller gets told, so the plugin log can name the stale hook
   });
 
   it('does not report a wrong token as a legacy client', () => {
@@ -289,17 +294,15 @@ describe('isAuthorized', () => {
     // token keeps painting keys — refusing /hook is what turns "your hooks are stale" into a black
     // board — while /permission and /slot, the two reasons to authenticate at all, are refused.
     expect(isAuthorized({}, secret, undefined, 'status')).toBe(true);
-    expect(isAuthorized({}, secret, undefined, 'sensitive')).toBe(!ENFORCE_TOKEN);
+    expect(isAuthorized({}, secret, undefined, 'sensitive')).toBe(false);
   });
 
-  // The policy that matters at the flip, asserted for BOTH arms so flipping the flag is a
-  // one-line change with the test already written.
   it('with no secret on disk, keeps the status feed alive but refuses the sensitive endpoints', () => {
     // Rejecting everything would black out the board of a user whose home is merely read-only;
     // serving everything would let anyone who can provoke the no-secret state (filling a shared
     // disk before first start) switch authentication off. Split by what is at stake instead.
     expect(isAuthorized({}, undefined, undefined, 'status')).toBe(true);
-    expect(isAuthorized({}, undefined, undefined, 'sensitive')).toBe(!ENFORCE_TOKEN);
+    expect(isAuthorized({}, undefined, undefined, 'sensitive')).toBe(false);
   });
 
   it('a correct token is served on every endpoint, a wrong one on none', () => {

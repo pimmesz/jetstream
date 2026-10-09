@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src ws://127.0.0.1:*" />
+  <title>Jetstream Slot</title>
+  <link rel="stylesheet" href="slot.css" />
+  <script src="slot.js" defer></script>
+</head>
+<body>
+  <form id="slotForm">
+    <fieldset id="fields" disabled>
+      <legend>Slot settings</legend>
+      <label for="kind">Kind</label>
+      <select id="kind">
+        <option value="empty">Empty</option>
+        <option value="app">App or folder</option>
+        <option value="url">URL</option>
+        <option value="project">Project</option>
+      </select>
+      <div id="targetRow" hidden>
+        <label id="targetLabel" for="target">Target</label>
+        <input id="target" type="text" spellcheck="false" autocomplete="off" />
+      </div>
+      <div id="cosmetics" hidden>
+        <label for="label">Label</label>
+        <input id="label" type="text" placeholder="Default label" autocomplete="off" />
+        <label for="color">Colour</label>
+        <input id="color" type="text" placeholder="Default colour" spellcheck="false" aria-describedby="colorHint" autocomplete="off" />
+        <p id="colorHint" class="hint">A name such as blue, or a hex colour such as #0091ff. Leave blank for the default.</p>
+        <p id="appIconHint" class="hint" hidden>App keys show the app's own icon, so Label and Colour show only when the app has no icon of its own.</p>
+      </div>
+    </fieldset>
+    <p id="kindHint" class="hint"></p>
+    <div class="buttons">
+      <button id="save" type="submit" disabled>Save</button>
+      <button id="cancel" type="button" disabled>Cancel</button>
+    </div>
+    <p id="status" role="status" aria-live="polite">Connecting to Jetstream...</p>
+  </form>
+</body>
+</html>

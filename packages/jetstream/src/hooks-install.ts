@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
+import { chmod, link, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { errorMessage } from './errors';
@@ -251,9 +251,9 @@ export function defaultSettingsPath(home = homedir(), env: NodeJS.ProcessEnv = p
 /** Read the settings file; a missing file starts empty, any OTHER read failure
  * (EACCES, EISDIR, …) throws — silently replacing an unreadable-but-existing
  * settings.json would destroy config we merely couldn't see. */
-async function readSettings(settingsPath: string): Promise<string | undefined> {
+function readSettings(settingsPath: string): string | undefined {
   try {
-    return await readFile(settingsPath, 'utf8');
+    return readFileSync(settingsPath, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw new Error(
@@ -273,11 +273,15 @@ async function backupOnce(
   const backupPath = `${settingsPath}.jetstream-bak`;
   const tmp = `${backupPath}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
   try {
-    await writeFile(tmp, raw, 'utf8');
+    // A permanent copy of a file that can hold credentials (env, apiKeyHelper): owner-only.
+    await writeFile(tmp, raw, { encoding: 'utf8', mode: 0o600 });
     await link(tmp, backupPath);
     return { backupPath, backupCreated: true };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      // A copy already on disk can carry the umask's mode (often 0644), so tighten it; best-effort
+      // like the backup itself.
+      await chmod(backupPath, 0o600).catch(() => undefined);
       return { backupPath, backupCreated: false }; // an earlier install's pristine copy
     }
     // Backup is best-effort: the atomic settings write below still protects the file.
@@ -289,15 +293,29 @@ async function backupOnce(
 
 /** Installs inside one process queue behind each other (the plugin's auto-wire, the fix button and
  * the tool-detail toggle can overlap), so the re-read below never races a sibling's rename. Another
- * PROCESS can still interleave; that window is the re-read's to narrow. */
+ * PROCESS can still interleave: the synchronous re-read and rename narrow that window, not close it. */
 let installChain: Promise<unknown> = Promise.resolve();
+
+/** settings.json can hold credentials (env, apiKeyHelper), so the rewrite keeps the original's mode;
+ * a new file starts owner-only. */
+async function settingsMode(settingsPath: string): Promise<number> {
+  try {
+    return (await stat(settingsPath)).mode & 0o777;
+  } catch (error) {
+    // No original to copy the mode from. Any other failure stops the install rather than guess a mode.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0o600;
+    throw error;
+  }
+}
 
 /** Install the hooks into `~/.claude/settings.json`: read (or start empty), merge,
  * back up the original once (`settings.json.jetstream-bak`), write pretty JSON
  * atomically (unique same-dir temp + rename, so concurrent installers can't corrupt
- * the file). A concurrent writer landing between our read and rename is detected by
- * re-reading before the rename; the merge then retries over the fresh content
- * (bounded — mergeHooks is idempotent, so re-merging is free). */
+ * the file). A concurrent writer landing between our read and the re-read just before
+ * the rename is caught, and the merge retries over the fresh content (bounded: mergeHooks
+ * is idempotent, so re-merging is free). The re-read and the rename run synchronously back
+ * to back, which narrows the remaining window but cannot close it: POSIX has no
+ * compare-and-rename and Claude Code takes no lock. */
 export function installHooks(options: InstallOptions): Promise<InstallResult> {
   const next = installChain.then(() => installOnce(options));
   installChain = next.catch(() => undefined);
@@ -309,7 +327,7 @@ async function installOnce(options: InstallOptions): Promise<InstallResult> {
   let backup: { backupPath: string; backupCreated: boolean } | undefined;
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    const raw = await readSettings(settingsPath);
+    const raw = readSettings(settingsPath);
     let parsed: unknown = {};
     if (raw !== undefined) {
       try {
@@ -332,12 +350,15 @@ async function installOnce(options: InstallOptions): Promise<InstallResult> {
     await mkdir(dirname(settingsPath), { recursive: true });
     const tmpPath = `${settingsPath}.jetstream-tmp-${process.pid}-${attempt}`;
     try {
-      await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+      const mode = await settingsMode(settingsPath);
+      await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode });
+      // writeFile's mode is masked by the umask and ignored for a temp a crashed run left behind.
+      await chmod(tmpPath, mode);
       // TOCTOU check: if another writer (a `claude` session, a concurrent installer)
       // landed since our read, retry the merge over their content instead of
-      // silently reverting it with ours.
-      if ((await readSettings(settingsPath)) !== raw) continue;
-      await rename(tmpPath, settingsPath);
+      // silently reverting it with ours. No await between the compare and the rename.
+      if (readSettings(settingsPath) !== raw) continue;
+      renameSync(tmpPath, settingsPath);
     } finally {
       await unlink(tmpPath).catch(() => undefined);
     }

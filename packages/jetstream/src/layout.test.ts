@@ -134,6 +134,32 @@ describe('resolvePlacements', () => {
     expect(placements.every((p) => p.uuid === 'gg.pim.jetstream.slot')).toBe(true);
   });
 
+  it('refuses an inherited object name as a key type instead of placing a key with no uuid', () => {
+    const { placements, warnings } = resolvePlacements(xl, [
+      { coord: 'a1', type: 'constructor' },
+      { coord: 'a2', type: '__proto__' },
+    ]);
+    expect(placements).toEqual([]);
+    expect(warnings).toEqual([
+      'skipped constructor at a1: unknown key type',
+      'skipped __proto__ at a2: unknown key type',
+    ]);
+  });
+
+  it('refuses a text key whose text holds a control character (a newline or an escape)', () => {
+    const { placements, warnings } = resolvePlacements(xl, [
+      { coord: 'a1', type: 'text', text: 'ls\nrm -rf ~' },
+      { coord: 'a2', type: 'text', text: '\x1b[31mred' },
+      { coord: 'a3', type: 'text', text: 'hello there' },
+    ]);
+    expect(placements).toEqual([
+      expect.objectContaining({ column: 2, row: 0, settings: { isSendingEnter: false, pastedText: 'hello there' } }),
+    ]);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/^skipped text at a1: text cannot hold control characters/);
+    expect(warnings[1]).toMatch(/^skipped text at a2: text cannot hold control characters/);
+  });
+
   it('drops — with a warning each — unknown types, off-board coords, dupes, and missing settings', () => {
     const { placements, warnings } = resolvePlacements(xl, [
       { coord: 'a1', type: 'open-app' }, // missing app

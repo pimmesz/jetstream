@@ -94,7 +94,8 @@ const QUOTA_RESUME: Readonly<Record<string, ProjectStatus>> = {
 export function notificationStatus(type: string | undefined): ProjectStatus | undefined {
   if (type === undefined) return 'needsInput'; // pre-notification_type Claude — unchanged
   if (BLOCKING_NOTIFICATIONS.has(type)) return 'needsInput';
-  return QUOTA_RESUME[type];
+  // Own keys only: the type is untrusted /hook input, and 'constructor' would read Object.prototype.
+  return Object.hasOwn(QUOTA_RESUME, type) ? QUOTA_RESUME[type] : undefined;
   // Everything else is informational and leaves the status ALONE — idle_prompt (the 60s nudge),
   // auth_success, agent_completed, elicitation_complete, elicitation_response.
   //
@@ -319,7 +320,8 @@ function capSessions(sessions: Record<string, ProjectState>): void {
 }
 
 export function reduce(state: StatusState, event: HookEvent): StatusState {
-  const next: Record<string, SessionState> = { ...state.sessions };
+  // No prototype: session_id is untrusted, so '__proto__' or 'constructor' must read and write as an own key.
+  const next = Object.assign(Object.create(null) as Record<string, SessionState>, state.sessions);
   const prev = next[event.sessionId];
 
   // Tombstone guard: once a SessionEnd removes a session, a later event for its id is usually a
