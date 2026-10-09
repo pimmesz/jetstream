@@ -51,7 +51,9 @@ Requires macOS 12+ and the Stream Deck app 7.1+. Windows isn't supported yet (th
    before you apply, and stays open for the next request. Edits to Jetstream keys apply live. A key
    from another plugin (a Philips Hue toggle you already placed somewhere, say) is copied by chat, and
    anything that cannot go live is written into your current board while Stream Deck restarts for a
-   few seconds, after a backup to `~/.config/jetstream/profile-backups/`. No extra profile is created.
+   few seconds, after a backup to `~/.config/jetstream/profile-backups/`. When chat finds your Jetstream
+   board it creates no extra profile; without one it opens a `Jetstream-Custom` profile from `~/Downloads`
+   for you to import once.
 
    `init` asks for your repos (or scans a folder), your theme and timings, writes
    `projects.json` (see below), wires the hooks — and can **prebuild a ready-made key
@@ -81,6 +83,17 @@ falls back to its normal dialog), and **Jetstream settings** (a press opens `jet
 its inspector toggles colour-blind mode and sets escalation/long-press/refresh). A waiting Project key reads
 `approve on deck` when you can answer it from the deck, or `answer in Claude` when the question needs a typed reply.
 
+The Approve and Deny keys show the project the request came from. A corner `*` means the command is
+longer than the key can show (about 18 characters, tool name included), so read it in Claude first.
+Hold **Approve** for 1.5 seconds (the key turns red and asks `auto-allow <tool>?`) to approve and
+also auto-approve that session's later requests with no press. A Bash rule covers only the exact
+same command run the same way, so a rule armed inside the sandbox never covers that command with
+the sandbox disabled; for any other tool a rule covers every call of that tool. A chained command,
+one with `;`, `|`, `||`, `&&`, a lone `&`, a backtick, a newline, or any `(`, `)`, `{`, `}` or `[[`, is
+never armed, and when it does not fit the key or spans more than one line it is left to Claude's
+own dialog. Rules end with the session or a plugin restart, and the idle Approve key shows how many
+are on.
+
 The board reads without relying on colour: each key's sub-line names its state in words (`done 4m`,
 `approve on deck`), and a corner glyph marks the exceptions — a stall, a failure, or a working key showing
 its tool (`Bash · 12m`, where the glyph carries "working"). The settings key's high-contrast theme also
@@ -88,10 +101,11 @@ swaps the done green for blue, so working (orange) and done never rely on a red/
 
 ## Works on any Stream Deck
 
-Nothing is device-specific — you drag as many keys as your device has (Mini 6, MK.2 15, XL 32,
-Neo). No fixed layout is required — drag keys wherever you like, or let `jetstream init` prebuild
-a starting layout (Mini / MK.2 / XL); each **Project** key holds its own name+path, so everyone's
-board is their own. (On the Stream Deck **+**, drag the **Fleet dial** onto an encoder: rotate scrubs the
+Keys you drag by hand work on any device, as many as it has (Mini 6, MK.2 15, XL 32, Neo). No fixed
+layout is required: drag keys wherever you like. The generated layouts know the Mini, MK.2 and XL:
+`jetstream init` can prebuild a starting layout for them, and `jetstream chat` and `jetstream board`
+work on their boards. Each **Project** key holds its own name+path, so everyone's board is their
+own. (On the Stream Deck **+**, drag the **Fleet dial** onto an encoder: rotate scrubs the
 fleet, the touchscreen shows the current project, a tap or short-press opens it, a long-touch or long-press interrupts.)
 
 ## Config file (optional)
@@ -114,6 +128,12 @@ The **Fleet** roll-up and **Attention** doorbell then cover every repo in the fi
 your repos. An optional `"settings"` block presets the plugin config: `theme`, `longPressMs`,
 `usageRefreshSec`, `escalateAfterSec`, plus the two destructive-key opt-ins `allowRunKeys` and
 `allowStopKeys`. Run `jetstream doctor` to check the file is parseable.
+
+Select a **Slot** key in Stream Deck to configure an app or folder, URL, or project, or to
+change its label and colour. Choose **Save** to apply, or **Cancel** to reload the saved settings.
+Other existing slot kinds support label and colour edits; Run and Stop-all slots are read-only
+in this form. If chat changes the key while the form is open, Save refuses the stale edit:
+choose Cancel to load the current settings before editing again. No Claude login is needed.
 
 **Slot-based Stop-all and Run keys are OFF by default** and do nothing until you opt in. These are
 the kinds `jetstream chat` (or a `/slot` request) can place; the standalone **Stop all** action you
@@ -164,17 +184,18 @@ node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
 Elgato ships an official MCP server (`npm install -g @elgato/mcp-server`, Stream Deck app
 7.4+, enable **MCP Deck** in Preferences → General) that lets an AI assistant trigger
 actions — but only ones you've placed on the dedicated _MCP Actions_ profile; your other
-profiles stay private. Jetstream keys work there like any action, so "approve the pending
-Claude prompt" by voice/text is possible. Two caveats: the MCP server can _trigger_ keys,
-never build layouts (that's what `jetstream init` is for), and its actions fire without
-per-call confirmation — use the stdio transport, skip the ngrok/HTTP modes, and only place
-keys you'd let an AI press.
+profiles stay private. Jetstream keys work there like any action, but never place **Approve** or
+**Deny** on the MCP Actions profile: an agent could approve its own prompt. Two caveats: the MCP
+server can _trigger_ keys, never build layouts (that's what `jetstream init` is for), and its
+actions fire without per-call confirmation, so use the stdio transport, skip the ngrok/HTTP modes,
+and only place keys you'd let an AI press.
 
 ## Develop
 
 ```sh
 pnpm install                                    # install workspace deps
-pnpm check                                      # build the shared cores, then typecheck + test every package
+pnpm check                                      # build the shared cores, then typecheck + test every package, then lint (prettier --check)
+(cd packages/jetstream && npm pack --dry-run)   # pre-release: runs prepack and lists the npm tarball, as CI does
 pnpm build                                      # build:cores + bundle the plugin into the .sdPlugin
 pnpm --filter '@pimmesz/jetstream' run validate # Elgato manifest validation
 pnpm --filter '@pimmesz/jetstream' run repack   # rebuild, validate, and produce the .streamDeckPlugin (pack --force)
