@@ -29,9 +29,11 @@ Requires macOS 12+ and the Stream Deck app 7.1+. Windows isn't supported yet (th
    `PreToolUse` hook that lets the deck's stop keys end the current turn without ending the
    session (it reads one local file per tool call). No terminal step. Restart any running
    `claude` sessions to pick the hooks up. The plugin runs under the Stream Deck app, which does
-   not see a `CLAUDE_CONFIG_DIR` set in your shell profile; if you use one, run
-   `jetstream hooks install` from that shell (add `--tool-detail` for per-tool detail), and again
-   after an update, so the hooks land where Claude reads them. The
+   not see your shell profile, so it uses the `CLAUDE_CONFIG_DIR` and `CODEX_HOME` your shell had
+   the last time you ran `jetstream install`, `update`, `setup`, `hooks install`, `init` or `chat`
+   (from the plugin's next start; a value set for apps with `launchctl setenv` wins). If you set
+   or change `CLAUDE_CONFIG_DIR` after the first launch, run `jetstream hooks install` from that
+   shell (add `--tool-detail` for per-tool detail) so the hooks land where Claude reads them. The
    hooks are wired once per hook-set version: hooks you remove from `settings.json` stay removed
    until an update adds a new hook, which re-wires the set once. Re-wire any time with `jetstream setup`. The usage/statusline hook is
    installed automatically on first launch if you have no statusline yet; if another tool already owns your
@@ -143,10 +145,12 @@ node "<plugin folder>/bin/jetstream.js" hooks install --tool-detail
 
 - The **usage gauge** shows your interactive 5h/7d subscription windows.
 - The **Codex usage gauge** reads the rate limits Codex writes into its own session logs
-  (`~/.codex/sessions`): no login and no network, so run `codex` once for data. The plugin runs
-  under the Stream Deck app and does not see a `CODEX_HOME` set in your shell profile; if you use
-  one, set it for apps too (`launchctl setenv CODEX_HOME <dir>`, then restart Stream Deck; this
-  lasts until you log out), or link the folder once:
+  (`~/.codex/sessions`): no login and no network, so run `codex` once for data. A `CODEX_HOME`
+  set in your shell profile is recorded each time you run `jetstream install`, `update`, `setup`,
+  `hooks install`, `init` or `chat` from that shell, and the plugin uses it from its next start
+  (quit and reopen Stream Deck to apply it now). A Marketplace-only install never runs the CLI, so
+  there set it for apps instead (`launchctl setenv CODEX_HOME <dir>`, then restart Stream Deck;
+  this lasts until you log out), or link the folder once:
   `mkdir -p ~/.codex && ln -s <dir>/sessions ~/.codex/sessions` (only while `~/.codex/sessions`
   does not exist). The long window is labelled by its length: `7d`, or `30d` on a plan with a
   monthly limit.
