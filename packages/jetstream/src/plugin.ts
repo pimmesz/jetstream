@@ -31,11 +31,17 @@ import {
   coalesce,
   createHookGate,
   createTokenSource,
+  exitOnStreamDeckClose,
   flushOnExit,
   handleHookPayload,
   replaySpool,
 } from './plugin-wiring';
-import { takeSpool } from '@pimmesz/jetstream-status';
+import { appendSpool, takeSpool } from '@pimmesz/jetstream-status';
+import { adoptShellDirs } from './shell-dirs';
+
+// Stream Deck starts the plugin without the user's shell profile: use the config dirs the CLI recorded
+// from it. First, so auto-wire, the checklist, the hints and the Codex gauge all read the same dirs.
+adoptShellDirs();
 
 // Resilience: a long-running Stream Deck plugin must NOT die on a transient async hiccup. The SDK
 // resolves socket commands (getSettings / getGlobalSettings / switchToProfile / …) as promises that
@@ -218,12 +224,8 @@ function drainSpool(): void {
   });
 }
 
-// Bind with retries: an orphaned prior plugin process (the kill→respawn hazard) can still hold the
-// port, and giving up early would leave the board permanently dark — no hook event ever arrives.
-// The predecessor now unrefs its server + timers so it exits as soon as its handles drain, but a
-// held /permission request (up to ~90s) or an in-flight poll can delay that, so keep retrying at a
-// steady 1s for ~90s to outlast the worst case rather than a 4s window. Record the outcome so the
-// Fleet key can surface "hooks offline".
+// Bind with retries for ~90s: a predecessor exits on its socket close (below) and frees the port within ms, but
+// one that missed the close holds it until its last /permission settles (up to ~90s). The Fleet key shows the outcome.
 void bindWithRetry(() => startHookServer(port, hookHandlers)).then((result) => {
   setListenerBound(result.bound);
   // Events the hooks spooled while no plugin was listening (a restart): replay them once the restore has
@@ -241,6 +243,20 @@ void bindWithRetry(() => startHookServer(port, hookHandlers)).then((result) => {
       result.error,
     );
   }
+});
+
+// The board checkpoint is debounced (state.ts), so flush it on every way out: a closed socket (below), SIGTERM
+// or Ctrl-C in dev. Registered before connect(), so that first exit flushes too. A hard SIGKILL can't be caught.
+flushOnExit(() => board.flush());
+
+// Stream Deck stops a plugin by closing its socket and the SDK never reconnects, so exit then.
+// Before connect(), since only sockets made after the subscribe are seen.
+exitOnStreamDeckClose(process.argv, {
+  gate: liveHooks,
+  append: appendSpool,
+  log: () =>
+    streamDeck.logger.info('Stream Deck closed the plugin connection; exiting so the next instance can take the hook port'),
+  exit: (code) => process.exit(code),
 });
 
 // Global settings drive theme/thresholds. The listener catches future edits; the
@@ -275,8 +291,3 @@ async function pollDiscoveredSessions(): Promise<void> {
 }
 void pollDiscoveredSessions();
 setInterval(() => void pollDiscoveredSessions(), 5000).unref();
-
-// The board checkpoint is trailing-debounced (state.ts), so a change in the last ~250ms is only in
-// memory. Flush it on the way out so the newest status survives the restart, however the plugin stops
-// (a closed socket, SIGTERM, or Ctrl-C in dev). A hard SIGKILL can't be caught.
-flushOnExit(() => board.flush());

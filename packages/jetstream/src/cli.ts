@@ -5,7 +5,9 @@ import { homedir, tmpdir } from 'node:os';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { runClaude } from '@pimmesz/jetstream-claude';
 import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
+import { pendingEditsPath, pendingStore } from './chat-pending';
 import { hookCommands, installHooks } from './hooks-install';
+import { recordShellDirs } from './shell-dirs';
 
 export { hookCommands } from './hooks-install';
 import { runDoctor, formatReport, commandOnPath } from './doctor';
@@ -176,6 +178,14 @@ function pluginVersion(binDir: string): string {
 
 export async function run(argv: string[], binDir: string): Promise<number> {
   const [command, ...rest] = argv;
+  // The verbs that act on Claude or Codex config record this shell's dirs for the plugin, which
+  // starts without the shell profile. doctor stays read-only.
+  const shouldRecordDirs =
+    command === 'chat' || command === 'init' || command === 'setup' || (command === 'hooks' && rest[0] === 'install');
+  if (shouldRecordDirs) {
+    const note = recordShellDirs();
+    if (note) console.log(note);
+  }
   switch (command) {
     case 'version':
     case '--version':
@@ -253,6 +263,8 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           io: chatIo,
           board,
           readBoard: () => readBoardLayout(),
+          // Unsaved live edits outlive this chat, so the next one plans against them too.
+          pending: pendingStore(pendingEditsPath()),
           catalog: readForeignCatalog(defaultProfilesDir()),
           paintCoord: paintCoordByRow,
           claudeAvailable: () => commandOnPath('claude'),
@@ -285,7 +297,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
                 : 'Next: drag a Fleet + Attention key onto your deck.',
             );
           },
-          onLayout: async (placements, { deck, board: current }) => {
+          onLayout: async (placements, { deck, board: current, onConflict }) => {
             const outcome = await applyLayout(placements, {
               say: chatIo.say,
               confirm: async (question) => {
@@ -293,14 +305,17 @@ export async function run(argv: string[], binDir: string): Promise<number> {
                 return answer === 'y' || answer === 'yes';
               },
               board: current,
+              onConflict,
               boardOnScreen: () => readBoardLayout(),
               pluginAlive,
               sendSlot,
               writeInPlace:
                 process.platform === 'darwin'
-                  ? (profileDir, edits, pageId) =>
+                  ? (profileDir, edits, pageId, changedSincePlan) =>
                       writeInPlace(profileDir, edits, {
                         ...(pageId ? { pageId } : {}),
+                        // Compared after the quit, inside the lock: a key changed since the plan aborts the write.
+                        changedSincePlan,
                         jetstreamVersion: pluginVersion(binDir).replace('unknown', '0.0.0.0'),
                         // Clear the copies older chat imports left behind, keeping the board just written.
                         whileQuit: () =>

@@ -1,9 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterAll, describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
 import { clarifyingQuestion, parseProposal, runChatSetup, SETUP_SYSTEM } from './chat-setup';
+import { pendingStore, type PendingEdit, type PendingStore } from './chat-pending';
+import { applyLayout, SLOT, type ApplyDeps, type ApplyOutcome } from './chat-apply';
+import type { StoredAction } from './profile-store';
+import { coordToCell, sameSlot, storedSlotSettings } from './slot-command';
 import { KEY_TYPE_NAMES, type Placement } from './layout';
 import { DECK_MODELS, type DeckModel } from './profile';
 import type { BoardKey, BoardLayout } from './board-layout';
@@ -571,10 +575,15 @@ describe('runChatSetup pending live edits', () => {
   const urlAt = (coord: string, url: string): string =>
     `{"layout":{"deck":"xl","keys":[{"coord":"${coord}","type":"open-url","url":"${url}"}]}}`;
 
-  /** Every turn's layout goes live. `disk` is what the re-read shows after that turn (unchanged when absent).
+  /** Every turn's layout goes live unless it names another `outcome`. `disk` is what the re-read shows after
+   * that turn (unchanged when absent, no board when null), and `now` the fake clock once it applied.
    * Returns the board each turn was planned against. */
-  async function liveTurns(start: BoardLayout, turns: Array<{ reply: string; disk?: BoardLayout }>): Promise<Array<BoardLayout | null>> {
-    let disk = start;
+  async function liveTurns(
+    start: BoardLayout,
+    turns: Array<{ reply: string; disk?: BoardLayout | null; outcome?: ApplyOutcome; now?: number }>,
+    pending?: PendingStore,
+  ): Promise<Array<BoardLayout | null>> {
+    let disk: BoardLayout | null = start;
     let r = 0;
     const seen: Array<BoardLayout | null> = [];
     const { io } = makeIo(turns.flatMap(() => ['change it', 'y']));
@@ -582,16 +591,63 @@ describe('runChatSetup pending live edits', () => {
       io,
       ask: async () => turns[r++]?.reply ?? null,
       onLayout: async (_p: Placement[], t: { deck: DeckModel; board: BoardLayout | null }) => {
-        disk = turns[seen.length]?.disk ?? disk;
+        const turn = turns[seen.length];
+        if (turn?.disk !== undefined) disk = turn.disk;
+        if (turn?.now !== undefined) vi.setSystemTime(turn.now);
         seen.push(t.board);
-        return 'live' as const;
+        return turn?.outcome ?? 'live';
       },
       board: start,
       readBoard: () => disk,
       configPath: '/x',
+      pending,
     });
     expect(seen).toHaveLength(turns.length);
     return seen;
+  }
+
+  /** A plugin that, like the real one, refuses a write whose `expect` is not what the key holds (409). On a
+   * restart Stream Deck saves what the plugin holds, so that is the page the restart compare reads. */
+  function fakeDeck(held: Record<string, unknown>) {
+    const sent: Array<Record<string, unknown>> = [];
+    const sendSlot = async (body: Record<string, unknown>): Promise<number> => {
+      sent.push(body);
+      const coord = String(body.coord);
+      if (!sameSlot(held[coord], body.expect)) return 409;
+      held[coord] = storedSlotSettings(body);
+      return 200;
+    };
+    const savedOnQuit = (): Record<string, StoredAction> =>
+      Object.fromEntries(
+        Object.entries(held).map(([coord, settings]) => {
+          const cell = coordToCell(coord)!;
+          return [`${cell.column},${cell.row}`, { UUID: SLOT, Settings: settings }];
+        }),
+      );
+    return { held, sent, sendSlot, savedOnQuit };
+  }
+
+  /** Chat's real apply against `deck`, wired the way cli.ts wires it. Records each outcome. */
+  function applyTo(deck: ReturnType<typeof fakeDeck>, outcomes: ApplyOutcome[], over: Partial<ApplyDeps> = {}) {
+    return async (placements: Placement[], t: { board: BoardLayout | null; onConflict: (keys: string[]) => void }) => {
+      const outcome = await applyLayout(placements, {
+        say: () => {},
+        confirm: async () => false,
+        board: t.board,
+        pluginAlive: async () => true,
+        sendSlot: deck.sendSlot,
+        writeInPlace: async (_dir, _placements, _pageId, changedSincePlan) => {
+          const changed = changedSincePlan(deck.savedOnQuit());
+          if (changed.length > 0) return { ok: false, reason: `changed: ${changed.join(', ')}`, changed };
+          return { ok: true, backup: '/bak', removed: [] };
+        },
+        importProfile: () => '/x',
+        onConflict: t.onConflict,
+        ...over,
+      });
+      outcomes.push(outcome);
+      return outcome;
+    };
   }
 
   it('forgets a live edit as soon as disk shows anything else at that key', async () => {
@@ -657,5 +713,286 @@ describe('runChatSetup pending live edits', () => {
       { reply: urlAt('a2', 'https://three.dev') },
     ]);
     expect(seen[3]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://one.dev' });
+  });
+
+  it('keeps a live edit, and shows the new one, when a re-read finds no board', async () => {
+    const stale = page({ '0,0': empty, '1,0': empty, '2,0': empty, '3,0': empty });
+    const seen = await liveTurns(stale, [
+      { reply: urlAt('a1', 'https://one.dev') },
+      { reply: urlAt('a2', 'https://two.dev'), disk: null },
+      { reply: urlAt('a3', 'https://three.dev'), disk: stale },
+      { reply: urlAt('a4', 'https://four.dev') },
+    ]);
+    expect(seen[2]?.keys.get('1,0')?.settings).toEqual({ kind: 'url', url: 'https://two.dev' });
+    expect(seen[3]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://one.dev' });
+  });
+
+  it('keeps its own live edits past the hour Stream Deck may take to save them', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const start = 1_700_000_000_000;
+      vi.setSystemTime(start);
+      const seen = await liveTurns(page({ '0,0': empty, '1,0': empty }), [
+        { reply: urlAt('a1', 'https://one.dev') },
+        { reply: urlAt('a1', 'https://two.dev'), now: start + 61 * 60_000 },
+        { reply: urlAt('a2', 'https://x.dev') },
+      ]);
+      expect(seen[2]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://two.dev' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moving a key back after another page on screen refused an edit at its old spot never loses it', async () => {
+    const Y = { kind: 'url', url: 'https://y.dev' };
+    const disk = page({ '0,0': slotKey(Y), '1,0': empty }); // Stream Deck saves none of these edits
+    const deck = fakeDeck({ a1: Y, a2: { kind: 'empty' } });
+    let isOtherPageOnScreen = false;
+    // The other page holds other keys there, so the plugin refuses every edit while it is on screen.
+    const sendSlot = async (body: Record<string, unknown>): Promise<number> =>
+      isOtherPageOnScreen ? 409 : deck.sendSlot(body);
+    const turns = [
+      { reply: '{"layout":{"deck":"xl","keys":[{"coord":"a2","type":"open-url","url":"https://y.dev"},{"coord":"a1","type":"slot"}]}}', isOther: false },
+      { reply: urlAt('a1', 'https://t.dev'), isOther: true }, // the 409 forgets a1's edit, which the deck still holds
+      { reply: '{"layout":{"deck":"xl","keys":[{"coord":"a1","type":"open-url","url":"https://y.dev"},{"coord":"a2","type":"slot"}]}}', isOther: false },
+    ];
+    let r = 0;
+    const outcomes: ApplyOutcome[] = [];
+    const { io } = makeIo(turns.flatMap(() => ['change it', 'y']));
+    await runChatSetup({
+      io,
+      ask: async () => {
+        isOtherPageOnScreen = turns[r]?.isOther ?? false;
+        return turns[r++]?.reply ?? null;
+      },
+      onLayout: applyTo(deck, outcomes, { sendSlot }),
+      board: disk,
+      readBoard: () => disk,
+      configPath: '/x',
+    });
+    // The move back planned a1 from disk, so the plugin had to confirm a1 before clearing a2, and refused.
+    expect(outcomes).toEqual(['live', 'declined', 'declined']);
+    expect(deck.held).toEqual({ a1: { kind: 'empty' }, a2: Y });
+  });
+
+  describe('across chats', () => {
+    const dirs: string[] = [];
+    afterAll(() => {
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    });
+    /** A file store in a temp folder. The chats in one test share it, as every `jetstream chat` shares one file. */
+    function fileStore(): { pending: PendingStore; path: string } {
+      const dir = mkdtempSync(join(tmpdir(), 'jetstream-chat-pending-'));
+      dirs.push(dir);
+      const path = join(dir, 'chat-pending.json');
+      return { pending: pendingStore(path), path };
+    }
+    const stale = page({ '0,0': empty, '1,0': empty });
+    const one = { kind: 'url', url: 'https://one.dev' };
+
+    it('a new chat plans against a live edit an earlier chat made that disk does not show yet', async () => {
+      const { pending } = fileStore();
+      await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+      const seen = await liveTurns(stale, [{ reply: urlAt('a2', 'https://two.dev') }], pending);
+      expect(seen[0]?.keys.get('0,0')?.settings).toEqual(one);
+    });
+
+    it('a new chat shows an unsaved edit in its opening board map', async () => {
+      const { pending } = fileStore();
+      await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+      const { io, said } = makeIo([]);
+      await runChatSetup({ io, ask: async () => null, board: stale, readBoard: () => stale, configPath: '/x', pending });
+      expect(said.some((line) => line.includes('a1 one.dev'))).toBe(true);
+    });
+
+    it('lays a stored edit over its own profile and page only', async () => {
+      const { pending } = fileStore();
+      await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+      const onB = await liveTurns({ ...stale, pageId: 'b' }, [{ reply: urlAt('a2', 'https://b.dev') }], pending);
+      expect(onB[0]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' });
+      const otherProfile = await liveTurns({ ...stale, profileDir: '/q.sdProfile' }, [{ reply: urlAt('a2', 'https://q.dev') }], pending);
+      expect(otherProfile[0]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' });
+      const backOnA = await liveTurns(stale, [{ reply: urlAt('a2', 'https://two.dev') }], pending);
+      expect(backOnA[0]?.keys.get('0,0')?.settings).toEqual(one);
+    });
+
+    it('a new chat forgets a stored edit once disk shows anything else there', async () => {
+      const { pending, path } = fileStore();
+      await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+      const nextPage: BoardKey = { uuid: 'com.elgato.streamdeck.page.next', settings: {}, label: 'Next Page' };
+      const native = page({ '0,0': nextPage, '1,0': empty });
+      const { io } = makeIo([]); // opens and quits, so only the start can forget it
+      await runChatSetup({ io, ask: async () => null, board: native, readBoard: () => native, configPath: '/x', pending });
+      const stored = JSON.parse(readFileSync(path, 'utf8')) as { edits: unknown[] };
+      expect(stored.edits).toEqual([]);
+      const seen = await liveTurns(stale, [{ reply: urlAt('a2', 'https://two.dev') }], pending);
+      expect(seen[0]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' });
+    });
+
+    it('a restart in a later chat forgets every stored edit on that page', async () => {
+      const { pending } = fileStore();
+      await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+      // Stream Deck lost the a1 edit (a crash), so disk stays stale and only the restart can forget it.
+      const text = '{"layout":{"deck":"xl","keys":[{"coord":"a2","type":"text","text":"note"}]}}';
+      await liveTurns(stale, [{ reply: text, outcome: 'restarted' }], pending);
+      const seen = await liveTurns(stale, [{ reply: urlAt('a2', 'https://two.dev') }], pending);
+      expect(seen[0]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' });
+    });
+
+    it('a restart that was called off still forgets the stored edits on that page, and wrote nothing', async () => {
+      const { pending } = fileStore();
+      await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+      // Stream Deck lost the a1 edit: the restart finds a1 empty on disk, not one.dev, and writes nothing.
+      const { io, said } = makeIo(['change it', 'y']);
+      const planned: Array<BoardLayout | null> = [];
+      await runChatSetup({
+        io,
+        ask: async () => urlAt('a1', 'https://q.dev'),
+        onLayout: async (_p, t) => {
+          planned.push(t.board);
+          return 'reloaded';
+        },
+        board: stale,
+        readBoard: () => stale,
+        configPath: '/x',
+        pending,
+      });
+      expect(planned[0]?.keys.get('0,0')?.settings).toEqual(one);
+      expect(said).toContain('Nothing written.');
+      const seen = await liveTurns(stale, [{ reply: urlAt('a1', 'https://q.dev') }], pending);
+      expect(seen[0]?.keys.get('0,0')?.settings).toEqual({ kind: 'empty' });
+    });
+
+    it('counts the hour from the latest live edit to a key', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const start = 1_700_000_000_000;
+        const { path } = fileStore();
+        // Each chat has its own store on the shared file, as each `jetstream chat` run does, and has quit
+        // before the next one starts: only then does the hour count.
+        const quitChat = (): PendingStore => pendingStore(path, () => Date.now(), () => false);
+        vi.setSystemTime(start);
+        await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], quitChat());
+        vi.setSystemTime(start + 50 * 60_000);
+        await liveTurns(stale, [{ reply: urlAt('a1', 'https://two.dev') }], quitChat());
+        vi.setSystemTime(start + 61 * 60_000);
+        const seen = await liveTurns(stale, [{ reply: urlAt('a2', 'https://x.dev') }], quitChat());
+        expect(seen[0]?.keys.get('0,0')?.settings).toEqual({ kind: 'url', url: 'https://two.dev' });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    describe('when Stream Deck lost an earlier chat\'s live edit', () => {
+      const X = { kind: 'url', url: 'https://x.dev' };
+      const move = '{"layout":{"deck":"xl","keys":[{"coord":"a2","type":"open-url","url":"https://x.dev"},{"coord":"a1","type":"slot"}]}}';
+
+      it('a live move onto that key never clears the source, and the next request moves it', async () => {
+        const disk = page({ '0,0': slotKey(X), '1,0': empty });
+        const { pending } = fileStore();
+        // Chat 1 copies X to a2 live. Stream Deck then crashes before saving and reloads a2 empty from disk.
+        await liveTurns(disk, [{ reply: urlAt('a2', 'https://x.dev') }], pending);
+        const deck = fakeDeck({ a1: X, a2: { kind: 'empty' } });
+        const outcomes: ApplyOutcome[] = [];
+        const { io } = makeIo(['move a1 to a2', 'y', 'move a1 to a2', 'y']);
+        await runChatSetup({
+          io,
+          ask: async () => move,
+          onLayout: applyTo(deck, outcomes),
+          board: disk,
+          readBoard: () => disk,
+          configPath: '/x',
+          pending,
+        });
+        // The plan saw X laid over a2, so it sent a2 again first and stopped at its 409 with X still on a1.
+        expect(deck.sent[0]).toEqual({ coord: 'a2', ...X, expect: X, deck: 'xl' });
+        expect(deck.sent.filter((body) => body.coord === 'a1')).toHaveLength(1);
+        // That 409 forgot the lost edit, so the second request planned against disk and moved X.
+        expect(outcomes).toEqual(['declined', 'live']);
+        expect(deck.held).toEqual({ a1: { kind: 'empty' }, a2: X });
+      });
+
+      it('a restart write of a move onto that key is called off', async () => {
+        const disk = page({ '0,0': slotKey(X), '1,0': empty });
+        const { pending } = fileStore();
+        await liveTurns(disk, [{ reply: urlAt('a2', 'https://x.dev') }], pending);
+        const deck = fakeDeck({ a1: X, a2: { kind: 'empty' } });
+        const outcomes: ApplyOutcome[] = [];
+        const { io } = makeIo(['move a1 to a2', 'y']);
+        const onLayout = applyTo(deck, outcomes, { pluginAlive: async () => false, confirm: async () => true });
+        await runChatSetup({ io, ask: async () => move, onLayout, board: disk, readBoard: () => disk, configPath: '/x', pending });
+        expect(outcomes).toEqual(['reloaded']); // a2 is empty on disk, not the X the plan saw, so nothing is written
+      });
+
+      it('asking for that edit again is not "already set": it costs one 409, then applies', async () => {
+        const { pending } = fileStore();
+        await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+        const deck = fakeDeck({ a1: { kind: 'empty' }, a2: { kind: 'empty' } });
+        const outcomes: ApplyOutcome[] = [];
+        const { io, said } = makeIo(['set a1', 'y', 'set a1', 'y']);
+        await runChatSetup({
+          io,
+          ask: async () => urlAt('a1', 'https://one.dev'),
+          onLayout: applyTo(deck, outcomes),
+          board: stale,
+          readBoard: () => stale,
+          configPath: '/x',
+          pending,
+        });
+        expect(said).not.toContain('\nAlready set, nothing to change.');
+        expect(outcomes).toEqual(['declined', 'live']);
+        expect(deck.held.a1).toEqual(one);
+      });
+
+      it('a 409 keeps a newer edit another chat stored at that key since the plan', async () => {
+        const { pending, path } = fileStore();
+        await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+        const three: PendingEdit = {
+          placement: { column: 0, row: 0, uuid: SLOT, name: 'Slot', settings: { kind: 'url', url: 'https://three.dev' } },
+          before: [{ kind: 'empty' }],
+          at: Date.now(),
+          pid: process.pid + 1, // another chat
+        };
+        const { io } = makeIo(['set a1', 'y']);
+        await runChatSetup({
+          io,
+          ask: async () => urlAt('a1', 'https://two.dev'),
+          onLayout: async (_p, t) => {
+            // Another chat set a1 live after this plan was made, so the plugin refuses this chat's edit.
+            pendingStore(path).save(stale, new Map([['0,0', three]]));
+            t.onConflict(['0,0']);
+            return 'declined';
+          },
+          board: stale,
+          readBoard: () => stale,
+          configPath: '/x',
+          pending,
+        });
+        expect(pendingStore(path).load(stale).get('0,0')).toEqual(three);
+      });
+
+      it('a 409 keeps a newer edit another chat stored since the plan, even with the same settings', async () => {
+        const { pending, path } = fileStore();
+        await liveTurns(stale, [{ reply: urlAt('a1', 'https://one.dev') }], pending);
+        const planned = pendingStore(path).load(stale).get('0,0')!;
+        // Another chat put the same key back live later: same settings, a newer edit.
+        const newer: PendingEdit = { ...planned, at: planned.at + 1_000, pid: process.pid + 1 };
+        const { io } = makeIo(['set a1', 'y']);
+        await runChatSetup({
+          io,
+          ask: async () => urlAt('a1', 'https://two.dev'),
+          onLayout: async (_p, t) => {
+            pendingStore(path, Date.now, () => true).save(stale, new Map([['0,0', newer]]));
+            t.onConflict(['0,0']);
+            return 'declined';
+          },
+          board: stale,
+          readBoard: () => stale,
+          configPath: '/x',
+          pending,
+        });
+        expect(pendingStore(path, Date.now, () => true).load(stale).get('0,0')).toEqual(newer);
+      });
+    });
   });
 });

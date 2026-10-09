@@ -1,6 +1,6 @@
 import type { spawn as spawnType } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, type ServerResponse } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -177,9 +177,17 @@ describe('runJetstream', () => {
       const say = vi.fn();
       const spawn = vi.fn();
       const install = vi.fn();
-      runJetstream({ args: [verb, '--help'], say, spawn: spawn as unknown as typeof spawnType, install });
+      const recordDirs = vi.fn();
+      runJetstream({
+        args: [verb, '--help'],
+        say,
+        spawn: spawn as unknown as typeof spawnType,
+        install,
+        recordDirs,
+      });
       expect(spawn, verb).not.toHaveBeenCalled();
       expect(install, verb).not.toHaveBeenCalled();
+      expect(recordDirs, verb).not.toHaveBeenCalled();
       expect(String(say.mock.calls[0]?.[0]), verb).toContain(`jetstream ${verb}:`);
     }
   });
@@ -212,10 +220,64 @@ describe('runJetstream', () => {
       install,
       resolve,
       spawn: spawn as unknown as typeof spawnType,
+      recordDirs: vi.fn(),
     });
     expect(install).toHaveBeenCalledOnce();
     expect(resolve).not.toHaveBeenCalled(); // never looks for an installed CLI
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('install records the shell dirs, and prints the note, before handing the plugin to Stream Deck', () => {
+    const order: string[] = [];
+    const say = vi.fn();
+    runJetstream({
+      args: ['install'],
+      say,
+      recordDirs: () => {
+        order.push('record');
+        return 'Recorded CLAUDE_CONFIG_DIR=/a/claude for the Stream Deck plugin';
+      },
+      install: () => order.push('install'),
+    });
+    expect(order).toEqual(['record', 'install']);
+    expect(say).toHaveBeenCalledWith('Recorded CLAUDE_CONFIG_DIR=/a/claude for the Stream Deck plugin');
+  });
+
+  it('update records the shell dirs before npm i -g', () => {
+    const order: string[] = [];
+    const child = fakeChild();
+    runJetstream({
+      args: ['update'],
+      recordDirs: () => {
+        order.push('record');
+        return undefined;
+      },
+      spawn: (() => {
+        order.push('npm');
+        return child;
+      }) as unknown as typeof spawnType,
+      globalRoot: () => undefined,
+      install: vi.fn(),
+      say: vi.fn(),
+      error: vi.fn(),
+      setExitCode: vi.fn(),
+      platform: 'darwin',
+      exists: () => false,
+    });
+    expect(order).toEqual(['record', 'npm']);
+  });
+
+  it('a forwarded verb leaves recording to the plugin CLI, so `doctor` stays read-only', () => {
+    for (const verb of ['doctor', 'chat']) {
+      const recordDirs = vi.fn();
+      runJetstream({
+        args: [verb],
+        resolve: () => '/plugin/bin/jetstream.js',
+        spawn: (() => fakeChild()) as unknown as typeof spawnType,
+        recordDirs,
+      });
+      expect(recordDirs, verb).not.toHaveBeenCalled();
+    }
   });
 
   it('spawns node on the resolved CLI with the forwarded args', () => {
@@ -271,6 +333,7 @@ describe('runJetstream', () => {
     const install = vi.fn();
     runJetstream({
       args: ['update'],
+      recordDirs: vi.fn(),
       globalRoot: () => undefined,
       spawn: spawn as unknown as typeof spawnType,
       install,
@@ -299,6 +362,7 @@ describe('runJetstream', () => {
     const setExitCode = vi.fn();
     runJetstream({
       args: ['update'],
+      recordDirs: vi.fn(),
       globalRoot: () => undefined,
       spawn: (() => child) as unknown as typeof spawnType,
       install,
@@ -319,6 +383,7 @@ describe('runJetstream', () => {
     const spawn = vi.fn(() => child);
     runJetstream({
       args: ['update'],
+      recordDirs: vi.fn(),
       globalRoot: () => undefined,
       spawn: spawn as unknown as typeof spawnType,
       install: vi.fn(),
@@ -341,6 +406,7 @@ describe('runJetstream', () => {
     const spawn = vi.fn(() => child);
     runJetstream({
       args: ['update'],
+      recordDirs: vi.fn(),
       globalRoot: () => undefined,
       spawn: spawn as unknown as typeof spawnType,
       install: vi.fn(),
@@ -554,6 +620,34 @@ describe('pluginReportsVersion (the update-over-old-plugin guard)', () => {
     vi.stubEnv('JETSTREAM_PORT', '1'); // nothing bound here → connection refused
     expect(await pluginReportsVersion('1.4.0', 200)).toBe(false);
     vi.unstubAllEnvs();
+  });
+
+  // A socket timeout only measures silence, so every dripped byte or 102 would restart it.
+  it.each([
+    [
+      'an answer dripped one byte at a time',
+      (res: ServerResponse) => {
+        res.writeHead(200);
+        return setInterval(() => res.write('1'), 50);
+      },
+    ],
+    ['an endless 102 Processing', (res: ServerResponse) => setInterval(() => res.writeProcessing(), 50)],
+  ])('gives up on %s by its deadline', async (_name, drip) => {
+    const server = createServer((_req, res) => {
+      const timer = drip(res);
+      res.on('close', () => clearInterval(timer));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    vi.stubEnv('JETSTREAM_PORT', String((server.address() as { port: number }).port));
+    try {
+      const started = Date.now();
+      expect(await pluginReportsVersion('1.4.0', 300)).toBe(false);
+      expect(Date.now() - started).toBeLessThan(1_500);
+    } finally {
+      vi.unstubAllEnvs();
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 
   it('resolves false (never hangs) when the plugin dies mid-response — the update-restart case', async () => {

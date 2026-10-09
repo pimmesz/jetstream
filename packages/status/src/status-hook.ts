@@ -52,7 +52,9 @@ export function postHook(body: string, port: number, timeoutMs = 1500): Promise<
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),
         },
-        timeout: timeoutMs,
+        // A deadline for the whole request, not a socket timeout: that one only measures silence, so a
+        // squatter dripping its answer a byte at a time would hold the hook open. The abort lands in 'error'.
+        signal: AbortSignal.timeout(timeoutMs),
       },
       (res) => {
         res.resume();
@@ -62,10 +64,6 @@ export function postHook(body: string, port: number, timeoutMs = 1500): Promise<
     // Refused = no plugin listening (Stream Deck restarting). A timeout is NOT spooled: the plugin may
     // already have the event, and a replay would deliver it twice.
     req.on('error', (error: NodeJS.ErrnoException) => resolve(error.code !== 'ECONNREFUSED'));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(true);
-    });
     req.end(body);
   });
 }

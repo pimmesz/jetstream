@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -180,27 +180,47 @@ describe('writeFleetFromEditor', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  it('replays only the edit onto the file, keeping a repo another writer added since the read', () => {
+  it('replays only the edit onto the file, keeping a repo another writer added since the read', async () => {
     const path = fleetPath();
     writeFleetFile(path, [p('a')]);
     const base = readConfigFile(path);
     writeFleetFile(path, [p('a'), p('b')]); // another writer adds b
-    writeFleetFromEditor(path, [p('a'), p('c')], {}, base); // the editor adds c
+    await writeFleetFromEditor(path, [p('a'), p('c')], {}, base); // the editor adds c
     expect(readConfigFile(path).projects.map((x) => x.id)).toEqual(['a', 'b', 'c']);
   });
 
-  // The lock wait blocks the plugin's only thread, so a held lock must fail fast, not after 3 s.
-  it('gives up on a held lock quickly with the try-again error, changing nothing', () => {
+  // The plugin's only thread runs keys and hooks, so the editor must wait for a held lock without blocking it.
+  it('waits for a held lock without blocking, then writes once it is released', async () => {
     const path = fleetPath();
     writeFleetFile(path, [p('a')]);
-    const before = readFileSync(path, 'utf8');
     writeFileSync(`${path}.lock`, 'live writer');
+    setTimeout(() => rmSync(`${path}.lock`, { force: true }), 300); // the other writer finishes
     const started = Date.now();
-    expect(() => writeFleetFromEditor(path, [p('a'), p('b')], {}, readConfigFile(path))).toThrow(
-      /try again/,
-    );
-    expect(Date.now() - started).toBeLessThan(1_000);
-    expect(readFileSync(path, 'utf8')).toBe(before);
+    const pending = writeFleetFromEditor(path, [p('a'), p('b')], {}, readConfigFile(path));
+    expect(Date.now() - started).toBeLessThan(50); // handed back at once, nothing blocked
+    await pending;
+    expect(readConfigFile(path).projects.map((x) => x.id)).toEqual(['a', 'b']);
+  });
+
+  // Fake timers stand in for the 3 s wait; the lock loop reads the global setTimeout and Date.
+  it('gives up on a lock still held after 3 s, like the CLI', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      const path = fleetPath();
+      writeFleetFile(path, [p('a')]);
+      writeFileSync(`${path}.lock`, 'live writer');
+      let outcome: string | undefined;
+      void writeFleetFromEditor(path, [p('a'), p('b')], {}, readConfigFile(path)).then(
+        () => (outcome = 'saved'),
+        (error: Error) => (outcome = error.message),
+      );
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(outcome).toBeUndefined(); // still waiting
+      await vi.advanceTimersByTimeAsync(200);
+      expect(outcome).toMatch(/try again/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -231,16 +251,14 @@ describe('SettingsKey fleet route', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  // The route is what the plugin runs: it must use the editor's short lock wait, not the CLI's 3 s.
-  it('answers a held lock with the try-again error well inside a second, changing nothing', async () => {
+  // The route is what the plugin runs: a short hold by another writer is waited out, not refused.
+  it('waits for a held lock and then saves, instead of answering try again', async () => {
     const { path, replies } = setup();
-    const before = readFileSync(path, 'utf8');
     writeFileSync(`${path}.lock`, 'live writer');
-    const started = Date.now();
+    setTimeout(() => rmSync(`${path}.lock`, { force: true }), 300); // the other writer finishes
     await new SettingsKey().onSendToPlugin({ payload: { fleet: 'remove', id: 'a' } });
-    expect(Date.now() - started).toBeLessThan(1_000);
-    expect(replies).toEqual([{ fleet: 'error', message: expect.stringMatching(/try again/) }]);
-    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(replies).toEqual([{ fleet: 'projects', projects: [] }]);
+    expect(readConfigFile(path).projects).toEqual([]);
   });
 
   it("writes only its own removal, keeping a repo another writer added after the route's read", async () => {
@@ -250,5 +268,34 @@ describe('SettingsKey fleet route', () => {
     expect(readConfigFile(path).projects).toEqual([p('b')]);
     expect(replies).toEqual([{ fleet: 'projects', projects: [p('b')] }]);
     expect(board.seed).toHaveBeenCalledWith([p('b')]);
+  });
+
+  // Read before the removal saved, the re-add would see a duplicate, write nothing, and the removal would win.
+  it('runs a re-add sent during a removal lock wait only after the removal saved, so the repo stays', async () => {
+    const { path, replies } = setup();
+    writeFileSync(`${path}.lock`, 'live writer');
+    const key = new SettingsKey();
+    const removing = key.onSendToPlugin({ payload: { fleet: 'remove', id: 'a' } });
+    await new Promise((resolve) => setTimeout(resolve, 60)); // the removal is waiting for the lock
+    const adding = key.onSendToPlugin({ payload: { fleet: 'add', path: '/r/a' } });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    rmSync(`${path}.lock`, { force: true }); // the other writer finishes
+    await Promise.all([removing, adding]);
+    expect(readConfigFile(path).projects).toEqual([p('a')]);
+    expect(replies).toEqual([
+      { fleet: 'projects', projects: [] },
+      { fleet: 'projects', projects: [p('a')] },
+    ]);
+  });
+
+  it('keeps serving fleet messages after one fails, and still hands that failure to its caller', async () => {
+    const { replies } = setup();
+    vi.mocked(streamDeck.ui.sendToPropertyInspector).mockImplementationOnce(() => {
+      throw new Error('inspector gone');
+    });
+    const key = new SettingsKey();
+    await expect(key.onSendToPlugin({ payload: { fleet: 'list' } })).rejects.toThrow('inspector gone');
+    await key.onSendToPlugin({ payload: { fleet: 'list' } });
+    expect(replies).toEqual([{ fleet: 'projects', projects: [p('a')] }]);
   });
 });

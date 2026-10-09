@@ -6,7 +6,8 @@ import { DECK_MODELS, type DeckModel } from './profile';
 import { NO_SETTINGS_TYPE_NAMES, resolvePlacements, type Placement } from './layout';
 import { boardContext, labelForAction, renderBoardMap, type BoardLayout } from './board-layout';
 import { sameSlot, storedSlotSettings } from './slot-command';
-import { describePlan, planLayout, SLOT, type ApplyOutcome } from './chat-apply';
+import { describePlan, planLayout, SLOT, type ApplyOutcome, type PendingKey } from './chat-apply';
+import { pendingStore, type PendingEdit, type PendingStore } from './chat-pending';
 import type { ForeignAction } from './plugin-catalog';
 import type { FleetSnapshot } from './fleet';
 import { errorMessage } from './errors';
@@ -91,10 +92,11 @@ export interface ChatDeps {
   /** After a fleet change when there is no board yet: offer a first, ready-made board. */
   onWritten?: (projects: ProjectConfig[]) => Promise<void>;
   /** Apply an approved layout (live, or by an in-place profile write) to the board and deck the user
-   * previewed it against, never one re-read later (the deck may have switched page meanwhile). */
+   * previewed it against, never one re-read later (the deck may have switched page meanwhile).
+   * `onConflict` takes the keys the plugin refused with a 409 (applyLayout's own `onConflict`). */
   onLayout?: (
     placements: Placement[],
-    target: { deck: DeckModel; board: BoardLayout | null },
+    target: { deck: DeckModel; board: BoardLayout | null; onConflict: (keys: string[]) => void },
   ) => Promise<ApplyOutcome | void>;
   /** The user's current board, shown at start and given to the model so it can edit by coordinate. */
   board?: BoardLayout | null;
@@ -107,6 +109,8 @@ export interface ChatDeps {
   /** Preflight: is `claude` available on PATH? When it returns false, chat fails fast with an
    * actionable hint BEFORE the first typed turn. Absent: skip the check. */
   claudeAvailable?: () => boolean;
+  /** Live edits Stream Deck has not saved yet, shared with later chats. Absent: kept in memory for this chat. */
+  pending?: PendingStore;
 }
 
 export interface Proposal {
@@ -228,21 +232,54 @@ function extractSettings(raw: unknown): Partial<JetstreamConfig> {
   return out;
 }
 
-/** The board with `placements` applied, as the plugin now holds them. Pure. */
-function withKeys(board: BoardLayout, placements: Placement[]): BoardLayout {
+/** The board with `edits` laid over it, as the plugin holds them, each marked pending: Stream Deck may lose
+ * them before it saves. Each key remembers which stored edit it came from. Pure. */
+function overlayPending(board: BoardLayout, edits: Map<string, PendingEdit>): BoardLayout {
   const keys = new Map(board.keys);
-  for (const p of placements) {
+  for (const { placement: p, at, pid } of edits.values()) {
     const settings = storedSlotSettings(p.settings); // what the plugin keeps, not what was sent
-    keys.set(`${p.column},${p.row}`, { uuid: p.uuid, settings, label: labelForAction(p.uuid, settings) });
+    const key: PendingKey = { uuid: p.uuid, settings, label: labelForAction(p.uuid, settings), isPending: true, from: { at, pid } };
+    keys.set(`${p.column},${p.row}`, key);
   }
   return { ...board, keys };
 }
 
-/** A live edit Stream Deck may not have saved to disk yet. `before` is what disk can show there meanwhile:
- * the settings the key held before each of chat's live edits to it. */
-interface PendingEdit {
-  placement: Placement;
-  before: unknown[];
+/** A board read from disk, with every live edit it does not show yet laid over it. Stream Deck may not have
+ * saved a live edit yet, and the next live edit there would expect old settings and be refused. */
+function withPending(board: BoardLayout, pending: PendingStore): BoardLayout {
+  const edits = pending.load(board);
+  let hasForgotten = false;
+  for (const [coord, edit] of edits) {
+    // Keep an edit only while disk still shows the key as it was before it. Anything else there (the
+    // edit itself, or a change made on the deck or by another chat) is what the key holds now.
+    const onDisk = board.keys.get(coord);
+    const isUnsaved =
+      onDisk?.uuid === SLOT &&
+      !sameSlot(onDisk.settings, storedSlotSettings(edit.placement.settings)) &&
+      edit.before.some((settings) => sameSlot(onDisk.settings, settings));
+    if (isUnsaved) continue;
+    edits.delete(coord);
+    hasForgotten = true;
+  }
+  if (hasForgotten) pending.save(board, edits);
+  return overlayPending(board, edits);
+}
+
+/** Forget the edits at `keys` the plugin refused (409): it holds something else there, so Stream Deck lost them
+ * or another change replaced them. A newer edit another chat stored since the plan is what the key holds now. */
+function forgetRefused(board: BoardLayout, keys: string[], pending: PendingStore): void {
+  const edits = pending.load(board);
+  let hasForgotten = false;
+  for (const key of keys) {
+    const edit = edits.get(key);
+    const seen = board.keys.get(key);
+    const from = seen && 'from' in seen ? (seen as PendingKey).from : undefined;
+    // Forget only the stored edit this plan saw: one another chat stored since then is newer news.
+    if (!edit || !from || edit.at !== from.at || edit.pid !== from.pid) continue;
+    edits.delete(key);
+    hasForgotten = true;
+  }
+  if (hasForgotten) pending.save(board, edits);
 }
 
 /** A bound on model calls per session, so a conversation that never converges cannot loop forever. */
@@ -271,7 +308,9 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
   const configPath = deps.configPath ?? resolveProjectsConfigPath();
   const write = deps.write ?? ((p, s, base) => writeFleetFile(configPath, p, s, new Date(), base));
   const catalog = deps.catalog ?? [];
-  let board = deps.board ?? null;
+  const pending = deps.pending ?? pendingStore(null);
+  // Edits an earlier chat made live may not be on disk yet: the opening map and the first plan need them.
+  let board = deps.board ? withPending(deps.board, pending) : null;
 
   io.say('Jetstream chat: describe your repos to build your fleet, or arrange your deck by coordinate.');
   io.say('  e.g. "3 repos in ~/dev: falcon, api, web"  ·  "add an open-Telegram key at a8"  ·  "what is on c3?"');
@@ -284,8 +323,6 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
 
   let transcript = '';
   let changed = false;
-  const pendingLive = new Map<string, PendingEdit>(); // `${col},${row}` → a live edit disk may not show yet
-  let liveTarget: { profileDir: string; pageId: string | undefined } | undefined;
   let correction: string | null = null; // a rejected-keys note sent back to the model once
   let corrected = false;
   for (let modelTurns = 0; modelTurns < MAX_MODEL_TURNS; ) {
@@ -415,23 +452,35 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
       changed = true;
     }
     if (proposal.layout && deps.onLayout) {
-      const outcome = await deps.onLayout(proposal.layout.placements, { deck: proposal.layout.deck, board });
-      if (outcome !== 'declined' && outcome !== 'failed' && outcome !== 'unchanged') changed = true;
+      const planned = board; // the turn's end replaces `board`, and a 409 is about the board the plan saw
+      const onConflict = (keys: string[]): void => {
+        if (planned) forgetRefused(planned, keys, pending);
+      };
+      const outcome = await deps.onLayout(proposal.layout.placements, { deck: proposal.layout.deck, board, onConflict });
+      if (outcome !== 'declined' && outcome !== 'failed' && outcome !== 'unchanged' && outcome !== 'reloaded') {
+        changed = true;
+      }
       if (outcome === 'live' && board) {
-        // Remember what went live on THIS board, until disk shows it or another change there (see below).
+        // Remember what went live on THIS board's page, until disk shows it or another change there.
         // Only Jetstream slots the plan actually changed: an unchanged or native key was never written.
-        if (liveTarget?.profileDir !== board.profileDir || liveTarget?.pageId !== board.pageId) pendingLive.clear();
-        liveTarget = { profileDir: board.profileDir, pageId: board.pageId };
+        const edits = pending.load(board);
         for (const k of planLayout(board, proposal.layout.placements)) {
           if (k.route !== 'live') continue;
           const coord = `${k.placement.column},${k.placement.row}`;
           // Disk may still show this key as it was before this edit, or before an earlier unsaved one.
-          const before = [...(pendingLive.get(coord)?.before ?? []), board.keys.get(coord)?.settings];
-          pendingLive.set(coord, { placement: k.placement, before });
+          const before = [...(edits.get(coord)?.before ?? []), board.keys.get(coord)?.settings];
+          edits.set(coord, { placement: k.placement, before, at: Date.now(), pid: process.pid });
         }
-      } else if (outcome === 'restarted' || outcome === 'imported') {
-        // A restart write put those keys on disk itself, so a remembered live edit there is obsolete.
-        for (const p of proposal.layout.placements) pendingLive.delete(`${p.column},${p.row}`);
+        pending.save(board, edits);
+      } else if ((outcome === 'restarted' || outcome === 'reloaded') && board) {
+        // Stream Deck quit, saving what it held, and the plugin reloaded the page from disk, even when the write
+        // was called off: nothing there is pending now. A lost or undone edit would otherwise stay laid over.
+        pending.save(board, new Map());
+      } else if (outcome === 'imported' && board) {
+        // An imported profile put those keys on disk itself, so a remembered live edit there is obsolete.
+        const edits = pending.load(board);
+        for (const p of proposal.layout.placements) edits.delete(`${p.column},${p.row}`);
+        pending.save(board, edits);
       }
     } else if (proposal.projects.length > 0) {
       // With a board already there, a fleet change needs no new profile: a repo gets a key on request.
@@ -440,23 +489,11 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
       else if (deps.onWritten) await deps.onWritten(fleet);
       else io.say('Next: drag a Fleet + Attention key onto your deck.');
     }
-    if (deps.readBoard) board = deps.readBoard() ?? board;
-    // Stream Deck may not have saved a live edit to disk yet, so the re-read can miss it: lay every live
-    // edit it does not show yet over it, or the next live edit would expect old settings and be refused.
-    // Only onto the same profile and page the edits went to.
-    if (board && liveTarget && board.profileDir === liveTarget.profileDir && board.pageId === liveTarget.pageId) {
-      for (const [coord, edit] of pendingLive) {
-        // Keep an edit only while disk still shows the key as it was before it. Anything else there (the
-        // edit itself, or a change made on the deck or by another chat) is what the key holds now.
-        const onDisk = board.keys.get(coord);
-        const isUnsaved =
-          onDisk?.uuid === SLOT &&
-          !sameSlot(onDisk.settings, storedSlotSettings(edit.placement.settings)) &&
-          edit.before.some((settings) => sameSlot(onDisk.settings, settings));
-        if (!isUnsaved) pendingLive.delete(coord);
-      }
-      board = withKeys(board, [...pendingLive.values()].map((edit) => edit.placement));
-    }
+    // Only a real re-read can show an edit was saved: the previous board already has the edits laid over it,
+    // so checking against it would forget them. Without one, still lay this turn's live edits over it.
+    const reread = deps.readBoard?.() ?? null;
+    if (reread) board = withPending(reread, pending);
+    else if (board) board = overlayPending(board, pending.load(board));
     if (board) transcript += `\nSystem: applied. The board now:\n${boardContext(board, catalog)}`;
     io.say('\nAnything else? (or "quit")');
   }

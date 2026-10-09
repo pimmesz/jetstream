@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { postHook, runStatusHook, type StatusHookDeps } from './status-hook';
 
@@ -95,6 +95,38 @@ describe('postHook', () => {
     } finally {
       silent.closeAllConnections();
       await Promise.all([close(silent), close(reset)]);
+    }
+  });
+
+  /** `promise`, or 'still pending' once `ms` has passed, so a hang fails its test instead of timing it out. */
+  function within<T>(ms: number, promise: Promise<T>): Promise<T | 'still pending'> {
+    return Promise.race([promise, new Promise<'still pending'>((resolve) => setTimeout(() => resolve('still pending'), ms))]);
+  }
+
+  // The socket timeout only measures silence, so every dripped byte or 102 would restart it.
+  it.each([
+    [
+      'an answer dripped one byte at a time',
+      (res: ServerResponse) => {
+        res.writeHead(200);
+        return setInterval(() => res.write('a'), 50);
+      },
+    ],
+    ['an endless 102 Processing', (res: ServerResponse) => setInterval(() => res.writeProcessing(), 50)],
+  ])('ends %s by its deadline, as delivered', async (_name, drip) => {
+    const server = createServer((req, res) => {
+      req.resume();
+      const timer = drip(res);
+      res.on('close', () => clearInterval(timer));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const started = Date.now();
+      expect(await within(2_000, postHook('{}', portOf(server), 300))).toBe(true);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    } finally {
+      server.closeAllConnections();
+      await close(server);
     }
   });
 });

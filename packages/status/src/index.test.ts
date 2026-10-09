@@ -665,6 +665,49 @@ describe('Claude Code 2.1.289 contract', () => {
     expect(s.sessions.b5?.inflight?.map((a) => a.id)).toEqual(['c']);
   });
 
+  it("an agent's own SubagentStop with an empty list leaves no tombstone, so a resumed agent with the same id counts", () => {
+    let s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'b6', at: 1, agentId: 'w1' }));
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'b6', at: 2, agentId: 'w1', backgroundTasks: 0 }));
+    expect(s.sessions.b6?.stopped).toBeUndefined();
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b6', at: 3, agentId: 'w1' })); // resumed, same id
+    expect(s.sessions.b6?.inflight?.map((a) => a.id)).toEqual(['w1']);
+  });
+
+  it('a Start that fired before an applied empty list stays out of flight, and an older list arriving later does not move the cutoff back', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'b7', at: 10, firedAt: 10 }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'b7', at: 30, firedAt: 30, backgroundTasks: 0 }));
+    // Fired at 20, before the empty list, but its POST arrived at 40: that agent had already finished.
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b7', at: 40, firedAt: 20, agentId: 'late' }));
+    expect(s.sessions.b7?.inflight).toBeUndefined();
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b7', at: 50, firedAt: 45, agentId: 'new' }));
+    expect(s.sessions.b7?.inflight?.map((a) => a.id)).toEqual(['new']);
+    // An older empty list (fired at 15) applied afterwards keeps the cutoff at 30.
+    s = reduce(s, ev({ event: 'SubagentStop', sessionId: 'b7', at: 55, firedAt: 15, agentId: 'x', backgroundTasks: 0 }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b7', at: 56, firedAt: 25, agentId: 'late2' }));
+    expect(s.sessions.b7?.inflight?.map((a) => a.id)).toEqual(['new']);
+    expect(statusByProject(s, PROJECTS, 60).falcon?.status).toBe('working');
+  });
+
+  it('a Stop that arrived after a newer event keeps the newer status but still applies its empty list', () => {
+    let s = reduce(initialState(), ev({ event: 'SubagentStart', sessionId: 'b8', at: 10, firedAt: 10, agentId: 'teammate-1' }));
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'b8', at: 40, firedAt: 40 }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'b8', at: 45, firedAt: 30, backgroundTasks: 0 }));
+    expect(s.sessions.b8?.status).toBe('working');
+    expect(s.sessions.b8?.firedAt).toBe(40);
+    expect(s.sessions.b8?.inflight).toBeUndefined();
+    // The late list still moves the cutoff, so a Start that fired before it stays out.
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b8', at: 50, firedAt: 20, agentId: 'late' }));
+    expect(s.sessions.b8?.inflight).toBeUndefined();
+  });
+
+  it('a later status event keeps the empty-list cutoff, so a Start that fired before the list stays out', () => {
+    let s = reduce(initialState(), ev({ event: 'UserPromptSubmit', sessionId: 'b9', at: 10, firedAt: 10 }));
+    s = reduce(s, ev({ event: 'Stop', sessionId: 'b9', at: 30, firedAt: 30, backgroundTasks: 0 }));
+    s = reduce(s, ev({ event: 'UserPromptSubmit', sessionId: 'b9', at: 35, firedAt: 35 }));
+    s = reduce(s, ev({ event: 'SubagentStart', sessionId: 'b9', at: 40, firedAt: 20, agentId: 'late' }));
+    expect(s.sessions.b9?.inflight).toBeUndefined();
+  });
+
   it('parses source and background_tasks from the raw payload', () => {
     const parsed = parseHookPayload(
       { hook_event_name: 'Stop', cwd: '/x', session_id: 's', background_tasks: [{ id: 'a' }, { id: 'b' }] },

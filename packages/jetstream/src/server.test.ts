@@ -2,15 +2,22 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { request, type Server } from 'node:http';
+import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MAC_HEADER, NONCE_HEADER, permissionDecisionJson, permissionMac } from '@pimmesz/jetstream-status';
-import { nonceMemory, startHookServer } from './server';
+import {
+  CHALLENGE_HEADER,
+  MAC_HEADER,
+  NONCE_HEADER,
+  challengeMac,
+  permissionDecisionJson,
+  permissionMac,
+} from '@pimmesz/jetstream-status';
+import { challengeStore, nonceMemory, startHookServer } from './server';
 
-/** Raw POST so we can set an `Origin` header — undici's `fetch` silently drops it (forbidden name). */
+/** Raw POST so we can set an `Origin` header: undici's `fetch` silently drops it (forbidden name). */
 function rawPost(port: number, path: string, headers: Record<string, string>, body: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = request({ host: '127.0.0.1', port, path, method: 'POST', headers }, (res) => {
@@ -19,6 +26,18 @@ function rawPost(port: number, path: string, headers: Record<string, string>, bo
     });
     req.on('error', reject);
     req.end(body);
+  });
+}
+
+/** Raw GET that can carry an `Origin` header; resolves the status. */
+function rawGet(port: number, path: string, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path, method: 'GET', headers }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -37,11 +56,51 @@ function port(s: Server): number {
 /** A nonce in the shape the hook and the CLI send: the send time, then 32 random hex. */
 const nonceAt = (ms = Date.now()): string => `${ms}.${randomBytes(16).toString('hex')}`;
 
-/** Headers for a request signed with `key` over `body`. */
+/** Headers for a request signed with `key` over `body` in the 4.1.0 format (no challenge). */
 const signed = (kind: 'req' | 'slot', body: string, nonce = nonceAt(), key = 'secret'): Record<string, string> => ({
   [NONCE_HEADER]: nonce,
   [MAC_HEADER]: permissionMac(key, kind, nonce, body),
 });
+
+/** Headers for a v2 request signed with `key` over `challenge` and `body`. */
+const signedV2 = (
+  kind: 'req' | 'slot',
+  body: string,
+  challenge: string,
+  nonce = nonceAt(),
+  key = 'secret',
+): Record<string, string> => ({
+  [CHALLENGE_HEADER]: challenge,
+  [NONCE_HEADER]: nonce,
+  [MAC_HEADER]: challengeMac(key, kind, challenge, nonce, body),
+});
+
+/** A fresh challenge from the listener, the way the hook and the CLI ask for one. */
+async function challengeFrom(s: Server): Promise<string> {
+  return (await fetch(`http://127.0.0.1:${port(s)}/challenge`)).text();
+}
+
+/** Run the built permission hook against `hookPort` with a token in a temp config; resolves its stdout. */
+async function runHook(hookPort: number, prompt: unknown): Promise<string> {
+  const config = mkdtempSync(join(tmpdir(), 'jetstream-hook-'));
+  try {
+    mkdirSync(join(config, 'jetstream'));
+    writeFileSync(join(config, 'jetstream', 'listener-token'), 'secret');
+    const hook = createRequire(import.meta.url).resolve('@pimmesz/jetstream-status/dist/permission-hook.js');
+    const child = spawn(process.execPath, [hook], {
+      env: { PATH: process.env.PATH, HOME: config, XDG_CONFIG_HOME: config, JETSTREAM_PORT: String(hookPort) },
+    });
+    let out = '';
+    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
+    const exited = new Promise((resolve) => child.on('close', resolve));
+    // Indented, so a server that MACs a re-serialised body instead of the bytes it got would fail.
+    child.stdin.end(JSON.stringify(prompt, null, 2));
+    await exited;
+    return out;
+  } finally {
+    rmSync(config, { recursive: true, force: true });
+  }
+}
 
 describe('startHookServer', () => {
   it('parses a POSTed hook payload and hands it to onPayload', async () => {
@@ -256,7 +315,7 @@ describe('startHookServer', () => {
       expect(calls).toBe(0);
     });
 
-    it('refuses a replayed, stale or unstamped signed request, so captured bytes cannot be sent again', async () => {
+    it('still takes a 4.1.0-format request once, and refuses a replayed, stale or unstamped one', async () => {
       let calls = 0;
       server = await startHookServer(0, {
         ...gated,
@@ -275,10 +334,13 @@ describe('startHookServer', () => {
       expect((await fetch(url, { method: 'POST', headers: stale, body })).status).toBe(401);
       const unstamped = signed('req', body, randomBytes(16).toString('hex'));
       expect((await fetch(url, { method: 'POST', headers: unstamped, body })).status).toBe(401);
+      // A v2 MAC is never read as a 4.1.0 one, so dropping the challenge header does not get a v2 request in.
+      const { [CHALLENGE_HEADER]: _dropped, ...stripped } = signedV2('req', body, await challengeFrom(server));
+      expect((await fetch(url, { method: 'POST', headers: stripped, body })).status).toBe(401);
       expect(calls).toBe(1);
     });
 
-    it('applies a signed /slot edit without the token header, and refuses a forged or replayed one', async () => {
+    it('still takes a 4.1.0-format /slot edit once without the token header, and refuses a forged or replayed one', async () => {
       const seen: unknown[] = [];
       server = await startHookServer(0, {
         ...gated,
@@ -294,7 +356,9 @@ describe('startHookServer', () => {
       // A forged MAC must not use up its nonce, or junk requests could fill the memory and lock out real edits.
       expect((await fetch(url, { method: 'POST', headers: signed('slot', body, nonce, 'guess'), body })).status).toBe(401);
       const headers = signed('slot', body, nonce);
-      expect((await fetch(url, { method: 'POST', headers, body })).status).toBe(200);
+      const first = await fetch(url, { method: 'POST', headers, body });
+      expect(first.status).toBe(200);
+      expect(first.headers.get(MAC_HEADER)).toBeNull(); // a 4.1.0 CLI reads no answer MAC
       expect((await fetch(url, { method: 'POST', headers, body })).status).toBe(401);
       // A /permission request MAC is not a /slot MAC, so one cannot be replayed as the other.
       expect((await fetch(url, { method: 'POST', headers: signed('req', body), body })).status).toBe(401);
@@ -311,26 +375,155 @@ describe('startHookServer', () => {
           return permissionDecisionJson('allow');
         },
       });
-      const config = mkdtempSync(join(tmpdir(), 'jetstream-hook-'));
-      try {
-        mkdirSync(join(config, 'jetstream'));
-        writeFileSync(join(config, 'jetstream', 'listener-token'), 'secret');
-        const prompt = { session_id: 's', tool_name: 'Bash', tool_input: { command: 'echo "héllo 🚀 ✓"' } };
-        const hook = createRequire(import.meta.url).resolve('@pimmesz/jetstream-status/dist/permission-hook.js');
-        const child = spawn(process.execPath, [hook], {
-          env: { PATH: process.env.PATH, HOME: config, XDG_CONFIG_HOME: config, JETSTREAM_PORT: String(port(server)) },
+      const prompt = { session_id: 's', tool_name: 'Bash', tool_input: { command: 'echo "héllo 🚀 ✓"' } };
+      const out = await runHook(port(server), prompt);
+      expect(seen).toEqual([prompt]);
+      expect(out).toBe(permissionDecisionJson('allow'));
+    });
+
+    it('refuses a request a port squatter captured from the real permission hook', async () => {
+      // The squatter answers /challenge with one it made up, then keeps the signed request it gets.
+      const captured: Array<{ headers: IncomingHttpHeaders; body: string }> = [];
+      const connections = new Set<number | undefined>();
+      const issued = randomBytes(32).toString('hex');
+      const squatter = createServer((req, res) => {
+        connections.add(req.socket.remotePort);
+        if (req.url === '/challenge') {
+          res.writeHead(200);
+          res.end(issued);
+          return;
+        }
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk: string) => (body += chunk));
+        req.on('end', () => {
+          captured.push({ headers: req.headers, body });
+          res.writeHead(204);
+          res.end();
         });
-        let out = '';
-        child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
-        const exited = new Promise((resolve) => child.on('close', resolve));
-        // Indented, so a server that MACs a re-serialised body instead of the bytes it got would fail.
-        child.stdin.end(JSON.stringify(prompt, null, 2));
-        await exited;
-        expect(seen).toEqual([prompt]);
-        expect(out).toBe(permissionDecisionJson('allow'));
+      });
+      await new Promise<void>((resolve) => squatter.listen(0, '127.0.0.1', resolve));
+      try {
+        expect(await runHook(port(squatter), { session_id: 's', tool_name: 'Bash' })).toBe('');
+        // The signed POST opened its own connection instead of riding the one that fetched the challenge.
+        expect(connections.size).toBe(2);
       } finally {
-        rmSync(config, { recursive: true, force: true });
+        squatter.close();
       }
+      let calls = 0;
+      server = await startHookServer(0, {
+        ...gated,
+        permissionKey: () => 'secret',
+        onPermission: async () => {
+          calls++;
+          return permissionDecisionJson('allow');
+        },
+      });
+      const { headers, body } = captured[0] ?? { headers: {}, body: '' };
+      // The hook signed over the squatter's challenge, the only kind of request it may send.
+      expect(headers[CHALLENGE_HEADER]).toBe(issued);
+      // Replay exactly what was captured: a header the hook left out must stay out.
+      const replay: Record<string, string> = { 'content-type': 'application/json' };
+      for (const name of [CHALLENGE_HEADER, NONCE_HEADER, MAC_HEADER]) {
+        const value = headers[name];
+        if (typeof value === 'string') replay[name] = value;
+      }
+      expect(await rawPost(port(server), '/permission', replay, body)).toBe(401);
+      expect(calls).toBe(0);
+    });
+
+    it('issues single-use challenges, and refuses one it never issued or issued over 60 s ago', async () => {
+      let calls = 0;
+      server = await startHookServer(0, {
+        ...gated,
+        permissionKey: () => 'secret',
+        onPermission: async () => {
+          calls++;
+          return '{"decision":"allow"}';
+        },
+      });
+      const issued = await fetch(`http://127.0.0.1:${port(server)}/challenge`);
+      expect(issued.status).toBe(200);
+      expect(issued.headers.get('cache-control')).toBe('no-store');
+      const challenge = await issued.text();
+      expect(challenge).toMatch(/^[0-9a-f]{64}$/);
+      // Like every route, it is closed to a browser.
+      expect(await rawGet(port(server), '/challenge', { origin: 'https://evil.example' })).toBe(403);
+      const body = '{"tool_name":"Bash"}';
+      const url = `http://127.0.0.1:${port(server)}/permission`;
+      // A forged MAC must not use up the challenge, or junk requests could lock out the real one.
+      const forged = signedV2('req', body, challenge, nonceAt(), 'guess');
+      expect((await fetch(url, { method: 'POST', headers: forged, body })).status).toBe(401);
+      const nonce = nonceAt();
+      const headers = signedV2('req', body, challenge, nonce);
+      const ok = await fetch(url, { method: 'POST', headers, body });
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get(MAC_HEADER)).toBe(challengeMac('secret', 'res', challenge, nonce, await ok.text()));
+      // Single use, whatever nonce comes with it.
+      expect((await fetch(url, { method: 'POST', headers, body })).status).toBe(401);
+      expect((await fetch(url, { method: 'POST', headers: signedV2('req', body, challenge), body })).status).toBe(401);
+      const unissued = signedV2('req', body, randomBytes(32).toString('hex'));
+      expect((await fetch(url, { method: 'POST', headers: unissued, body })).status).toBe(401);
+      // Challenges age by the process's monotonic clock, so fake that rather than the wall clock.
+      vi.useFakeTimers({ toFake: ['performance'] });
+      try {
+        const old = await challengeFrom(server);
+        vi.advanceTimersByTime(61_000);
+        expect((await fetch(url, { method: 'POST', headers: signedV2('req', body, old), body })).status).toBe(401);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(calls).toBe(1);
+    });
+
+    it('still takes a signed request after a flood of /challenge requests between its GET and its POST', async () => {
+      let calls = 0;
+      server = await startHookServer(0, {
+        ...gated,
+        permissionKey: () => 'secret',
+        onPermission: async () => {
+          calls++;
+          return '{"decision":"allow"}';
+        },
+      });
+      const challenge = await challengeFrom(server);
+      // Anyone local can ask for challenges without the token; none of them may push out the client's.
+      for (let i = 0; i < 20; i++) await Promise.all(Array.from({ length: 50 }, () => challengeFrom(server as Server)));
+      const body = '{"tool_name":"Bash"}';
+      const url = `http://127.0.0.1:${port(server)}/permission`;
+      expect((await fetch(url, { method: 'POST', headers: signedV2('req', body, challenge), body })).status).toBe(200);
+      expect(calls).toBe(1);
+    });
+
+    it('signs every answer to a v2 /slot edit over its status and body', async () => {
+      server = await startHookServer(0, {
+        ...gated,
+        permissionKey: () => 'secret',
+        onSlot: async (raw) => {
+          if ((raw as { coord?: unknown }).coord === 'boom') throw new Error('render timeout');
+          return { status: 200, body: '{}' };
+        },
+      });
+      const url = `http://127.0.0.1:${port(server)}/slot`;
+      /** Send one v2 edit; resolves the status, the answer MAC and the MAC expected over what came back. */
+      const send = async (body: string) => {
+        const challenge = await challengeFrom(server as Server);
+        const nonce = nonceAt();
+        const res = await fetch(url, { method: 'POST', headers: signedV2('slot', body, challenge, nonce), body });
+        const text = await res.text();
+        const expected = challengeMac('secret', 'slot-res', challenge, nonce, `${res.status}\n${text}`);
+        return { status: res.status, mac: res.headers.get(MAC_HEADER), expected, text };
+      };
+      const applied = await send('{"coord":"a1","kind":"empty"}');
+      expect(applied.status).toBe(200);
+      expect(applied.text).toBe('{}');
+      expect(applied.mac).toBe(applied.expected);
+      const notJson = await send('not json');
+      expect(notJson.status).toBe(400);
+      expect(notJson.mac).toBe(notJson.expected);
+      const failed = await send('{"coord":"boom"}');
+      expect(failed.status).toBe(500);
+      expect(failed.mac).toBe(failed.expected);
     });
 
     it('serves the same endpoints with the token, and leaves /health open without it', async () => {
@@ -382,5 +575,66 @@ describe('nonceMemory', () => {
     // Past the freshness window the old nonces are pruned, so a long-lived plugin keeps working.
     vi.setSystemTime(t0 + 2 * 60_000 + 1_000);
     expect(claim(nonceAt())).toBe(true);
+  });
+});
+
+describe('challengeStore', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps a challenge claimable however many are issued after it, and each one claims only once', () => {
+    const store = challengeStore();
+    const first = store.issue();
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    for (let i = 0; i < 1000; i++) store.issue();
+    expect(store.claim(first)).toBe(true);
+    expect(store.claim(first)).toBe(false);
+  });
+
+  it('refuses a challenge it did not issue, even in the right shape', () => {
+    const store = challengeStore();
+    const issued = store.issue();
+    // The last character flipped breaks the MAC; another listener signs with another secret.
+    const tampered = `${issued.slice(0, 63)}${issued.endsWith('0') ? '1' : '0'}`;
+    expect(store.claim(tampered)).toBe(false);
+    expect(store.claim(challengeStore().issue())).toBe(false);
+    expect(store.claim(randomBytes(32).toString('hex'))).toBe(false);
+    expect(store.claim('not a challenge')).toBe(false);
+    expect(store.claim(issued)).toBe(true);
+  });
+
+  it('refuses a challenge issued over 60 s ago', () => {
+    let t = 1_000;
+    const store = challengeStore(() => t);
+    const old = store.issue();
+    const recent = store.issue();
+    t += 60_000;
+    expect(store.claim(recent)).toBe(true);
+    t += 1;
+    expect(store.claim(old)).toBe(false);
+  });
+
+  it('refuses a new claim once 1024 are used, and takes them again once those have expired', () => {
+    let t = 1_000;
+    const store = challengeStore(() => t);
+    for (let i = 0; i < 1024; i++) expect(store.claim(store.issue())).toBe(true);
+    // Full: refused, not made room for, since a forgotten challenge could be replayed.
+    expect(store.claim(store.issue())).toBe(false);
+    t += 61_000;
+    expect(store.claim(store.issue())).toBe(true);
+  });
+
+  it('never reopens a claimed challenge when the wall clock steps forward and back', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const t0 = Date.parse('2026-10-08T12:00:00Z');
+    vi.setSystemTime(t0);
+    const store = challengeStore();
+    const claimed = store.issue();
+    expect(store.claim(claimed)).toBe(true);
+    vi.setSystemTime(t0 + 120_000);
+    expect(store.claim(store.issue())).toBe(true);
+    vi.setSystemTime(t0 + 1_000);
+    expect(store.claim(claimed)).toBe(false);
   });
 });

@@ -181,7 +181,7 @@ export function replayFleetDelta(disk: FleetSnapshot, base: FleetSnapshot, next:
  * projects.json is jetstream's own file; a crash mid-write can't truncate it. Pass `base` (the
  * snapshot this writer read before editing) and only its own change is replayed onto the file as it
  * is right now (replayFleetDelta); without `base` the file is replaced wholesale. Waiting for the
- * lock blocks the thread, so the plugin passes a short `lockWaitMs`; the CLI can afford to wait. */
+ * lock blocks the thread, which the CLI can afford; the plugin uses writeFleetFileAsync. */
 export function writeFleetFile(
   path: string,
   projects: ProjectConfig[],
@@ -192,15 +192,38 @@ export function writeFleetFile(
 ): FleetSnapshot {
   // One writer at a time from the re-read to the rename, so the replay always starts from the file
   // the rename will replace.
-  return withFleetLock(`${path}.lock`, lockWaitMs, () => {
-    if (base) {
-      const disk = readConfigFile(path);
-      if (disk.corrupt) throw new Error(`${path} became unreadable since it was read; not overwriting it`);
-      ({ projects, settings } = replayFleetDelta(disk, base, { projects, settings }));
-    }
-    writeFleetFileNow(path, projects, settings, now);
-    return { projects, settings };
-  });
+  return withFleetLock(`${path}.lock`, lockWaitMs, () => replayAndWrite(path, projects, settings, now, base));
+}
+
+/** The same write as writeFleetFile, but it waits for the lock without blocking the thread, so the
+ * plugin's keys and hooks keep running while another writer finishes. */
+export function writeFleetFileAsync(
+  path: string,
+  projects: ProjectConfig[],
+  settings: Partial<JetstreamConfig>,
+  now: Date,
+  base?: FleetSnapshot,
+  lockWaitMs: number = FLEET_LOCK_WAIT_MS,
+): Promise<FleetSnapshot> {
+  return withFleetLockAsync(`${path}.lock`, lockWaitMs, () => replayAndWrite(path, projects, settings, now, base));
+}
+
+/** The part of a fleet write that runs under the lock: with a `base`, replay this writer's change
+ * onto the file as it is now, then write. Returns what it wrote. */
+function replayAndWrite(
+  path: string,
+  projects: ProjectConfig[],
+  settings: Partial<JetstreamConfig>,
+  now: Date,
+  base?: FleetSnapshot,
+): FleetSnapshot {
+  if (base) {
+    const disk = readConfigFile(path);
+    if (disk.corrupt) throw new Error(`${path} became unreadable since it was read; not overwriting it`);
+    ({ projects, settings } = replayFleetDelta(disk, base, { projects, settings }));
+  }
+  writeFleetFileNow(path, projects, settings, now);
+  return { projects, settings };
 }
 
 /** Writes take milliseconds: by default wait this long for another writer, and treat a lock this old
@@ -208,34 +231,66 @@ export function writeFleetFile(
 const FLEET_LOCK_WAIT_MS = 3_000;
 const FLEET_LOCK_STALE_MS = 10_000;
 
+/** Try once to create the lock file. False while another writer holds it; a lock old enough to be a
+ * crashed writer's is removed first, so the next try can take it. */
+function tryFleetLock(lockPath: string, token: string): boolean {
+  try {
+    writeFileSync(lockPath, token, { flag: 'wx' });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs > FLEET_LOCK_STALE_MS) rmSync(lockPath, { force: true });
+    } catch {
+      // released meanwhile: just retry
+    }
+    return false;
+  }
+}
+
+/** Remove the lock file, but only while it is still ours. */
+function releaseFleetLock(lockPath: string, token: string): void {
+  try {
+    if (readFileSync(lockPath, 'utf8') === token) rmSync(lockPath, { force: true });
+  } catch {
+    // already gone
+  }
+}
+
+const newLockToken = (): string => `${process.pid} ${Math.random().toString(36).slice(2)}`;
+const lockHeldError = (lockPath: string): Error =>
+  new Error(`another Jetstream writer is holding ${lockPath}; try again`);
+
 /** Run `fn` holding an exclusive lock file; released only while it is still ours. */
 function withFleetLock<T>(lockPath: string, waitMs: number, fn: () => T): T {
-  const token = `${process.pid} ${Math.random().toString(36).slice(2)}`;
+  const token = newLockToken();
   const deadline = Date.now() + waitMs;
   mkdirSync(dirname(lockPath), { recursive: true });
-  for (;;) {
-    try {
-      writeFileSync(lockPath, token, { flag: 'wx' });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      try {
-        if (Date.now() - statSync(lockPath).mtimeMs > FLEET_LOCK_STALE_MS) rmSync(lockPath, { force: true });
-      } catch {
-        // released meanwhile: just retry
-      }
-      if (Date.now() > deadline) throw new Error(`another Jetstream writer is holding ${lockPath}; try again`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25); // a short synchronous pause
-    }
+  while (!tryFleetLock(lockPath, token)) {
+    if (Date.now() > deadline) throw lockHeldError(lockPath);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25); // a short synchronous pause
   }
   try {
     return fn();
   } finally {
-    try {
-      if (readFileSync(lockPath, 'utf8') === token) rmSync(lockPath, { force: true });
-    } catch {
-      // already gone
-    }
+    releaseFleetLock(lockPath, token);
+  }
+}
+
+/** withFleetLock for the plugin: the pause between tries yields to the event loop instead. */
+async function withFleetLockAsync<T>(lockPath: string, waitMs: number, fn: () => T): Promise<T> {
+  const token = newLockToken();
+  const deadline = Date.now() + waitMs;
+  mkdirSync(dirname(lockPath), { recursive: true });
+  while (!tryFleetLock(lockPath, token)) {
+    if (Date.now() > deadline) throw lockHeldError(lockPath);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  // Nothing is awaited between taking and releasing the lock, so no other plugin work runs inside it.
+  try {
+    return fn();
+  } finally {
+    releaseFleetLock(lockPath, token);
   }
 }
 
@@ -323,7 +378,11 @@ export type FleetOutbound =
 export interface FleetDeps {
   read: () => { projects: ProjectConfig[]; settings: Partial<JetstreamConfig>; corrupt?: boolean };
   /** `base` is the snapshot the change was made against, so the writer can replay just the change. */
-  write: (projects: ProjectConfig[], settings: Partial<JetstreamConfig>, base: FleetSnapshot) => FleetSnapshot | void;
+  write: (
+    projects: ProjectConfig[],
+    settings: Partial<JetstreamConfig>,
+    base: FleetSnapshot,
+  ) => FleetSnapshot | void | Promise<FleetSnapshot | void>;
   /** Re-seed the live board so an edit repaints Fleet/Attention without a restart. */
   seed: (projects: ProjectConfig[]) => void;
   reply: (msg: FleetOutbound) => void | Promise<void>;
@@ -353,7 +412,7 @@ export async function handleFleetMessage(payload: unknown, deps: FleetDeps): Pro
   ): Promise<ProjectConfig[] | undefined> => {
     let saved: ProjectConfig[] = next;
     try {
-      saved = deps.write(next, settings, base)?.projects ?? next;
+      saved = (await deps.write(next, settings, base))?.projects ?? next;
     } catch (error) {
       await deps.reply({
         fleet: 'error',

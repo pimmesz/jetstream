@@ -83,11 +83,13 @@ describe('slotFace', () => {
   });
 });
 
-/** A fake KeyAction at a coordinate, with spies for the mutations assign() makes. */
-function fakeKey(column: number, row: number) {
+/** A fake KeyAction at a coordinate, with spies for the mutations assign() makes. `type` is the SDK
+ * DeviceType of its deck (0 Standard, 1 Mini, 2 XL); left out, the key has no device at all. */
+function fakeKey(column: number, row: number, type?: number) {
   return {
     isKey: () => true,
     coordinates: { column, row },
+    ...(type === undefined ? {} : { device: { type } }),
     setSettings: vi.fn(async () => {}),
     setImage: vi.fn(async () => {}),
     setTitle: vi.fn(async () => {}),
@@ -298,6 +300,70 @@ describe('SlotKey.assign', () => {
     const res = await slotWith([key]).assign({ coord: 'zz' });
     expect(res.status).toBe(400);
     expect(key.setSettings).not.toHaveBeenCalled();
+  });
+});
+
+// Every connected deck has its own a1. Chat names the deck model its plan is for, and the plugin
+// refuses (404, so chat offers the restart write) rather than guess between two candidates.
+describe('SlotKey.assign with two Stream Decks', () => {
+  const MINI = 1;
+  const XL = 2;
+  const PLUS = 7;
+  /** A slot at a1 on a deck of the given DeviceType, holding `held`. */
+  function deckKey(id: string, type: number, held: Record<string, unknown> = { kind: 'empty' }) {
+    return { ...fakeKey(0, 0, type), id, getSettings: vi.fn(async () => held) };
+  }
+  const edit = { coord: 'a1', kind: 'url', url: 'https://x.dev', expect: { kind: 'empty' } };
+
+  it('an edit naming the XL changes the XL slot, not the Mini slot at the same coordinate', async () => {
+    const mini = deckKey('mini-a1', MINI);
+    const xl = deckKey('xl-a1', XL);
+    const res = await slotWith([mini, xl]).assign({ ...edit, deck: 'xl' });
+    expect(res.status).toBe(200);
+    expect(xl.setSettings).toHaveBeenCalledWith({ kind: 'url', url: 'https://x.dev' });
+    expect(mini.setSettings).not.toHaveBeenCalled();
+  });
+
+  it('two slots at one coordinate and no deck named are refused, neither changes', async () => {
+    const mini = deckKey('mini-a1', MINI);
+    const xl = deckKey('xl-a1', XL);
+    const res = await slotWith([mini, xl]).assign(edit);
+    expect(res).toEqual({ status: 404, body: JSON.stringify({ error: 'a1 is a slot key on more than one Stream Deck' }) });
+    expect(mini.setSettings).not.toHaveBeenCalled();
+    expect(xl.setSettings).not.toHaveBeenCalled();
+  });
+
+  it('two decks of the same model at one coordinate are refused, neither changes', async () => {
+    const first = deckKey('xl1-a1', XL);
+    const second = deckKey('xl2-a1', XL);
+    const res = await slotWith([first, second]).assign({ ...edit, deck: 'xl' });
+    expect(res.status).toBe(404);
+    expect(first.setSettings).not.toHaveBeenCalled();
+    expect(second.setSettings).not.toHaveBeenCalled();
+  });
+
+  it('a deck that has no slot at the coordinate gets 404, even if another deck has one', async () => {
+    const mini = deckKey('mini-a1', MINI);
+    const res = await slotWith([mini]).assign({ ...edit, deck: 'xl' });
+    expect(res).toEqual({ status: 404, body: JSON.stringify({ error: 'no slot key at a1' }) });
+    expect(mini.setSettings).not.toHaveBeenCalled();
+  });
+
+  it('a deck the plugin cannot map never matches a named deck', async () => {
+    // A Stream Deck + has no deck model, so an XL edit must not land on its a1.
+    const plus = deckKey('plus-a1', PLUS);
+    const res = await slotWith([plus]).assign({ ...edit, deck: 'xl' });
+    expect(res).toEqual({ status: 404, body: JSON.stringify({ error: 'no slot key at a1' }) });
+    expect(plus.setSettings).not.toHaveBeenCalled();
+  });
+
+  it('the deck filter keeps the compare: the only XL slot holding something else answers 409', async () => {
+    const mini = deckKey('mini-a1', MINI);
+    const xl = deckKey('xl-a1', XL, { kind: 'app', app: '/A.app' });
+    const res = await slotWith([mini, xl]).assign({ ...edit, deck: 'xl' });
+    expect(res.status).toBe(409);
+    expect(mini.setSettings).not.toHaveBeenCalled();
+    expect(xl.setSettings).not.toHaveBeenCalled();
   });
 });
 

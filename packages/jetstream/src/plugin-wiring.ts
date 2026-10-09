@@ -1,4 +1,6 @@
-import { parseHookPayload } from '@pimmesz/jetstream-status';
+import { subscribe, unsubscribe } from 'node:diagnostics_channel';
+import type { Socket } from 'node:net';
+import { parseHookPayload, spoolProjection } from '@pimmesz/jetstream-status';
 
 /**
  * The plugin's start-up and event plumbing, kept out of plugin.ts (which boots the Stream Deck SDK
@@ -94,14 +96,16 @@ export interface SpoolReplayDeps extends HookPayloadDeps {
 /** Replay hook events spooled while no plugin was listening (takeSpool: fire order, at most an hour old). */
 export function replaySpool(payloads: unknown[], deps: SpoolReplayDeps): void {
   for (const raw of payloads) {
-    const fields = (raw ?? {}) as { session_id?: unknown; _at?: unknown; hook_event_name?: unknown };
+    const fields = (raw ?? {}) as { session_id?: unknown; _at?: unknown; hook_event_name?: unknown; background_tasks?: unknown };
     const { session_id: id, _at: at, hook_event_name: name } = fields;
     // The board may already hold a NEWER event for this session (it resumed while this one waited in the
     // spool); replaying the older one, a SessionEnd above all, would undo it.
     // Subagent events are exempt: they pair by agent id, so their order against the parent's does not matter.
     const isSubagent = name === 'SubagentStart' || name === 'SubagentStop';
+    // So is an empty background_tasks list: reduce() skips its stale status but still ends the agents it covers.
+    const hasEmptyList = name !== 'SessionEnd' && Array.isArray(fields.background_tasks) && fields.background_tasks.length === 0;
     const newest = typeof id === 'string' ? deps.firedAt(id) : undefined;
-    if (!isSubagent && newest !== undefined && typeof at === 'number' && at < newest) continue;
+    if (!isSubagent && !hasEmptyList && newest !== undefined && typeof at === 'number' && at < newest) continue;
     // Apply it as of when it fired, so elapsed times, the stall glyph and doorbell order are not reset.
     const now = deps.now();
     const firedAt = typeof at === 'number' ? Math.min(at, now) : now;
@@ -119,11 +123,12 @@ const MAX_HELD_HOOKS = 1024;
 const MAX_HELD_BYTES = 8 * 1024 * 1024;
 
 /** Holds live /hook payloads until `open()`, which plugin.ts calls right after the spool replay, so an
- * older spooled event never lands on top of a newer live one. Each held payload keeps its arrival time. */
+ * older spooled event never lands on top of a newer live one. Each held payload keeps its arrival time.
+ * `drain()` empties the hold without applying it, for a plugin that exits before the restore settles. */
 export function createHookGate(
   apply: (raw: unknown, at: number) => void,
   deps: { now?: () => number; onError?: (error: unknown) => void } = {},
-): { accept: (raw: unknown) => void; open: () => void } {
+): { accept: (raw: unknown) => void; open: () => void; drain: () => unknown[] } {
   const now = deps.now ?? Date.now;
   let held: Array<{ raw: unknown; at: number }> | undefined = [];
   let heldBytes = 0;
@@ -151,16 +156,63 @@ export function createHookGate(
         }
       }
     },
+    drain: () => {
+      const payloads = held?.map(({ raw }) => raw) ?? [];
+      if (held) held = [];
+      heldBytes = 0;
+      return payloads;
+    },
   };
 }
 
+/** On Stream Deck's close, before the restore settles: the hooks the gate holds were already answered,
+ * so their hook processes did not spool them. Spool them here so the next instance replays them. */
+export function spoolHeldHooks(gate: { drain: () => unknown[] }, append: (body: string) => void): void {
+  for (const raw of gate.drain()) {
+    if (typeof raw !== 'object' || raw === null) continue; // not a hook event: /hook takes any JSON
+    // Only the fields the spool keeps, so prompt text and tool input never wait on disk.
+    append(JSON.stringify(spoolProjection(raw as Record<string, unknown>)));
+  }
+}
+
 /** Write the debounced board checkpoint on every way out. Stream Deck often stops the plugin by closing
- * its socket, and the process then exits on its own with no signal; 'exit' still fires (synchronous code
- * only, which `flush` is). A signal listener replaces Node's default exit, so those exit explicitly. */
+ * its socket, and the plugin then exits itself with no signal (onStreamDeckClose); 'exit' still fires
+ * (synchronous code only, which `flush` is). A signal listener replaces Node's default exit, so those
+ * exit explicitly. */
 export function flushOnExit(
   flush: () => void,
   proc: { once: (event: string, listener: () => void) => unknown; exit: (code: number) => void } = process,
 ): void {
   proc.once('exit', flush);
   for (const signal of ['SIGTERM', 'SIGINT']) proc.once(signal, () => proc.exit(0));
+}
+
+/** Call `onClose` when the plugin's socket to Stream Deck closes. The SDK (3.0.1) neither reports that nor
+ * reconnects, and keeps the socket private, so find it through Node's record of new client sockets: the one
+ * connected to the `-port` Stream Deck passed us. Call before streamDeck.connect(). Returns an unsubscribe. */
+export function onStreamDeckClose(argv: readonly string[], onClose: () => void): () => void {
+  const at = argv.indexOf('-port');
+  const port = at === -1 ? NaN : Number(argv[at + 1]);
+  if (!Number.isInteger(port)) return () => {}; // not launched by Stream Deck
+  const watch = (message: unknown): void => {
+    const { socket } = message as { socket: Socket };
+    socket.once('connect', () => {
+      if (socket.remotePort === port) socket.once('close', onClose);
+    });
+  };
+  subscribe('net.client.socket', watch);
+  return () => unsubscribe('net.client.socket', watch);
+}
+
+/** Exit when Stream Deck closes the plugin's socket, so a held /permission does not keep the hook port for up
+ * to 90 s. Spool what the gate holds first: a close during the restore would otherwise lose those live hooks. */
+export function exitOnStreamDeckClose(
+  argv: readonly string[],
+  deps: { gate: { drain: () => unknown[] }; append: (body: string) => void; log: () => void; exit: (code: number) => void },
+): () => void {
+  return onStreamDeckClose(argv, () => {
+    deps.log();
+    spoolHeldHooks(deps.gate, deps.append);
+    deps.exit(0);
+  });
 }

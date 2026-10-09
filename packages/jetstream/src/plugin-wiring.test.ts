@@ -1,13 +1,20 @@
-import { EventEmitter } from 'node:events';
-import { initialState, reduce, type HookEvent } from '@pimmesz/jetstream-status';
+import { channel } from 'node:diagnostics_channel';
+import { EventEmitter, once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { connect, createServer, type AddressInfo, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { appendSpool, initialState, reduce, takeSpool, type HookEvent } from '@pimmesz/jetstream-status';
 import { describe, it, expect, vi } from 'vitest';
 import {
   bindWithRetry,
   coalesce,
   createHookGate,
   createTokenSource,
+  exitOnStreamDeckClose,
   flushOnExit,
   handleHookPayload,
+  onStreamDeckClose,
   replaySpool,
 } from './plugin-wiring';
 
@@ -144,6 +151,16 @@ describe('replaySpool', () => {
     expect(replayed(d)).toEqual(['SubagentStart', 'SubagentStop']);
   });
 
+  it('passes a stale Stop with an empty background_tasks list to the board, never a stale SessionEnd', () => {
+    const d = deps({ s: NOW - 1_000 });
+    replaySpool(
+      [ev('Stop', NOW - 5_000, { background_tasks: [] }), ev('Stop', NOW - 4_000), ev('SessionEnd', NOW - 3_000, { background_tasks: [] })],
+      d,
+    );
+    expect(replayed(d)).toEqual(['Stop']);
+    expect(d.forgetSession).not.toHaveBeenCalled();
+  });
+
   it('applies each event as of when it fired, never later than now', () => {
     const d = deps();
     replaySpool([ev('UserPromptSubmit', NOW - 30 * 60_000), ev('Stop', NOW + 60_000)], d);
@@ -231,6 +248,32 @@ describe('createHookGate', () => {
     gate.open();
     expect(apply).toHaveBeenCalledTimes(2);
     expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('drain() returns the held payloads in arrival order and empties the hold without applying them', () => {
+    const apply = vi.fn();
+    const gate = createHookGate(apply);
+    gate.accept('a');
+    gate.accept('b');
+    expect(gate.drain()).toEqual(['a', 'b']);
+    expect(gate.drain()).toEqual([]);
+    gate.open();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('drain() frees the byte budget, keeps holding, and leaves an open gate open', () => {
+    const apply = vi.fn();
+    const gate = createHookGate(apply);
+    const big = { pad: 'x'.repeat(256 * 1024) };
+    for (let i = 0; i < 40; i++) gate.accept(big); // past the 8 MiB cap
+    gate.drain();
+    gate.accept(big);
+    expect(apply).not.toHaveBeenCalled();
+    expect(gate.drain()).toEqual([big]);
+    gate.open();
+    expect(gate.drain()).toEqual([]);
+    gate.accept('live');
+    expect(apply.mock.calls).toEqual([['live', expect.any(Number)]]);
   });
 });
 
@@ -320,6 +363,30 @@ describe('restart ordering: the spool replay runs before the live events held du
     replaySpool([ev('Stop', T - 5_000, { background_tasks: [] })], { ...deps, firedAt: (id) => state.sessions[id]?.firedAt, onError: vi.fn() });
     expect(state.sessions.s?.inflight).toBeUndefined();
   });
+
+  it('a stale Stop a later poll replays still ends the agents that started before it', () => {
+    let state = initialState();
+    let clock = T - 1_000;
+    const deps = {
+      now: () => clock,
+      notePid: vi.fn(),
+      forgetSession: vi.fn(),
+      dispatch: (event: HookEvent) => {
+        state = reduce(state, event);
+      },
+    };
+    const gate = createHookGate((raw, at) => handleHookPayload(raw, { ...deps, now: () => at }), { now: () => clock });
+    gate.open();
+    gate.accept(ev('UserPromptSubmit', T - 1_000)); // the next turn, live
+    clock = T;
+    // Both were refused before the bind and a later poll replays them; the Stop is older than the prompt.
+    replaySpool(
+      [ev('SubagentStart', T - 9_000, { agent_id: 'teammate' }), ev('Stop', T - 5_000, { background_tasks: [] })],
+      { ...deps, firedAt: (id) => state.sessions[id]?.firedAt, onError: vi.fn() },
+    );
+    expect(state.sessions.s?.status).toBe('working');
+    expect(state.sessions.s?.inflight).toBeUndefined();
+  });
 });
 
 describe('flushOnExit', () => {
@@ -332,5 +399,93 @@ describe('flushOnExit', () => {
     expect(flush).not.toHaveBeenCalled(); // the signal only exits; the 'exit' event is what flushes
     proc.emit('exit', 0);
     expect(flush).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('onStreamDeckClose', () => {
+  /** A loopback server that hands each accepted peer to `onPeer`. */
+  const listen = async (onPeer: (peer: Socket) => void) => {
+    const server = createServer(onPeer);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { server, port: (server.address() as AddressInfo).port };
+  };
+  const argvFor = (port: number) => ['node', 'plugin.js', '-port', String(port), '-pluginUUID', 'x'];
+
+  it('calls back once when the socket to the Stream Deck port closes', async () => {
+    const deck = await listen((peer) => peer.destroy());
+    const onClose = vi.fn();
+    const stop = onStreamDeckClose(argvFor(deck.port), onClose);
+    try {
+      const client = connect(deck.port, '127.0.0.1');
+      await once(client, 'close');
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      stop();
+      deck.server.close();
+    }
+  });
+
+  it('ignores a client socket to any other port', async () => {
+    const other = await listen((peer) => peer.destroy());
+    const deck = await listen((peer) => peer.destroy());
+    const onClose = vi.fn();
+    const stop = onStreamDeckClose(argvFor(deck.port), onClose);
+    try {
+      await once(connect(other.port, '127.0.0.1'), 'close');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(onClose).not.toHaveBeenCalled();
+      await once(connect(deck.port, '127.0.0.1'), 'close'); // the watcher was live all along
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      stop();
+      other.server.close();
+      deck.server.close();
+    }
+  });
+
+  it('a close during the restore spools the hooks the gate held, cut to the spool fields, then exits', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jetstream-held-'));
+    const spool = join(dir, 'hook-spool.jsonl');
+    const apply = vi.fn();
+    const gate = createHookGate(apply);
+    const T = Date.now();
+    gate.accept({ hook_event_name: 'Notification', session_id: 's', cwd: '/p', message: 'Allow rm -rf?', _pid: 7, _at: T - 1_000 });
+    gate.accept(null); // any JSON body reaches the gate
+    gate.accept({ hook_event_name: 'Stop', session_id: 's', cwd: '/p', last_assistant_message: 'private', _pid: 7, _at: T - 3_000 });
+    const deck = await listen((peer) => peer.destroy());
+    // A real exit ends the process, so read the spool at the moment exit is called.
+    let spooledAtExit: unknown[] = [];
+    const exit = vi.fn(() => {
+      spooledAtExit = takeSpool(spool);
+    });
+    const log = vi.fn();
+    const stop = exitOnStreamDeckClose(argvFor(deck.port), { gate, append: (body) => appendSpool(body, spool), log, exit });
+    try {
+      await once(connect(deck.port, '127.0.0.1'), 'close');
+      expect(exit).toHaveBeenCalledWith(0);
+      expect(log).toHaveBeenCalledTimes(1);
+      // The next instance replays them in the order they fired, with no prompt or message text on disk.
+      expect(spooledAtExit).toEqual([
+        { hook_event_name: 'Stop', session_id: 's', cwd: '/p', _pid: 7, _at: T - 3_000 },
+        { hook_event_name: 'Notification', session_id: 's', cwd: '/p', _pid: 7, _at: T - 1_000 },
+      ]);
+      expect(apply).not.toHaveBeenCalled();
+    } finally {
+      stop();
+      deck.server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does nothing when the process was not given a usable -port', () => {
+    const sockets = channel('net.client.socket');
+    const hadSubscribers = sockets.hasSubscribers;
+    const stopMissing = onStreamDeckClose(['node', 'plugin.js'], vi.fn());
+    const stopJunk = onStreamDeckClose(['node', 'plugin.js', '-port', 'abc'], vi.fn());
+    expect(sockets.hasSubscribers).toBe(hadSubscribers);
+    expect(() => {
+      stopMissing();
+      stopJunk();
+    }).not.toThrow();
   });
 });

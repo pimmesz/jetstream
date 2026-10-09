@@ -32,6 +32,7 @@ import { projectFace } from './project-face';
 import { shouldInterrupt } from './project';
 import { nudgeOutputVolume, toggleOutputMute } from '../output-volume';
 import { openInTerminal } from '../exec-terminal';
+import { deckForDeviceType } from '../profile';
 
 // FOLDED structural keys + volume keys: rendered + handled here so `jetstream chat` retargets them LIVE
 // (POST /slot) instead of re-importing a profile. 'build' is a static stamp; 'stopall' (gated) stops
@@ -476,45 +477,58 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   async assign(raw: unknown): Promise<{ status: number; body: string }> {
     const cmd = parseSlotCommand(raw);
     if (!cmd) return { status: 400, body: JSON.stringify({ error: 'bad slot command' }) };
+    // The same coordinate exists on every connected deck; chat names the deck model its plan is for.
+    const deck = (raw as { deck?: unknown } | null)?.deck;
+    const matches: KeyAction<SlotSettings>[] = [];
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
       const c = visible.coordinates;
       if (!c || c.column !== cmd.column || c.row !== cmd.row) continue;
-      // Compare-and-swap: chat says what it expects at this key. Anything else (the deck switched page,
-      // another edit landed) is refused before a single setting changes. The compare and the write run
-      // queued per key, so two overlapping requests cannot both pass the compare.
-      const expected = (raw as { expect?: unknown } | null)?.expect;
-      const seq = await this.queued(visible.id, async () => {
-        if (expected !== undefined && !sameSlot(await this.settingsOf(visible), expected)) return undefined;
-        const next = (this.assignSeq.get(visible.id) ?? 0) + 1;
-        this.assignSeq.set(visible.id, next);
-        await visible.setSettings(cmd.settings); // full replace
-        this.heldSettings.set(visible.id, cmd.settings);
-        return next;
-      });
-      if (seq === undefined) {
-        return { status: 409, body: JSON.stringify({ error: `${cmd.coord} holds a different key than expected` }) };
-      }
-      this.syncProjectRegistry(visible.id, cmd.settings); // setSettings won't re-fire onDidReceiveSettings
-      // Re-resolve this key's icon instead of trusting the cache. A cached MISS is otherwise
-      // permanent for the life of the plugin — an app that wasn't installed yet, or an extraction
-      // that lost a race at startup, would leave the key on its text face with no way to recover
-      // through the UI. Retargeting a key is an explicit user action and the one moment we know
-      // the answer might have changed, so it is exactly where the cache should be dropped.
-      forgetIcon(cmd.settings.app);
-      forgetIcon(cmd.settings.icon);
-      await this.render(visible, cmd.settings);
-      // A newer edit (chat's rollback after this one timed out) landed while this render waited on an
-      // icon, so this paint is stale: repaint from the settings the key really holds now.
-      // Repeat until no edit landed during the repaint itself, so the last paint is always the newest.
-      for (let seen = seq; this.assignSeq.get(visible.id) !== seen; ) {
-        seen = this.assignSeq.get(visible.id) ?? seen;
-        await this.repaint(visible);
-      }
-      if (cmd.settings.kind === 'usage') void this.refreshUsage();
-      return { status: 200, body: JSON.stringify({ ok: true, coord: cmd.coord }) };
+      if (deck !== undefined && deckForDeviceType(visible.device.type)?.key !== deck) continue;
+      matches.push(visible);
     }
-    return { status: 404, body: JSON.stringify({ error: `no slot key at ${cmd.coord}` }) };
+    if (matches.length === 0) {
+      return { status: 404, body: JSON.stringify({ error: `no slot key at ${cmd.coord}` }) };
+    }
+    // Guessing could edit a deck the user never previewed. 404 (not 409) because every released chat
+    // reads 404 as "nothing changed" and offers the restart write into the planned profile.
+    if (matches.length > 1) {
+      return { status: 404, body: JSON.stringify({ error: `${cmd.coord} is a slot key on more than one Stream Deck` }) };
+    }
+    const visible = matches[0]!;
+    // Compare-and-swap: chat says what it expects at this key. Anything else (the deck switched page,
+    // another edit landed) is refused before a single setting changes. The compare and the write run
+    // queued per key, so two overlapping requests cannot both pass the compare.
+    const expected = (raw as { expect?: unknown } | null)?.expect;
+    const seq = await this.queued(visible.id, async () => {
+      if (expected !== undefined && !sameSlot(await this.settingsOf(visible), expected)) return undefined;
+      const next = (this.assignSeq.get(visible.id) ?? 0) + 1;
+      this.assignSeq.set(visible.id, next);
+      await visible.setSettings(cmd.settings); // full replace
+      this.heldSettings.set(visible.id, cmd.settings);
+      return next;
+    });
+    if (seq === undefined) {
+      return { status: 409, body: JSON.stringify({ error: `${cmd.coord} holds a different key than expected` }) };
+    }
+    this.syncProjectRegistry(visible.id, cmd.settings); // setSettings won't re-fire onDidReceiveSettings
+    // Re-resolve this key's icon instead of trusting the cache. A cached MISS is otherwise
+    // permanent for the life of the plugin: an app that wasn't installed yet, or an extraction
+    // that lost a race at startup, would leave the key on its text face with no way to recover
+    // through the UI. Retargeting a key is an explicit user action and the one moment we know
+    // the answer might have changed, so it is exactly where the cache should be dropped.
+    forgetIcon(cmd.settings.app);
+    forgetIcon(cmd.settings.icon);
+    await this.render(visible, cmd.settings);
+    // A newer edit (chat's rollback after this one timed out) landed while this render waited on an
+    // icon, so this paint is stale: repaint from the settings the key really holds now.
+    // Repeat until no edit landed during the repaint itself, so the last paint is always the newest.
+    for (let seen = seq; this.assignSeq.get(visible.id) !== seen; ) {
+      seen = this.assignSeq.get(visible.id) ?? seen;
+      await this.repaint(visible);
+    }
+    if (cmd.settings.kind === 'usage') void this.refreshUsage();
+    return { status: 200, body: JSON.stringify({ ok: true, coord: cmd.coord }) };
   }
 
   /** Key id → tail of its queue of compare-and-write steps. */

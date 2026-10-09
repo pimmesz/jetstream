@@ -10,6 +10,7 @@ import {
   removeFromFleet,
   scanForGitRepos,
   writeFleetFile,
+  writeFleetFileAsync,
   type FleetDeps,
   type FleetOutbound,
   mergeFleet,
@@ -286,6 +287,24 @@ describe('handleFleetMessage', () => {
     expect((replies[0] as { message: string }).message).toContain('EROFS');
   });
 
+  // The plugin's writer is async: a lock it could not get arrives as a rejection, not a throw.
+  it('an async write that rejects replies fleet:error and does not seed', async () => {
+    const seed = vi.fn();
+    const replies: FleetOutbound[] = [];
+    const deps: FleetDeps = {
+      read: () => ({ projects: [], settings: {} }),
+      write: async () => {
+        throw new Error('another Jetstream writer is holding projects.json.lock; try again');
+      },
+      seed,
+      reply: (msg) => void replies.push(msg),
+      scan: vi.fn(() => []),
+    };
+    await handleFleetMessage({ fleet: 'add', path: '/r/falcon' }, deps);
+    expect(seed).not.toHaveBeenCalled();
+    expect(replies).toEqual([{ fleet: 'error', message: expect.stringMatching(/try again/) }]);
+  });
+
   it('malformed payloads never throw and never write', async () => {
     const { deps } = makeDeps([]);
     for (const bad of [null, undefined, 'x', 42, {}, { fleet: 'nope' }, { fleet: 'add' }, { fleet: 'remove' }]) {
@@ -530,4 +549,75 @@ describe('fleet writer: ids, lock and the saved snapshot', () => {
     await handleFleetMessage({ fleet: 'add', path: '/r/a' }, deps);
     expect(seeded.at(-1)?.map((x) => x.id)).toEqual(['b', 'a']);
   });
+
+  it('waits for an async write before seeding, so the board gets the SAVED fleet', async () => {
+    const seeded: ProjectConfig[][] = [];
+    const replies: FleetOutbound[] = [];
+    const deps: FleetDeps = {
+      read: () => ({ projects: [], settings: {} }),
+      write: async () => ({ projects: [p('b', '/r/b'), p('a', '/r/a')], settings: {} }),
+      seed: (projects) => void seeded.push(projects),
+      reply: (msg) => void replies.push(msg),
+      scan: () => [],
+    };
+    await handleFleetMessage({ fleet: 'add', path: '/r/a' }, deps);
+    expect(seeded.map((s) => s.map((x) => x.id))).toEqual([['b', 'a']]);
+    expect(replies).toEqual([{ fleet: 'projects', projects: [p('b', '/r/b'), p('a', '/r/a')] }]);
+  });
+
+  it('the async writer lets other work run while it waits, and writes once the holder lets go', async () => {
+    const path = join(makeTmp(), 'projects.json');
+    writeFleetFile(path, [p('a', '/r/a')]);
+    const base = readConfigFile(path);
+    writeFileSync(`${path}.lock`, 'live writer');
+    setTimeout(() => rmSync(`${path}.lock`, { force: true }), 150); // the other writer finishes
+    let ticks = 0;
+    const ticker = setInterval(() => (ticks += 1), 10); // stands in for the plugin's keys and hooks
+    try {
+      const saved = await writeFleetFileAsync(path, [p('a', '/r/a'), p('b', '/r/b')], {}, new Date(), base, 1_000);
+      expect(saved.projects.map((x) => x.id)).toEqual(['a', 'b']);
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(ticks).toBeGreaterThan(0);
+    expect(readConfigFile(path).projects.map((x) => x.id)).toEqual(['a', 'b']);
+    expect(existsSync(`${path}.lock`)).toBe(false); // released after the write
+  });
+
+  it('the async writer releases the lock when the write under it fails', async () => {
+    const path = join(makeTmp(), 'projects.json');
+    writeFleetFile(path, [p('a', '/r/a')]);
+    const base = readConfigFile(path);
+    writeFileSync(path, '{ not json'); // the file turns unreadable after the editor read it
+    await expect(writeFleetFileAsync(path, [], {}, new Date(), base)).rejects.toThrow(/became unreadable/);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+  });
+
+  // A plugin-first user has no config dir yet, and the lock file is created before projects.json.
+  it('the async writer creates the config dir on a first save', async () => {
+    const path = join(makeTmp(), 'jetstream', 'projects.json');
+    await writeFleetFileAsync(path, [p('a', '/r/a')], {}, new Date());
+    expect(readConfigFile(path).projects.map((x) => x.id)).toEqual(['a']);
+  });
+
+  it.each([0, 9_000])(
+    'the async writer also gives up after its budget on a lock %i ms old, changing nothing',
+    async (ageMs) => {
+      const path = join(makeTmp(), 'projects.json');
+      writeFleetFile(path, [p('a', '/r/a')]);
+      const before = readFileSync(path, 'utf8');
+      writeFileSync(`${path}.lock`, 'live writer');
+      const at = (Date.now() - ageMs) / 1000;
+      utimesSync(`${path}.lock`, at, at);
+      const started = Date.now();
+      await expect(
+        writeFleetFileAsync(path, [p('b', '/r/b')], {}, new Date(), undefined, 100),
+      ).rejects.toThrow(/another Jetstream writer is holding .*; try again/);
+      const waited = Date.now() - started;
+      expect(waited).toBeGreaterThanOrEqual(100);
+      expect(waited).toBeLessThan(2_000);
+      expect(readFileSync(`${path}.lock`, 'utf8')).toBe('live writer');
+      expect(readFileSync(path, 'utf8')).toBe(before);
+    },
+  );
 });

@@ -195,13 +195,20 @@ export const macStreamDeck: AppControl = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-export type InPlaceResult = { ok: true; backup: string; removed: string[] } | { ok: false; reason: string };
+export type InPlaceResult =
+  | { ok: true; backup: string; removed: string[] }
+  | {
+      ok: false;
+      reason: string;
+      /** The keys `changedSincePlan` named, when that is why nothing was written. */
+      changed?: string[];
+    };
 
 /**
- * Write placements into a profile in place: back up, quit Stream Deck (it rewrites its profiles when
- * it quits, so a write while it runs would be lost), re-read the page from disk, overlay, write,
- * relaunch. The app is relaunched on every path once it was quit, so a failure never leaves the deck
- * dark.
+ * Write placements into a profile in place: quit Stream Deck (it rewrites its profiles when it quits,
+ * so a write while it runs would be lost), re-read the page from disk, check nothing planned changed,
+ * back up, overlay, write, relaunch. The app is relaunched on every path once it was quit, so a failure
+ * never leaves the deck dark.
  */
 export async function writeInPlace(
   profileDir: string,
@@ -217,6 +224,9 @@ export async function writeInPlace(
     /** The page the edits were planned against. Without it the page current after the quit is used,
      * which may not be the one the user previewed if they switched pages meanwhile. */
     pageId?: string;
+    /** Given the page as re-read after the quit (inside the lock), the keys that changed since the plan
+     * was made. If it names any, nothing is written. Required, so no caller can drop the check. */
+    changedSincePlan: (actions: Record<string, StoredAction>) => string[];
   },
 ): Promise<InPlaceResult> {
   const app = options.app ?? macStreamDeck;
@@ -238,11 +248,17 @@ export async function writeInPlace(
         await app.sleep(250);
       }
     }
-    // Back up and read AFTER the quit: the app saves its own pending edits on the way out, and the
-    // backup must hold them.
-    const backup = backupProfile(profileDir, options.backupRoot);
+    // Read and back up AFTER the quit: the app saves its own pending edits on the way out, and the
+    // compare and the backup must both see them.
     const page = readCurrentPage(profileDir, options.pageId);
     if (!page) return { ok: false, reason: 'the page you edited is gone or changed shape while Stream Deck quit' };
+    // Only now does disk hold every edit Stream Deck kept in memory, so this is where a change shows.
+    // Checked before the backup, so a write that is called off never pushes out one of the kept backups.
+    const changed = options.changedSincePlan(page.actions);
+    if (changed.length > 0) {
+      return { ok: false, reason: `these keys changed since the plan was made: ${changed.join(', ')}`, changed };
+    }
+    const backup = backupProfile(profileDir, options.backupRoot);
     writePageActions(page.manifestPath, overlayActions(page.actions, placements, options));
     return { ok: true, backup, removed: options.whileQuit?.() ?? [] };
   } catch (error) {

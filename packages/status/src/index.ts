@@ -208,11 +208,21 @@ export interface InflightAgent {
   firedAt?: number;
 }
 
+/** When something happened: applied time, plus the hook's own fire stamp when it sent one. */
+type Stamp = { at: number; firedAt?: number };
+
 /** Whether an in-flight agent started after `event` fired. Compares the hooks' fire stamps when both have
  * one, since a live Start is applied when it arrives and a replayed event when it fired. Pure. */
-function startedAfter(agent: InflightAgent, event: HookEvent): boolean {
+function startedAfter(agent: Stamp, event: Stamp): boolean {
   if (agent.firedAt !== undefined && event.firedAt !== undefined) return agent.firedAt > event.firedAt;
   return agent.at > event.at;
+}
+
+/** The session's newest empty background_tasks list after `event`: an older list arriving late keeps the newer one. */
+function newestEmptyList(prev: Stamp | undefined, event: HookEvent): Stamp | undefined {
+  if (event.backgroundTasks !== 0) return prev;
+  const stamp = { at: event.at, ...(event.firedAt !== undefined ? { firedAt: event.firedAt } : {}) };
+  return prev && startedAfter(prev, stamp) ? prev : stamp;
 }
 
 /** How long a subagent entry keeps a session 'working' without its SubagentStop arriving.
@@ -239,6 +249,9 @@ interface SessionState {
    * processes with no ordering guarantee): the late Start cancels against its tombstone instead
    * of planting an entry whose Stop already came and went. Same TTL hygiene as inflight. */
   stopped?: InflightAgent[];
+  /** When the newest empty background_tasks list fired: a SubagentStart that fired before it arrived
+   * late, and that agent had already finished. In-memory only, like inflight. */
+  emptyList?: Stamp;
 }
 
 export interface StatusState {
@@ -331,24 +344,30 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
     // An empty background_tasks list is Claude saying nothing was in flight for the parent when it fired:
     // drop every entry that started before then, including teammates and agents whose SubagentStop was lost.
     // One that started later (a replayed event can be seconds late) is newer news and stays.
-    let inflight = (prev?.inflight ?? []).filter((a) => fresh(a) && (event.backgroundTasks !== 0 || startedAfter(a, event)));
+    const live = (prev?.inflight ?? []).filter(fresh);
+    let inflight = live.filter((a) => event.backgroundTasks !== 0 || startedAfter(a, event));
     let stopped = (prev?.stopped ?? []).filter(fresh);
+    const emptyList = newestEmptyList(prev?.emptyList, event);
     if (event.agentId) {
       const id = event.agentId;
       if (event.event === 'SubagentStart') {
+        const started = { id, at: event.at, ...(event.firedAt !== undefined ? { firedAt: event.firedAt } : {}) };
+        // Fired before an empty list we already applied (a late POST or a replay): that agent had finished by then.
+        const isOver = emptyList !== undefined && !startedAfter(started, emptyList);
         if (stopped.some((a) => a.id === id)) {
           // This agent's Stop was delivered FIRST (unordered POSTs) — cancel the pair instead
           // of planting an entry whose Stop already came and went.
           stopped = stopped.filter((a) => a.id !== id);
-        } else {
+        } else if (!isOver) {
           // A duplicate Start refreshes its timestamp instead of double-counting. Cap on push (like
           // `stopped`/`ended`) so an unauthenticated /hook flood of unique agent ids can't grow one
           // session's inflight list without bound.
-          const started = { id, at: event.at, ...(event.firedAt !== undefined ? { firedAt: event.firedAt } : {}) };
           inflight = [...inflight.filter((a) => a.id !== id), started].slice(-64);
         }
       } else {
-        const had = inflight.some((a) => a.id === id);
+        // Look before this event's own empty list, which drops the agent too: otherwise its Stop
+        // reads as unmatched and the tombstone cancels a resumed agent's Start under the same id.
+        const had = live.some((a) => a.id === id);
         inflight = inflight.filter((a) => a.id !== id);
         // An unmatched Stop tombstones its id so a late-arriving Start cancels against it
         // (bounded — a session never legitimately accumulates many of these).
@@ -366,6 +385,7 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
       ...(prev?.firedAt !== undefined ? { firedAt: prev.firedAt } : {}), // keep the fire-order guard armed
       ...(inflight.length ? { inflight } : {}),
       ...(stopped.length ? { stopped } : {}),
+      ...(emptyList ? { emptyList } : {}),
     };
     capSessions(next); // untrusted key → bound the map on the subagent path too (mirrors the base path)
     return { sessions: next, ...keepEnded };
@@ -380,6 +400,14 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   // A status event that FIRED before the one already applied arrived late (separate hook processes
   // race to the loopback): a late PostToolUse must not paint 'working' over a later needs-you.
   if (status !== 'remove' && prev?.firedAt !== undefined && event.firedAt !== undefined && event.firedAt < prev.firedAt) {
+    // Too late for the status, but an empty background_tasks list still ends every agent that started before it.
+    if (event.backgroundTasks === 0) {
+      const late: SessionState = { ...prev, emptyList: newestEmptyList(prev.emptyList, event) };
+      const kept = (prev.inflight ?? []).filter((a) => startedAfter(a, event));
+      if (kept.length) late.inflight = kept;
+      else delete late.inflight;
+      next[event.sessionId] = late;
+    }
     return { sessions: next, ...keepEnded };
   }
   if (status === 'remove') {
@@ -408,6 +436,8 @@ export function reduce(state: StatusState, event: HookEvent): StatusState {
   const carried = (prev?.inflight ?? []).filter((a) => event.backgroundTasks !== 0 || startedAfter(a, event));
   if (carried.length) session.inflight = carried;
   if (prev?.stopped?.length) session.stopped = prev.stopped;
+  const emptyList = newestEmptyList(prev?.emptyList, event);
+  if (emptyList) session.emptyList = emptyList;
   next[event.sessionId] = session;
   capSessions(next); // untrusted key → bound the map (and therefore the persisted state)
   return { sessions: next, ...keepEnded };
@@ -614,5 +644,14 @@ export type {
 } from './permission';
 export { parsePermissionRequest, permissionDecisionJson, summarizeTool } from './permission';
 export { STOP_FLAG_TTL_MS, stopFlagDir, stopFlagPath, takeStopFlag } from './stop-flag';
-export { MAC_HEADER, NONCE_HEADER, macMatches, newNonce, permissionMac } from './permission-client';
-export { appendSpool, spoolPath, takeSpool } from './spool';
+export {
+  CHALLENGE_HEADER,
+  MAC_HEADER,
+  NONCE_HEADER,
+  challengeMac,
+  isChallenge,
+  macMatches,
+  newNonce,
+  permissionMac,
+} from './permission-client';
+export { appendSpool, spoolPath, spoolProjection, takeSpool } from './spool';

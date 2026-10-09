@@ -97,12 +97,14 @@ export function readToken(paths: string | string[] = listenerTokenPaths()): stri
  *   - It does NOT stop a process running AS you: it can read the file too.
  *   - Port squatting: the port is fixed and unprivileged, so another local user can bind
  *     127.0.0.1:41321 BEFORE Stream Deck starts. Current clients never hand it the token: /hook is
- *     served without one, and /permission and /slot send a nonce and an HMAC instead
- *     (permission-client.ts in the status package), so a squatter can neither learn the token nor
- *     forge a permission answer (a /slot answer is not signed, so it can still tell chat an edit
- *     applied). It still reads what is sent to it, and a hook or CLI older than signing still sends
- *     the token. Squatting is loud: the plugin retries the bind for ~90s and then logs that it
- *     could not listen.
+ *     served without one, and /permission and /slot fetch a single-use challenge from /challenge,
+ *     then send a nonce and an HMAC over it (permission-client.ts in the status package). So a
+ *     squatter can neither learn the token nor forge an answer (both answers are signed), and a
+ *     request it captured carries a challenge the real plugin never issued, so it cannot be
+ *     replayed there. It still reads what is sent to it. Older clients keep older gaps: a request
+ *     in the 4.1.0 format (no challenge) can be replayed once within 2 minutes and its /slot
+ *     answer is unsigned, and a hook or CLI older than signing still sends the token. Squatting is
+ *     loud: the plugin retries the bind for ~90s and then logs that it could not listen.
  *   - What it DOES stop is the easy case this was written for: any other local process that
  *     merely connects to an already-running listener and drives your board.
  * Browser-borne requests are blocked separately by the Origin/Referer guard in server.ts.

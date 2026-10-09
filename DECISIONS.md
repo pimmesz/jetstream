@@ -5,6 +5,285 @@ Newest first. A decision here is settled — re-open it only against its stated 
 
 ---
 
+## 2026-10-08 (later): deferred fixes built (4.1.1)
+
+The maintainer asked for eight items that the review fixes below left as residuals to be built,
+with every recommended default. They ship as one `fix:` commit (CI bumps 4.1.0 to 4.1.1):
+`/challenge` and the two new `~/.jetstream` files are internal, and the npm package exposes only a
+bin. Each item names the earlier line it supersedes; the older text stays as history.
+
+**Restart write compares against disk** (supersedes the 2026-10-08 residual "After a failed live
+apply, the restart fallback still writes by coordinate without comparing against disk"):
+
+- After the quit and inside `profile-write.lock`, the in-place write compares only the coordinates
+  it writes (the user's edits plus folded legacy migrations) against the page Stream Deck saved on
+  the way out (`changedSincePlan` in chat-apply.ts, passed to `writeInPlace` by cli.ts).
+- A key passes when disk holds what the plan saw there (chat's pending live edits laid over it) or
+  what this write puts there, each as sent or, for settings `/slot` accepts, in the plugin's stored
+  form. That accepts the four forms a failed live apply leaves behind: `{}` back as
+  `{kind:'empty'}`, a styled spacer back without its colour, an unconfirmed undo still holding the
+  placement, and a saved pending edit. Settings `/slot` refuses (a folded legacy url without a
+  scheme) never went live, so they compare only as sent. Slots compare with `sameSlot`; other keys
+  compare UUID and Settings deeply and ignore the rest.
+- **Decided:** any changed key aborts the whole write, legacy migrations included, and nothing is
+  written. A plan is all or nothing, like the live path. Chat names the keys and asks for the request
+  again; it never re-plans on its own, because the model's placements encode the old board.
+- The compare also covers restart writes that were never tried live (an all-restart plan, or a deck
+  edit made after the preview).
+
+**Pending live edits outlive the chat** (supersedes the 2026-10-08 residual "Pending live edits live
+inside one `jetstream chat` process" and the 2026-10-06 residual "Chat forgets its pending live
+edits when you switch page mid-chat"):
+
+- Pending edits live in `~/.jetstream/chat-pending.json` (`{ version: 1, edits: [...] }`, written
+  atomically, 0600), keyed by profile directory and page. Chat reads them at start and after every
+  real re-read, and writes them whenever it records or forgets an edit.
+- **Decided:** each edit stores the pid of the chat that made the latest live edit to that key, and
+  never expires while that chat runs (`process.kill(pid, 0)`), since Stream Deck can hold an edit
+  unsaved for longer than any TTL. A 1 h TTL, counted from that latest edit, applies only once that
+  chat is gone, and only clears out edits a crashed or abandoned chat left behind; disk evidence
+  stays the forget rule. This replaces an own-edit exemption kept in memory, which any other chat's
+  save ignored. The file sits with the other disposable runtime state, not in `~/.config/jetstream`
+  (user config, token, backups).
+- A key laid over from the store is never trusted as unchanged. Chat sends it again with `expect`
+  set to the pending settings: if Stream Deck kept the edit that is an idempotent 200, and if it lost
+  the edit the plugin answers 409 in the destinations phase, before any key is cleared. On the
+  restart route the key is written too, so the compare sees the mismatch on disk and calls the write
+  off (`reloaded`). The preview shows such a key as e.g. `a2: x.dev (was: x.dev)`, not "Already set".
+- After a 409 at a key with a stored edit, chat forgets exactly the edit its plan saw (matched by its
+  time and chat pid, not its settings), so an edit another chat stored there since the plan, even an
+  identical one, is kept. The next request plans against disk. A lost edit costs one false 409.
+- When a plan clears or replaces any key that holds something, every unchanged key it keeps is
+  confirmed first: live, each unchanged Jetstream slot is sent on its own, before any other key, with
+  `expect` set to what the plan saw, and a refusal stops the apply before any key changes; on the
+  restart route the disk compare covers every kept key, third-party keys included. A confirm rewrites
+  only what the key already held, so it is never undone. A move can therefore never lose its only
+  copy, whether its source is cleared or overwritten, after a lost edit, a partly expired store or a
+  key forgotten after a 409 caused by another page on screen.
+- "A wrong TTL only ever costs a false 409 or a false 'Already set', never a wrong write" holds
+  only because of these rules: without them, a crash-lost edit laid over a move's destination let
+  the move clear the source and report success, and asking again got "Already set" or the same 409
+  every time.
+- Otherwise the keep, overlay and forget rules are unchanged. Keying by page replaces "forget
+  everything on a page switch": overlays still never cross pages or profiles, and going back to a
+  page before Stream Deck saves now plans correctly.
+- **Decided:** the clears after a `restarted` or `reloaded` outcome stay per page. The quit saves
+  every page's held edits, so disk shows them and the disk rule forgets them when that page is next
+  read. Only edits Stream Deck lost before that restart remain, and those cost at most one false 409
+  before the 409 forgets them.
+- The forget rule runs only on a board that was really re-read. When a re-read finds no board, chat
+  keeps the previous board and lays the stored edits over it without forgetting any, so the turn's
+  own live edit is not lost and turned into a false 409.
+
+**The in-app fleet editor waits without blocking** (supersedes the 2026-10-08 "Fleet and npm" bullet
+"The in-app editor waits about 100 ms for the fleet lock" and the plugin half of the residual
+"`jetstream chat` and `init` wait for the fleet lock synchronously"):
+
+- The editor waits for `projects.json.lock` asynchronously (`writeFleetFileAsync`): its 25 ms pauses
+  yield to the event loop, so keys, `/hook` and `/permission` keep running. With a free lock the
+  take, replay, rename and release still run in one synchronous turn. The lock file protocol is
+  unchanged, so a 4.1.0 CLI and this plugin still wait for each other, and the CLI path is unchanged.
+- **Decided:** the same 3 s budget as `jetstream chat` and `init`. Waiting out a crashed writer's 10 s
+  stale lock would leave the inspector silent that long.
+- Inspector fleet messages run one at a time (`fleetQueue` in SettingsKey), so a message sent while
+  a save waits on the lock reads projects.json only after that save. Without the queue, a re-add
+  judged against the stale read was a no-op "duplicate" and the pending removal won. list and scan
+  queue too, so replies keep send order; the cost is that each queued message also waits out every
+  save queued ahead of it, up to 3 s each while the lock is held.
+
+**Shell-only config dirs reach the plugin** (supersedes the 2026-10-08 residual "A
+`CLAUDE_CONFIG_DIR` or `CODEX_HOME` set only in a shell is documented, not handled", and the README
+claim in "Docs and style" that the plugin does not see them):
+
+- The CLI records the shell's `CLAUDE_CONFIG_DIR` and `CODEX_HOME` in `~/.jetstream/shell-dirs.json`:
+  the npm front door on `install` and `update` (before the plugin is handed over or npm runs), the
+  plugin CLI on `chat`, `init`, `setup` and `hooks install`. The record mirrors the last recording
+  shell: exactly its usable keys, removed when it sets neither, rewritten only when it differs.
+- **Decided:** the plugin adopts the record into its own `process.env` at boot (the first statement
+  in plugin.ts), only for keys its env leaves empty, so `launchctl setenv` always wins. Every resolver
+  reads the env when called, so auto-wire, Fix, tool detail, the checklist, the hints and the Codex
+  gauge all switch with no other edit. Rejected: a resolver at each call site, where the next plain
+  `defaultSettingsPath()` brings the bug back. `doctor` stays read-only, as documented.
+- Only the CLI writes the file, from its own env, atomically and 0600; the listener, the inspector,
+  the hooks and chat's model output never do. The plugin refuses a symlink (`O_NOFOLLOW`), a
+  non-regular file (`O_NONBLOCK`, so a FIFO cannot hang boot), a file over 4 KB, one owned by another
+  uid, and one that is group- or world-writable, and any value that is not absolute, is over 1024
+  chars or holds control characters. Unknown keys are ignored, so a record cannot set `NODE_OPTIONS`
+  or `PATH`. Windows has no uid or mode check and no `O_NOFOLLOW`; the profile folder's ACL does that.
+- A writer can redirect which settings.json the plugin writes its own fixed hook JSON into, which
+  settings.json the checklist and hints read, and which sessions tree the Codex gauge reads. Adopted
+  values also reach the plugin's children (run keys, editors, discover, the Windows terminal
+  launcher), the same reach as the README's own `launchctl setenv`. Only a same-uid writer can do
+  any of this, and it can already edit `~/.claude/settings.json` or the shell profile, so there is
+  no new capability. `WIRE_VERSION` is unchanged.
+
+**Reducer edges** (status reducer and `replaySpool`):
+
+- An agent's own empty-list SubagentStop no longer tombstones its id, so a resumed agent that reuses
+  it is tracked again. Corrected trigger: no lost SubagentStop is needed, only a resumed agent
+  reusing its id within 30 min (that the id stays the same is inferred from the hook contract).
+- A SubagentStart that fired before the newest applied empty `background_tasks` list is not planted.
+  The cutoff (`emptyList`, in memory) only moves forward.
+- A Stop (or any event but SessionEnd) with an empty list that arrives after a newer event keeps the
+  newer status, `since` and `firedAt`, but still ends the agents that started before it.
+  `replaySpool` now passes such a stale event through; a stale SessionEnd is still skipped.
+- `emptyList` lands in the checkpoint, but `Board.restore` ignores it, so it is dropped on restart
+  like `inflight`. No hook, protocol or spool change.
+
+**The plugin exits when Stream Deck disconnects** (corrects the 2026-10-08 bullet "The checkpoint is
+flushed on process `exit`": a disconnected plugin did not always exit on its own):
+
+- SDK 3.0.1 reports no socket close, never reconnects and keeps the socket private, so a held
+  `/permission` (a ref'd 90 s timer) kept a disconnected plugin on the hook port, answering hooks
+  meant for the next instance. `onStreamDeckClose` (plugin-wiring.ts) finds the socket through Node's
+  built-in `net.client.socket` diagnostics channel by matching argv `-port`. plugin.ts subscribes
+  before `connect()` and exits on the close; the exit flush is now registered before `connect()` as
+  well, so that exit writes the checkpoint. The port frees within milliseconds.
+- **Decided:** rely on that channel. The diagnostics_channel API is stable, but Node marks its
+  built-in channels experimental; if one is renamed, the watcher never fires and behaviour falls
+  back to today's (the Node 24 tests would catch it). Held prompts get a socket reset instead of a
+  204, with the same outcome for the hook: it prints nothing and Claude's dialog decides.
+- Live hooks the restore gate still holds at the close are spooled before the exit
+  (`spoolHeldHooks` in plugin-wiring.ts, spool fields only), and the next instance replays them in
+  fire order. They were answered 204, so their hooks spooled nothing themselves. They are never
+  applied to the board, which has not merged the checkpoint yet.
+
+**Signed challenge (v2)** (narrows the 2026-10-08 residual "A signed request a squatter captured ...
+can be replayed", and its unsigned `/slot` answer, to clients that still send the 4.1.0 format):
+
+- Clients first GET `/challenge`: 64 hex (12 hex issue time on the plugin process's monotonic clock,
+  20 random hex, a 32 hex HMAC tag under a per-listener secret), so issuing stores nothing and a
+  flood of GETs cannot push out a client's challenge, and a wall clock stepped back cannot reopen a
+  claimed one. Single use, through a used set filled only after the request MAC matched (at most 1024
+  inside the 60 s life, refused rather than forgotten when full); 60 s life; open behind the Origin
+  guard, sent no-store. The request MAC is HMAC(token, `v2\n<kind>\n<challenge>\n<nonce>\n<body>`),
+  checked before the challenge is claimed.
+- Answers are signed: `res` for `/permission`, and `slot-res` over `<status>\n<body>` for every v2
+  `/slot` answer (200, 400, 404, 409, 500). The client nonce is in every MAC, so an answer verifies
+  only for the request that asked. Clients never fall back to the unchallenged format, and the GET
+  and the POST each use their own connection, so a squatter that answered the GET cannot relay a real
+  challenge and keep the signed request. `sendSlot` believes an unsigned 401; any other answer
+  without a valid MAC is -1, which chat treats as no answer and rolls back.
+- Every client loopback call has a deadline for the whole request (`AbortSignal.timeout`), not
+  only a socket timeout, which each dripped byte restarts: `pluginAlive` (800 ms), both `sendSlot`
+  requests (2 s each), the permission hook's challenge GET (2 s) and permission POST (110 s), the
+  status hook's `/hook` POST (1.5 s, still counted as delivered when it times out) and the update
+  health poll (800 ms). An answer dripped a byte at a time, or an endless `102 Processing`, still
+  ends.
+- **Decided:** the plugin keeps accepting the 4.1.0 signed format on the unchanged nonce path, like
+  the token header ("Loopback auth" below). Refusing it is a breaking change, and it would silently
+  drop deck approvals from hooks wired from another folder or during the update window. Both are
+  retired together in a later major.
+- Cost: one extra loopback GET per permission prompt and per live edit. Mixed versions: 4.1.0 has no
+  `/challenge` route and treats the untokened GET as a sensitive request, so it answers 401 and logs
+  its one-time "untokened loopback request" warning (its `jetstream hooks install` hint does not
+  apply here: updating the plugin does). A new hook then prints nothing and Claude asks in its own
+  dialog; a new CLI says to update the plugin, then offers the restart write. A 4.1.0 hook or CLI
+  against this plugin works on the old path.
+
+**Two decks** (`/slot` deck filter):
+
+- Every live `/slot` edit and rollback body carries `deck`, the board's model key (`mini`,
+  `standard`, `xl`), placed after the settings spread so a settings field cannot override it. The
+  plugin only considers slot keys on a device of that model. An unknown value or null matches
+  nothing, and a deck the plugin cannot map (Stream Deck +, Virtual Stream Deck, Pedal) never matches
+  a named one.
+- **Decided:** when more than one slot key is left at the coordinate (two decks and no `deck`, or two
+  decks of the same model), the plugin answers 404 "`<coord>` is a slot key on more than one Stream
+  Deck" instead of guessing. 404, not 409, because every released chat reads 404 as "nothing
+  changed" and offers the restart write; a 409 would make 4.1.0 suggest a retry that can never
+  succeed, and make 4.0.0 roll back and report false "unrestored" keys. Chat's 404 line now names
+  the two-deck case.
+- **Rejected:** exact device-id targeting (that the SDK's `device.id` equals the manifest
+  `Device.UUID` is unconfirmed, and a wrong guess would 404 every live edit), and picking the
+  candidate whose settings equal `expect` (it can land on the deck that was not previewed).
+
+**Claude x Codex (gpt-6.1-sol, gpt-6-astra) cross-review of the batch:** nine findings, each
+confirmed by both with a repro and fixed above with a test that fails without the fix, or corrected
+here.
+
+- Y1: a pending key that matched the request was planned as unchanged, so after Stream Deck lost
+  that edit, a move onto the key cleared the source and reported success. Pending keys are re-sent.
+- C1: a lost pending edit stayed laid over (for an hour, or for good in the chat that made it), with
+  a false "Already set" or the same 409 on every retry. A 409 now forgets it.
+- C2: the restart compare read settings `/slot` refuses as an empty slot, so an empty key dropped
+  over a folded legacy url passed and the url came back. Only settings `/slot` accepts are normalised.
+- C3: another chat's save deleted a running chat's edits older than an hour, because the own-edit
+  exemption lived in memory. Edits carry their chat's pid.
+- C4: the exit on a Stream Deck close dropped live hooks the restore gate held and had answered 204.
+  They are spooled.
+- C5: a flood of unauthenticated `GET /challenge` evicted live challenges, failing v2 deck approvals
+  and live edits with a "token mismatch" message. Issuing is stateless.
+- X1: a fleet message sent during a lock wait read the old file, so a remove then a re-add of the same
+  repo lost it. Fleet messages are queued.
+- X2: client loopback calls had only an inactivity timeout, so a squatter dripping its answer could
+  hang chat (already possible through `pluginAlive` in 4.1.0). Every client loopback call, the
+  status hook and the update health poll included, has a whole-request deadline.
+- C6: the restart-compare residual said an abort uses one of the 5 kept backups. The write returns
+  before the backup, so an abort costs only the restart.
+- Also corrected: a `sudo` run writes no shell-dirs record (the CLI skips uid 0), not a root-owned one.
+
+**Residuals accepted:**
+
+- Restart compare: a third-party key at a replaced coordinate that rewrites its own Settings causes
+  a false abort; sending the request again fixes it unless that plugin rewrites constantly. An abort
+  costs one Stream Deck restart (about 5 s), because the compare can only run after the quit
+  (comparing earlier would miss unsaved deck edits). "Stream Deck restarted, but nothing was
+  written" is printed even when Stream Deck was not running.
+- Pending edits: two chats saving in the same few ms can lose one chat's entry. A 4.1.0 or older
+  chat writes no file, so a new chat right after its live edit still gets one false 409. A file that
+  cannot be written turns the store into memory only without a message, and a missing, corrupt or
+  unknown-version file reads as empty. A pid reused after its chat quit (after a reboot, say) keeps
+  that chat's edits fresh. An earlier chat's edit that expires during a turn drops the `before`
+  chain of this turn's edit at that key, so chat forgets its own edit; that needs the earlier chat
+  gone and the edit unsaved for an hour. Each costs at worst one false 409 with the existing advice.
+  The file holds the same slot settings as the profile (URLs, app paths), hence 0600.
+- Pending edits, 409: a 409 caused by another page on screen (a page switch not yet on disk) also
+  forgets a still-valid edit, and that key then gets a false 409 on each try until Stream Deck saves
+  or a restart is accepted, the same class as the page-switch residual. When a re-read finds no
+  board, chat keeps the previous board, so a key forgotten after a 409 still shows the lost edit
+  there, and gets the 409 again, until a board is read.
+- Fleet: for up to 10 s after a writer crashes holding `projects.json.lock`, an in-app add or remove
+  waits the full 3 s and then says "try again", and every fleet message sent meanwhile waits behind
+  it, each queued add or remove for its own 3 s after the one ahead; the inspector shows no progress
+  during that wait.
+- Shell dirs: the last recording shell verb wins, so a direnv or mise env that exports
+  `CLAUDE_CONFIG_DIR` inside a repo moves the record. One dir per key, so multi-account users run
+  `hooks install` from each env. A change applies at the plugin's next start, and changing
+  `CLAUDE_CONFIG_DIR` after the first launch does not re-run auto-wire (`jetstream hooks install` or
+  the in-app Fix wires the new dir). The first `jetstream update` from 4.1.0 runs the old npm
+  wrapper, which does not record; the next CLI verb does. A `sudo` run (uid 0) neither writes nor
+  removes the record, since sudo drops the user's env.
+- Marketplace-only installs that never run the CLI still need `launchctl setenv` (or the symlink),
+  as README says. Covering them would mean spawning a login shell from the GUI process at boot,
+  which is slow, can hang on a profile prompt and runs arbitrary profile code.
+- Reducer: the clock-step residual below now cuts the other way. A backward clock step after an
+  applied empty list can stamp a Start before the cutoff, so it is ignored and the key can read done
+  or idle while that agent runs (before, the same step could only cause a false "working" for up to
+  30 min). It needs a backward step landing in a gap of milliseconds to seconds.
+- Disconnect: it depends on `net.client.socket` and is a no-op if Node renames that channel. A
+  `/hook` POST accepted at the instant of the close is lost (unchanged); hooks the restore gate held
+  are spooled, and one with no `_at` (a hook older than that stamp) replays as of the next
+  instance's start. In a fast in-app restart the successor can restore a few ms before the old
+  process's exit flush (narrower than before).
+- Signed challenge: a captured 4.1.0-format signed request can still be replayed once within its
+  2-minute window, and a 4.1.0 CLI's `/slot` answer stays unsigned, until a later major retires the
+  4.1.0 format together with the token header. More than 1024 genuine v2 requests inside 60 s are
+  refused until the oldest expire; only a token holder can fill the used set. The hook still reads
+  the `/permission` answer with no size cap: a squatter can make that short-lived hook die, and
+  Claude's own dialog then asks, the same as for any answer it refuses.
+- A request for a key's pre-edit value is answered "Already set" while Stream Deck still holds an
+  unsaved live edit there that a 409 from another page made chat forget. Nothing is written; the
+  next request after Stream Deck saves plans correctly.
+- Two decks of the same model refuse live edits at a shared coordinate and always take the restart
+  route. An older chat (no `deck`) with slots on two decks at one coordinate gets 404 and the
+  restart. A 4.0.0 or 4.1.0 plugin ignores `deck` and keeps its first match until it is updated.
+
+**TRIGGER to reopen:** a report of a false "changed since the plan was made" abort, or of a 409 at
+the same key on every try; the SDK's `device.id` shown to equal the manifest `Device.UUID`, or a
+user with two decks of the same model asking for live edits; Node renaming `net.client.socket`; the
+next major release (retire the 4.1.0 signed format and the token header).
+
 ## 2026-10-08: review fixes
 
 A review of the 2026-10-06 work (the three sections below) found 49 items, from a

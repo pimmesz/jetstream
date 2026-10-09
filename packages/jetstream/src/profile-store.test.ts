@@ -5,6 +5,8 @@ import { describe, it, expect } from 'vitest';
 import { overlayActions, readCurrentPage, writeInPlace, type AppControl, type StoredAction } from './profile-store';
 import { readForeignCatalog } from './plugin-catalog';
 import type { Placement } from './layout';
+import { applyLayout, type ApplyOutcome } from './chat-apply';
+import { readBoardLayout } from './board-layout';
 
 const STATE = { FontSize: 18, ShowTitle: true };
 
@@ -121,6 +123,7 @@ describe('writeInPlace', () => {
       app,
       backupRoot: join(root, 'backups'),
       lockPath: join(root, 'write.lock'),
+      changedSincePlan: () => [],
     });
     expect(result.ok).toBe(true);
     expect(app.log).toEqual(['quit', 'launch']);
@@ -148,6 +151,7 @@ describe('writeInPlace', () => {
       backupRoot: join(root, 'backups'),
       lockPath: join(root, 'write.lock'),
       pageId: 'aaaa-1111',
+      changedSincePlan: () => [],
     });
     expect(Object.keys(readCurrentPage(dir, 'aaaa-1111')!.actions)).toEqual(['0,0']);
     expect(readCurrentPage(dir, 'bbbb-2222')!.actions).toEqual({});
@@ -167,6 +171,7 @@ describe('writeInPlace', () => {
       app,
       backupRoot: join(root, 'backups'),
       lockPath: join(root, 'write.lock'),
+      changedSincePlan: () => [],
     });
     const [backup] = readdirSync(join(root, 'backups'));
     expect(readFileSync(join(root, 'backups', backup!, 'Profiles', 'AAAA-1111', 'manifest.json'), 'utf8')).toContain('/flushed.app');
@@ -184,10 +189,109 @@ describe('writeInPlace', () => {
       backupRoot: join(root, 'backups'),
       lockPath: join(root, 'write.lock'),
       quitTimeoutMs: 0,
+      changedSincePlan: () => [],
     });
     expect(result.ok).toBe(false);
     expect(launched).toEqual(['launch']);
     expect(readCurrentPage(dir)?.actions).toEqual({});
+  });
+
+  /** A fake app whose quit saves `a1` the way Stream Deck saves its in-memory state on the way out. */
+  function appSavingOnQuit(page: string, a1: StoredAction): AppControl & { log: string[] } {
+    const app = fakeApp();
+    app.quit = () => {
+      app.log.push('quit');
+      writeFileSync(page, JSON.stringify({ Controllers: [{ Type: 'Keypad', Actions: { '0,0': a1 } }] }));
+      app.isRunning = () => false;
+    };
+    return app;
+  }
+
+  /** Put a Hue key at a1 through chat's restart route, with the real writer wired as `jetstream chat` wires it. */
+  async function restartHueAtA1(root: string, app: AppControl): Promise<{ outcome: ApplyOutcome; said: string; lockPath: string }> {
+    const lockPath = join(root, 'write.lock');
+    const said: string[] = [];
+    const hue: Placement = {
+      column: 0,
+      row: 0,
+      uuid: 'com.elgato.philipshue.power',
+      name: 'Desk lamp',
+      settings: { id: 'l' },
+      source: { plugin: { Name: 'Philips Hue', UUID: 'com.elgato.philipshue', Version: '2.2.1.15' }, states: [STATE, {}] },
+    };
+    const outcome = await applyLayout([hue], {
+      say: (line) => void said.push(line),
+      confirm: async () => true,
+      board: readBoardLayout(root, []), // [] keeps it away from the real Stream Deck preferences
+      pluginAlive: async () => true,
+      sendSlot: async () => 200,
+      writeInPlace: (profileDir, placements, pageId, changedSincePlan) =>
+        writeInPlace(profileDir, placements, {
+          ...(pageId ? { pageId } : {}),
+          changedSincePlan,
+          jetstreamVersion: '3.1.0.0',
+          app,
+          backupRoot: join(root, 'backups'),
+          lockPath,
+        }),
+      importProfile: () => {
+        throw new Error('a board was found, so nothing should be imported');
+      },
+    });
+    return { outcome, said: said.join('\n'), lockPath };
+  }
+
+  it('a restart write changes nothing when Stream Deck saved a change to a planned key on the way out', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, { '0,0': slotAction({ kind: 'app', app: '/A.app' }) });
+    // An edit made on the deck after the preview, which Stream Deck only saves when it quits.
+    const app = appSavingOnQuit(join(dir, 'Profiles', 'AAAA-1111', 'manifest.json'), slotAction({ kind: 'app', app: '/B.app' }));
+    const { outcome, said, lockPath } = await restartHueAtA1(root, app);
+    expect(outcome).toBe('reloaded');
+    expect(readCurrentPage(dir)!.actions['0,0']).toMatchObject({ UUID: 'gg.pim.jetstream.slot', Settings: { kind: 'app', app: '/B.app' } });
+    expect(app.log).toEqual(['quit', 'launch']);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(said).toContain('these keys changed since the plan was made: a1');
+    expect(said).toContain('Send the request again');
+  });
+
+  it('a restart write still lands when the quit only saved what a rolled-back live edit left', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, { '0,0': slotAction({ kind: 'empty', color: '#e5484d' }) });
+    // A rollback puts a styled spacer back without its colour; that is not a change made by someone else.
+    const app = appSavingOnQuit(join(dir, 'Profiles', 'AAAA-1111', 'manifest.json'), slotAction({ kind: 'empty' }));
+    const { outcome } = await restartHueAtA1(root, app);
+    expect(outcome).toBe('restarted');
+    expect(readCurrentPage(dir)!.actions['0,0']).toMatchObject({ UUID: 'com.elgato.philipshue.power', Settings: { id: 'l' } });
+  });
+
+  it('asks changedSincePlan about the page saved on the way out, under the lock, and writes nothing when it names a key', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, { '0,0': slotAction({ kind: 'app', app: '/A.app' }) });
+    const page = join(dir, 'Profiles', 'AAAA-1111', 'manifest.json');
+    const app = appSavingOnQuit(page, slotAction({ kind: 'app', app: '/B.app' }));
+    const lockPath = join(root, 'write.lock');
+    // A backup an earlier real write left: only 5 are kept, so a write that is called off must not use one up.
+    const earlier = 'CF17C203.sdProfile.2026-01-01T00-00-00-000Z';
+    mkdirSync(join(root, 'backups', earlier), { recursive: true });
+    const calls: Array<{ actions: Record<string, StoredAction>; isLocked: boolean; file: string }> = [];
+    const result = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], {
+      jetstreamVersion: '3.1.0.0',
+      app,
+      backupRoot: join(root, 'backups'),
+      lockPath,
+      changedSincePlan: (actions) => {
+        calls.push({ actions, isLocked: existsSync(lockPath), file: readFileSync(page, 'utf8') });
+        return ['a1'];
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.actions['0,0']?.Settings).toEqual({ kind: 'app', app: '/B.app' });
+    expect(calls[0]!.isLocked).toBe(true);
+    expect(result).toMatchObject({ ok: false, changed: ['a1'] });
+    expect(readFileSync(page, 'utf8')).toBe(calls[0]!.file); // the saved page, byte for byte
+    expect(app.log).toEqual(['quit', 'launch']);
+    expect(readdirSync(join(root, 'backups'))).toEqual([earlier]); // no backup taken
   });
 });
 
@@ -199,7 +303,7 @@ describe('writeInPlace lock', () => {
     const dir = makeProfile(root, {});
     const lockPath = join(root, 'write.lock');
     writeFileSync(lockPath, '999');
-    const opts = { jetstreamVersion: '3.1.0.0', app: app(), backupRoot: join(root, 'backups'), lockPath };
+    const opts = { jetstreamVersion: '3.1.0.0', app: app(), backupRoot: join(root, 'backups'), lockPath, changedSincePlan: () => [] };
     const busy = await writeInPlace(dir, [placement({ settings: { kind: 'fleet' } })], opts);
     expect(busy).toMatchObject({ ok: false });
     expect(readCurrentPage(dir)?.actions).toEqual({}); // nothing written
@@ -225,6 +329,7 @@ describe('writeInPlace lock', () => {
       app: thief,
       backupRoot: join(root, 'backups'),
       lockPath,
+      changedSincePlan: () => [],
     });
     expect(readFileSync(lockPath, 'utf8')).toBe('another writer');
     writeFileSync(join(root, 'not-a-dir'), '');
@@ -233,6 +338,7 @@ describe('writeInPlace lock', () => {
       app: app(),
       backupRoot: join(root, 'backups'),
       lockPath: join(root, 'not-a-dir', 'write.lock'),
+      changedSincePlan: () => [],
     });
     expect(blocked).toMatchObject({ ok: false });
   });
@@ -249,6 +355,7 @@ describe('writeInPlace lock', () => {
       app: app(),
       backupRoot: join(root, 'backups'),
       lockPath,
+      changedSincePlan: () => [],
     });
     expect(result).toMatchObject({ ok: false });
     expect((result as { reason: string }).reason).toContain(lockPath);

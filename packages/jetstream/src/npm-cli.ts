@@ -4,6 +4,7 @@ import { request } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { recordShellDirs } from './shell-dirs';
 
 /**
  * `jetstream …` — the npm package's front door (bin/jetstream).
@@ -219,6 +220,8 @@ export interface RunJetstreamDeps {
   globalRoot?: () => string | undefined;
   /** The version the installed plugin should report on /health (update passes the one npm installed). */
   expectedVersion?: string;
+  /** Record this shell's config dirs for the plugin (defaults to recordShellDirs); returns a note to print. */
+  recordDirs?: () => string | undefined;
 }
 
 /** The registry always travels in npm's ENVIRONMENT, and on its argv only as the npmjs.org default: argv
@@ -258,7 +261,9 @@ export function pluginReportsVersion(expected: string, timeoutMs = 800): Promise
   return new Promise((resolve) => {
     const port = Number(process.env.JETSTREAM_PORT) || HEALTH_PORT;
     const req = request(
-      { host: '127.0.0.1', port, path: '/health', method: 'GET', timeout: timeoutMs },
+      // A deadline for the whole request: a socket timeout only measures silence, so an endless
+      // '102 Processing' or a dripped answer would hold the poll open. The abort lands in 'error'.
+      { host: '127.0.0.1', port, path: '/health', method: 'GET', signal: AbortSignal.timeout(timeoutMs) },
       (res) => {
         // Attach the abort handlers FIRST — before the statusCode check can early-return — so a
         // response that resets mid-stream (a plugin dying, exactly the update-restart case) settles
@@ -284,10 +289,6 @@ export function pluginReportsVersion(expected: string, timeoutMs = 800): Promise
       },
     );
     req.on('error', () => resolve(false));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(false);
-    });
     req.end();
   });
 }
@@ -522,6 +523,12 @@ export function runJetstream(deps: RunJetstreamDeps = {}): void {
         : 'jetstream update: npm i -g @pimmesz/jetstream from the public registry (JETSTREAM_REGISTRY overrides it),\nthen reinstall the plugin. Takes no options.',
     );
     return;
+  }
+  // Both verbs (re)start the plugin, which reads the recorded CLAUDE_CONFIG_DIR and CODEX_HOME only
+  // as it starts, so record this shell's first.
+  if (args[0] === 'install' || args[0] === 'update') {
+    const note = (deps.recordDirs ?? recordShellDirs)();
+    if (note) (deps.say ?? ((m: string) => console.log(m)))(note);
   }
   // `install` is this package's own verb, not forwarded: the plugin CLI lives INSIDE the
   // plugin, so it can't be what installs the plugin. It opens the packed .streamDeckPlugin.

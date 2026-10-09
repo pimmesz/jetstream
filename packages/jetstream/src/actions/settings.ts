@@ -12,7 +12,7 @@ import {
   expandHome,
   handleFleetMessage,
   scanForGitRepos,
-  writeFleetFile,
+  writeFleetFileAsync,
   type FleetSnapshot,
 } from '../fleet';
 import { hookCommands } from '../hooks-install';
@@ -105,18 +105,15 @@ export function hasWarnings(checks: CheckResult[]): boolean {
   return checks.some((c) => c.status === 'warn');
 }
 
-/** How long the in-app editor waits for another writer's fleet lock. The wait blocks the plugin's
- * only thread (keys, hooks), so it gives up quickly and the editor says try again. */
-const EDITOR_LOCK_WAIT_MS = 100;
-
-/** The in-app editor's projects.json write: only its own change (`base`), with a short lock wait. */
+/** The in-app editor's projects.json write: only its own change (`base`). It waits for another
+ * writer's lock as long as the CLI does, without blocking the plugin's keys and hooks meanwhile. */
 export function writeFleetFromEditor(
   path: string,
   projects: ProjectConfig[],
   settings: Partial<JetstreamConfig>,
   base: FleetSnapshot,
-): FleetSnapshot {
-  return writeFleetFile(path, projects, settings, new Date(), base, EDITOR_LOCK_WAIT_MS);
+): Promise<FleetSnapshot> {
+  return writeFleetFileAsync(path, projects, settings, new Date(), base);
 }
 
 /** The bin/ dir where the bundled hook scripts sit (this file bundles into bin/plugin.js). */
@@ -164,6 +161,9 @@ function pluginDoctorIO(): ReturnType<typeof defaultDoctorIO> {
 export class SettingsKey extends SingletonAction {
   /** Injected so a test can assert the doctor launch without spawning a real terminal. */
   private openDoctor: () => Promise<boolean> = openDoctorInTerminal;
+  /** Fleet messages run one at a time: a save can wait seconds for another writer's lock, and a
+   * message sent meanwhile must read projects.json after that save, not before it. */
+  private fleetQueue: Promise<void> = Promise.resolve();
 
   override onWillAppear(): void {
     void this.renderAll();
@@ -186,17 +186,23 @@ export class SettingsKey extends SingletonAction {
       buildLayout: async () => this.buildProfiles(),
       diagnostics: async () =>
         this.reply({ diag: 'report', text: diagnosticsText(await runDoctor(pluginDoctorIO()), process.platform, process.version) }),
-      fleet: (payload) =>
-        handleFleetMessage(payload, {
-          read: () => readConfigFile(),
-          write: (projects, settings, base) =>
-            writeFleetFromEditor(resolveProjectsConfigPath(), projects, settings, base),
-          seed: (projects) => board.seed(projects),
-          // Reply to the current property inspector (the one that just sent to us).
-          reply: (msg) => this.reply(msg),
-          // expandHome so a typed `~/dev` resolves: the PI has no cwd/shell to expand it.
-          scan: (dir) => scanForGitRepos(expandHome(dir)),
-        }),
+      fleet: (payload) => {
+        const run = this.fleetQueue.then(() =>
+          handleFleetMessage(payload, {
+            read: () => readConfigFile(),
+            write: (projects, settings, base) =>
+              writeFleetFromEditor(resolveProjectsConfigPath(), projects, settings, base),
+            seed: (projects) => board.seed(projects),
+            // Reply to the current property inspector (the one that just sent to us).
+            reply: (msg) => this.reply(msg),
+            // expandHome so a typed `~/dev` resolves: the PI has no cwd/shell to expand it.
+            scan: (dir) => scanForGitRepos(expandHome(dir)),
+          }),
+        );
+        // A failed message must not stall the ones after it; its own caller still gets the error.
+        this.fleetQueue = run.catch(() => undefined);
+        return run;
+      },
     });
   }
 
