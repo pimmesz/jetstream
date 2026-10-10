@@ -284,6 +284,31 @@ export function pruneCustomProfiles(
   return removed;
 }
 
+/** How many physical decks of this model have profiles in the store (distinct `Device.UUID`). Two XLs
+ * share every key code, so a press known only by code and model cannot say which one it came from.
+ * 0 when the store cannot be read. */
+export function devicesOfModel(deck: DeckModel, profilesDir: string = defaultProfilesDir()): number {
+  let dirs: string[];
+  try {
+    dirs = readdirSync(profilesDir).filter((d) => d.endsWith('.sdProfile'));
+  } catch {
+    return 0;
+  }
+  const devices = new Set<string>();
+  for (const dir of dirs) {
+    try {
+      const { Device } = JSON.parse(readFileSync(join(profilesDir, dir, 'manifest.json'), 'utf8')) as {
+        Device?: { Model?: unknown; UUID?: unknown };
+      };
+      if (typeof Device?.Model !== 'string' || typeof Device.UUID !== 'string') continue;
+      if (Device.Model.slice(0, 7) === deck.model.slice(0, 7)) devices.add(Device.UUID);
+    } catch {
+      // an unreadable profile says nothing about which decks exist
+    }
+  }
+  return devices.size;
+}
+
 /** Read the user's current Jetstream board from the Stream Deck profile store; null if none found.
  * Best-effort (never throws): prefers the profile Stream Deck currently has ACTIVE (its
  * `ESDProfilesPreferred`) — the board you're actually on — and only falls back to the most CONFIGURED

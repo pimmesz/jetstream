@@ -328,10 +328,16 @@ export async function writeInPlace(
   const wasRunning = app.isRunning();
   try {
     if (wasRunning) {
-      app.quit();
+      try {
+        app.quit();
+      } catch (error) {
+        // -128 is Stream Deck turning the quit down itself, which an open dialog or sheet does.
+        if (!errorMessage(error).includes('(-128)')) throw error;
+        return { ok: false, reason: 'Stream Deck refused to close, which usually means a dialog or its editor window is open. Close it, then send your request again' };
+      }
       const deadline = Date.now() + (options.quitTimeoutMs ?? 20_000);
       while (app.isRunning() && !deferred.caught()) {
-        if (Date.now() > deadline) return { ok: false, reason: 'Stream Deck did not quit within 20 seconds' };
+        if (Date.now() > deadline) return { ok: false, reason: 'Stream Deck did not close within 20 seconds. Close any open Stream Deck window or dialog, then send your request again' };
         await app.sleep(250);
       }
     }

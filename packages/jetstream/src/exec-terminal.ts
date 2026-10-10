@@ -7,6 +7,12 @@ import { join } from 'node:path';
  * script's whole no-injection property rests on its contents being fixed at compile time. */
 export type TerminalCommand = 'doctor' | 'chat';
 
+/** The key a press opened chat for, and the deck model it sits on, so chat plans for that deck. */
+export interface TerminalTarget {
+  key: string;
+  deck: 'mini' | 'standard' | 'xl';
+}
+
 /**
  * Open a terminal running `jetstream <command>` — `doctor` (read-only; reports the checklist and
  * prints the fix for each failing item) or `chat` (the conversational board builder, which needs a
@@ -15,16 +21,27 @@ export type TerminalCommand = 'doctor' | 'chat';
  * instead of a false OK. Stream Deck itself runs only on macOS + Windows, so the `false` tail is
  * defensive.
  *
- * The launcher is a fixed-content script (the command comes from the union above, never from user
- * input → no injection) written into a FRESH private `mkdtemp` dir, so a predictable name in a
+ * The launcher is a fixed-content script (the command comes from the union above, and the optional
+ * target must be a KEY_CODE and a known deck, so no user text reaches it → no injection) written into a FRESH private `mkdtemp` dir, so a predictable name in a
  * shared temp can't be pre-planted as a symlink and clobbered/replaced between write and exec.
  * (One dir per launch and no cleanup, which is fine: these fire a handful of times by hand, and
  * the OS reaps temp.) A real terminal re-derives the user's PATH — macOS Terminal opens a login
  * shell; the Windows launcher prepends the npm global bin — so the globally installed `jetstream`
  * resolves even though the plugin's own GUI-launched PATH is stripped.
  */
-export function openInTerminal(command: TerminalCommand): Promise<boolean> {
+/** A key code such as "c3": a row letter and a column from 1 to 99. Only this shape may reach a launcher. */
+const KEY_CODE = /^[a-z][1-9][0-9]?$/;
+const DECKS: readonly string[] = ['mini', 'standard', 'xl'];
+
+export function openInTerminal(command: TerminalCommand, target?: TerminalTarget): Promise<boolean> {
   return new Promise((resolve) => {
+    // The target is written into a shell script, so anything but a plain key code and a known deck is
+    // refused, never escaped.
+    if (target !== undefined && (!KEY_CODE.test(target.key) || !DECKS.includes(target.deck))) {
+      resolve(false);
+      return;
+    }
+    const line = target ? `jetstream ${command} --key ${target.key} --deck ${target.deck}` : `jetstream ${command}`;
     try {
       // A short timeout guarantees the promise settles even if the launcher never returns, so a
       // press always ends in OK/alert. `open` / `start` normally exit in well under a second.
@@ -33,7 +50,7 @@ export function openInTerminal(command: TerminalCommand): Promise<boolean> {
         const file = join(mkdtempSync(join(tmpdir(), `jetstream-${command}-`)), `${command}.command`);
         // Run the command, then drop into an interactive shell so the window stays open and you can
         // type a follow-up (`jetstream update`, `jetstream setup`, …) right there.
-        writeFileSync(file, `#!/bin/bash\njetstream ${command}\nexec "$SHELL" -i\n`);
+        writeFileSync(file, `#!/bin/bash\n${line}\nexec "$SHELL" -i\n`);
         chmodSync(file, 0o755);
         execFile('open', [file], opts, (err) => resolve(!err));
         return;
@@ -44,7 +61,7 @@ export function openInTerminal(command: TerminalCommand): Promise<boolean> {
         // new cmd inherits the plugin's (possibly stripped) env, not a fresh login shell.
         writeFileSync(
           join(dir, `${command}.cmd`),
-          `@echo off\r\nset "PATH=%APPDATA%\\npm;%PATH%"\r\njetstream ${command}\r\n`,
+          `@echo off\r\nset "PATH=%APPDATA%\\npm;%PATH%"\r\n${line}\r\n`,
         );
         // Run FROM `dir` and hand cmd only the bare basename: a temp path with a cmd metacharacter
         // (e.g. TEMP=C:\Temp&Work) would otherwise be re-parsed by cmd.exe. `cmd /k` runs the script

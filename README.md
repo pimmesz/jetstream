@@ -46,7 +46,8 @@ Requires macOS 12+ and the Stream Deck app 7.1+. Windows isn't supported yet (th
 
    `chat` lets you describe repos AND arrange keys in plain English (add app/URL/run shortcuts,
    recolour, rename, set emoji/logo icons, ask what is on a key). It shows each key it will change
-   before you apply, and stays open for the next request. Edits to Jetstream keys apply live. A key
+   before you apply, and stays open for the next request. Pressing an empty Jetstream key opens chat for
+   that key ("What should key c3 do?"), so a one-word answer like "Telegram" fills it. Edits to Jetstream keys apply live. A key
    from another plugin (a Philips Hue toggle you already placed somewhere, say) is copied by chat, and
    anything that cannot go live is written into your current board while Stream Deck restarts for a
    few seconds, after a backup to `~/.config/jetstream/profile-backups/`. When chat finds your Jetstream
@@ -73,7 +74,7 @@ short-press opens the project folder in your editor (VS Code, then Cursor, else 
 change size, `done 4m · +120/-40`), **Fleet roll-up** (one always-visible key counting the whole
 fleet — `3w 1! 2✓` — coloured by the worst state present, so "is anything waiting on me?" is
 answerable even when projects outnumber keys), **Attention** (flashes if a request goes
-unanswered), **Usage gauge** (5h/7d used + the sooner reset, `resets 3h33m`; a second gauge can show
+unanswered), **Usage gauge** (5h/7d used + the sooner reset, `used·resets 3h33m`, or the reading's age once it is over an hour old, `used·15h old`, since use on claude.ai or another machine is not in it yet; a second gauge can show
 your **Codex** limits, `jetstream chat` → "put a Codex usage gauge at b3"),
 **Approve / Deny** (place one of each — they answer
 the oldest pending Claude permission request straight from the deck; no press within ~90s → Claude

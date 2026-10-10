@@ -3,7 +3,8 @@ import type { SlotSettings } from './actions/slot';
 import { normalizeColor } from './slot-color';
 import { isHttpUrl, isSafeAppTarget, parseSlotCommand, sameSlot } from './slot-command';
 
-type EditResult = { ok: true; settings: SlotSettings } | { ok: false; error: string };
+/** `field` names the form input an error is about, so the inspector can mark and focus it. */
+type EditResult = { ok: true; settings: SlotSettings } | { ok: false; error: string; field?: 'target' | 'color' };
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -17,11 +18,11 @@ export function editSlot(current: SlotSettings, expected: unknown, edit: unknown
   const isBasic = ['empty', 'app', 'url', 'project'].includes(currentKind);
   if (currentKind === 'run' || currentKind === 'stopall' ||
       (!isBasic && !parseSlotCommand({ coord: 'a1', ...current, kind: currentKind }))) {
-    return { ok: false, error: 'This slot is read-only here. Use jetstream chat to change it.' };
+    return { ok: false, error: "You can't change this key here. To change it, run jetstream chat in Terminal." };
   }
   if (!isRecord(edit) || Object.keys(edit).some((key) => !['kind', 'target', 'label', 'color'].includes(key)) ||
       !['kind', 'target', 'label', 'color'].every((key) => Object.hasOwn(edit, key) && typeof edit[key] === 'string')) {
-    return { ok: false, error: 'Invalid edit. Close and reopen the Slot inspector.' };
+    return { ok: false, error: 'Jetstream did not understand this edit. Click another key, then click this key again.' };
   }
   const { kind, target, label, color } = edit as Record<'kind' | 'target' | 'label' | 'color', string>;
   if (!['empty', 'app', 'url', 'project', currentKind].includes(kind)) {
@@ -34,7 +35,7 @@ export function editSlot(current: SlotSettings, expected: unknown, edit: unknown
   const value = target.trim();
   if (kind === 'app' || kind === 'project') {
     if (!isAbsolute(value) || !isSafeAppTarget(value)) {
-      return { ok: false, error: 'Enter a full path, such as /Applications/Telegram.app or /Users/you/project.' };
+      return { ok: false, error: 'Enter a full path, such as /Applications/Telegram.app or /Users/you/project.', field: 'target' };
     }
     if (kind === 'app') next.app = value;
     else {
@@ -43,12 +44,12 @@ export function editSlot(current: SlotSettings, expected: unknown, edit: unknown
       next.path = value;
     }
   } else if (kind === 'url') {
-    if (!isHttpUrl(value)) return { ok: false, error: 'Enter a complete http:// or https:// URL.' };
+    if (!isHttpUrl(value)) return { ok: false, error: 'Enter a complete http:// or https:// URL.', field: 'target' };
     next.url = value;
   }
   const normalized = color.trim() ? normalizeColor(color) : undefined;
   if (color.trim() && typeof normalized !== 'string') {
-    return { ok: false, error: 'Use a colour name such as blue, or a hex colour such as #0091ff.' };
+    return { ok: false, error: 'Use a colour name such as blue, or a hex colour such as #0091ff.', field: 'color' };
   }
   if (label.trim()) next.label = label.trim();
   else delete next.label;

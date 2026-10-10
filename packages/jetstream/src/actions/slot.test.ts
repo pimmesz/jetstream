@@ -802,6 +802,41 @@ describe('folded slot kinds: build + stopall', () => {
     expect(action.showAlert).not.toHaveBeenCalled();
   });
 
+  it.each([{ kind: 'empty' }, {}])('pressing an empty key (%j) opens chat for that key', async (settings) => {
+    vi.mocked(openInTerminal).mockClear().mockResolvedValue(true);
+    const action = {
+      showOk: vi.fn(async () => {}),
+      showAlert: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      setImage: vi.fn(async () => {}),
+      isKey: () => true,
+      coordinates: { column: 2, row: 2 },
+      device: { type: 2 }, // an XL
+    };
+    await new SlotKey().onKeyDown({ payload: { settings }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    // The deck goes along, so chat plans for the deck that was pressed, not another one.
+    expect(openInTerminal).toHaveBeenCalledWith('chat', { key: 'c3', deck: 'xl' });
+    expect(action.showOk).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['with no position (inside a multi-action)', { device: { type: 2 } }],
+    ['on a deck chat has no layout for (Mobile)', { coordinates: { column: 2, row: 2 }, device: { type: 3 } }],
+  ])('an empty key %s only alerts', async (_case, extra) => {
+    vi.mocked(openInTerminal).mockClear();
+    const action = {
+      showOk: vi.fn(async () => {}),
+      showAlert: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      setImage: vi.fn(async () => {}),
+      isKey: () => true,
+      ...extra,
+    };
+    await new SlotKey().onKeyDown({ payload: { settings: { kind: 'empty' } }, action } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    expect(openInTerminal).not.toHaveBeenCalled();
+    expect(action.showAlert).toHaveBeenCalled();
+  });
+
   it('logo press ALERTS when the terminal launcher fails', async () => {
     vi.mocked(openInTerminal).mockResolvedValue(false);
     const action = {

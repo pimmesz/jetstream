@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { openDoctorInTerminal } from './exec-terminal';
+import { openDoctorInTerminal, openInTerminal } from './exec-terminal';
 
 // Mock the fs writers + child_process; keep os/path real so the expected launcher path is
 // computed with the exact join the source uses.
@@ -101,4 +101,37 @@ describe('openDoctorInTerminal', () => {
     await expect(openDoctorInTerminal()).resolves.toBe(false); // a keypress must not throw
     expect(execFile).not.toHaveBeenCalled();
   });
+});
+
+describe('openInTerminal for one key', () => {
+  it('opens chat for that key on macOS and Windows', async () => {
+    vi.mocked(mkdtempSync).mockReturnValue(DIR);
+    onExec(null);
+    setPlatform('darwin');
+    await expect(openInTerminal('chat', { key: 'c3', deck: 'xl' })).resolves.toBe(true);
+    expect(vi.mocked(writeFileSync).mock.calls[0]![1]).toContain('\njetstream chat --key c3 --deck xl\n');
+    setPlatform('win32');
+    await expect(openInTerminal('chat', { key: 'h12', deck: 'mini' })).resolves.toBe(true);
+    expect(vi.mocked(writeFileSync).mock.calls[1]![1]).toContain('\r\njetstream chat --key h12 --deck mini\r\n');
+  });
+
+  it.each(['xl; id', 'XL', 'plus', ''])('refuses deck %j, and opens nothing', async (deck) => {
+    setPlatform('darwin');
+    vi.mocked(mkdtempSync).mockReturnValue(DIR);
+    onExec(null);
+    await expect(openInTerminal('chat', { key: 'c3', deck: deck as 'xl' })).resolves.toBe(false);
+    expect(writeFileSync).not.toHaveBeenCalled();
+  });
+
+  it.each(['c3; rm -rf ~', '$(id)', 'c3 c4', 'c', '3c', 'aa1', 'C3', 'c0', 'c123', 'c3\n'])(
+    'refuses to write %j into a launcher, and opens nothing',
+    async (key) => {
+      setPlatform('darwin');
+      vi.mocked(mkdtempSync).mockReturnValue(DIR);
+      onExec(null);
+      await expect(openInTerminal('chat', { key, deck: 'xl' })).resolves.toBe(false);
+      expect(writeFileSync).not.toHaveBeenCalled();
+      expect(execFile).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -202,6 +202,31 @@ describe('per-session snapshots', () => {
     expect(merged?.model).toBe('Sonnet'); // the most recently written session
   });
 
+  it('stamps the merged feed with when its newest snapshot was written', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+    const legacy = join(dir, 'absent-usage.json');
+    const reading: UsageFeed = { source: 'claude', available: true, sevenDay: { usedPct: 30, resetsAt: 900 } };
+    await writeSessionCache(reading, 'session-a', dir, Date.now(), legacy);
+    await writeSessionCache(reading, 'session-b', dir, Date.now(), legacy);
+    const hourAgo = Math.floor(Date.now() / 1000) - 3600;
+    const minuteAgo = Math.floor(Date.now() / 1000) - 60;
+    await utimes(join(dir, 'session-a.json'), hourAgo, hourAgo);
+    await utimes(join(dir, 'session-b.json'), minuteAgo, minuteAgo);
+    expect((await readMergedCache(dir, legacy))?.readAt).toBe(minuteAgo * 1000);
+  });
+
+  it('dates the merged feed by its oldest shown window, so a stale weekly reading is not passed off as fresh', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'jetstream-usage-test-'));
+    const legacy = join(dir, 'absent-usage.json');
+    await writeSessionCache({ source: 'claude', available: true, sevenDay: { usedPct: 52, resetsAt: 900 } }, 'old-weekly', dir, Date.now(), legacy);
+    await writeSessionCache({ source: 'claude', available: true, fiveHour: { usedPct: 5, resetsAt: 200 } }, 'fresh-5h', dir, Date.now(), legacy);
+    const fifteenHoursAgo = Math.floor(Date.now() / 1000) - 15 * 3600;
+    const minuteAgo = Math.floor(Date.now() / 1000) - 60;
+    await utimes(join(dir, 'old-weekly.json'), fifteenHoursAgo, fifteenHoursAgo);
+    await utimes(join(dir, 'fresh-5h.json'), minuteAgo, minuteAgo);
+    expect((await readMergedCache(dir, legacy))?.readAt).toBe(fifteenHoursAgo * 1000);
+  });
+
   it('takes the model from the newest snapshot by mtime, not from whichever the folder lists last', async () => {
     const minuteAgo = (Date.now() - 60_000) / 1000;
     const snapshot = (id: string): UsageFeed => ({ source: 'claude', available: true, model: `model-${id}`, sevenDay: { usedPct: 10 } });
@@ -374,6 +399,8 @@ describe('Codex usage', () => {
     await utimes(join(today, 'rollout-a.jsonl'), past, past);
     const feed = await resolveCodexUsage({ sessionsDir: root });
     expect(feed).toMatchObject({ source: 'codex', available: true, sevenDay: { usedPct: 55 } });
+    // When Codex logged that reading, so the gauge can show its age.
+    expect(feed.readAt).toBe(Date.parse('2026-10-06T20:04:09.669Z'));
   });
 
   it('finds a long-running session that started more than a week of folders ago', async () => {

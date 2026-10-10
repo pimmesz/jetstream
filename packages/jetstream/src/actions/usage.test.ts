@@ -61,6 +61,22 @@ describe('usageFace', () => {
     expect(usageFace({ source: 'codex', available: false }, 0, 'codex')).toMatchObject({ label: 'no codex', sub: 'run codex' });
   });
 
+  it('both gauges say "used" with the sooner reset while the reading is fresh', () => {
+    const now = 1_000_000_000_000;
+    const fresh: UsageFeed = { ...feed(12, 40), sevenDay: { usedPct: 40, resetsAt: now / 1000 + 2 * 3600 }, readAt: now - 5 * 60_000 };
+    expect(usageFace(fresh, now, 'claude').sub).toBe('used·resets 2h');
+    expect(usageFace(fresh, now, 'codex').sub).toBe('used·resets 2h');
+    expect(usageFace(feed(12, 40), now, 'claude').sub).toBe('used'); // no reset known, no reading time known
+  });
+
+  it('both gauges show the age instead of the reset once the reading is over an hour old', () => {
+    const now = 1_000_000_000_000;
+    const stale: UsageFeed = { ...feed(12, 52), sevenDay: { usedPct: 52, resetsAt: now / 1000 + 3600 }, readAt: now - 15 * 3_600_000 };
+    expect(usageFace(stale, now, 'claude').sub).toBe('used·15h old');
+    expect(usageFace(stale, now, 'codex').sub).toBe('used·15h old');
+    expect(usageFace({ ...stale, readAt: now - 60 * 60_000 }, now, 'codex').sub).toBe('used·resets 1h'); // exactly an hour is still fresh
+  });
+
   it('a Codex free plan names its 30-day window, not 7d', () => {
     const monthly: UsageFeed = { source: 'codex', available: true, sevenDay: { usedPct: 40, windowMinutes: 43200 } };
     expect(usageFace(monthly, 0, 'codex')).toMatchObject({ top: 'codex', label: '30d 40%' });

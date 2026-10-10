@@ -24,7 +24,7 @@ import { heldMs } from '../press';
 import { openProject, openProjectFromKey } from '../switchto';
 import { stopSessions } from '../stop-session';
 import { execPlan, runPlan } from '../slot-exec';
-import { isRunTarget, parseSlotCommand, sameSlot } from '../slot-command';
+import { coordLabel, isRunTarget, parseSlotCommand, sameSlot } from '../slot-command';
 import { forgetIcon, imageMime, resolveSlotIcon } from '../slot-icon';
 import { buildFace } from './build';
 import { stopFace } from './interrupt-all';
@@ -186,7 +186,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
         typeof message.requestId !== 'string' || message.requestId.length > 100 || !ev.action.isKey()) return;
     const requestId = message.requestId;
     const key = ev.action;
-    const reply = async (payload: { ok: boolean; settings?: SlotSettings; error?: string }): Promise<void> => {
+    const reply = async (payload: { ok: boolean; settings?: SlotSettings; error?: string; field?: string }): Promise<void> => {
       // The user may select another key while a write or render is pending.
       if (streamDeck.ui.action?.id !== key.id) return;
       await streamDeck.ui.sendToPropertyInspector({
@@ -221,7 +221,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       await reply(result);
       if (result.ok && 'seq' in result) await this.renderAssigned(key, result.settings, result.seq);
     } catch {
-      await reply({ ok: false, error: 'Could not confirm the save or refresh. Choose Cancel to reload before trying again.' });
+      await reply({ ok: false, error: 'Jetstream could not finish this. Choose Cancel to load the key again, then check it.' });
     }
   }
 
@@ -358,6 +358,15 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     // it needs no gate.
     if (settings.kind === 'logo') {
       const opened = await openInTerminal('chat');
+      await (opened ? ev.action.showOk() : ev.action.showAlert());
+      return;
+    }
+    // An empty key has no job of its own, so a press opens chat to give it one. Inside a multi-action a key
+    // has no position, and chat has no layout for some decks (Mobile, +), so there is nothing to name.
+    if ((settings.kind ?? 'empty') === 'empty') {
+      const c = ev.action.isKey() ? ev.action.coordinates : undefined;
+      const deck = deckForDeviceType(ev.action.device.type)?.key;
+      const opened = c && deck ? await openInTerminal('chat', { key: coordLabel(c.column, c.row), deck }) : false;
       await (opened ? ev.action.showOk() : ev.action.showAlert());
       return;
     }

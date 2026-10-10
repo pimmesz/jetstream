@@ -5,7 +5,7 @@ import { projectsConfigPath, readConfigFile , resolveProjectsConfigPath } from '
 import { DECK_MODELS, type DeckModel } from './profile';
 import { NO_SETTINGS_TYPE_NAMES, resolvePlacements, type Placement } from './layout';
 import { boardContext, labelForAction, renderBoardMap, type BoardLayout } from './board-layout';
-import { sameSlot, storedSlotSettings } from './slot-command';
+import { coordToCell, sameSlot, storedSlotSettings } from './slot-command';
 import { describePlan, planLayout, SLOT, type ApplyOutcome, type PendingKey } from './chat-apply';
 import { pendingStore, type PendingEdit, type PendingStore } from './chat-pending';
 import type { ForeignAction } from './plugin-catalog';
@@ -100,6 +100,8 @@ export interface ChatDeps {
   ) => Promise<ApplyOutcome | void>;
   /** The user's current board, shown at start and given to the model so it can edit by coordinate. */
   board?: BoardLayout | null;
+  /** The key a deck press opened chat for (see focusKeyFrom). The first answer is about that key. */
+  focusKey?: string;
   /** Re-read the board after an apply, so the next request edits what is really there. */
   readBoard?: () => BoardLayout | null;
   /** Copies of other plugins' keys the model may place (see plugin-catalog.ts). */
@@ -282,6 +284,31 @@ function forgetRefused(board: BoardLayout, keys: string[], pending: PendingStore
   if (hasForgotten) pending.save(board, edits);
 }
 
+/** The `--key` a deck press passed, when it names a key on this board, the press came from this board's
+ * deck model, and only one deck of that model exists (`deviceCount`); anything else is dropped, so chat
+ * never plans for a deck that was not pressed. */
+export function focusKeyFrom(
+  value: string | undefined,
+  deck: string | undefined,
+  board: BoardLayout | null,
+  deviceCount: number,
+): string | undefined {
+  if (value === undefined || !board || board.deck.key !== deck || deviceCount !== 1) return undefined;
+  if (!/^[a-z][1-9][0-9]?$/.test(value)) return undefined;
+  const cell = coordToCell(value);
+  return cell && cell.column < board.deck.cols && cell.row < board.deck.rows ? value : undefined;
+}
+
+/** The proposed settings in words for the preview, e.g. "theme high contrast, long press 800 ms". */
+function describeSettings(settings: Partial<JetstreamConfig>): string {
+  const parts: string[] = [];
+  if (settings.theme) parts.push(`theme ${settings.theme === 'highContrast' ? 'high contrast' : 'default'}`);
+  if (settings.longPressMs !== undefined) parts.push(`long press ${settings.longPressMs} ms`);
+  if (settings.usageRefreshSec !== undefined) parts.push(`usage refresh every ${settings.usageRefreshSec} s`);
+  if (settings.escalateAfterSec !== undefined) parts.push(`escalate after ${settings.escalateAfterSec} s`);
+  return parts.join(', ');
+}
+
 /** A bound on model calls per session, so a conversation that never converges cannot loop forever. */
 const MAX_MODEL_TURNS = 20;
 
@@ -318,8 +345,10 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
   if (board) {
     io.say(`\nYour current board (${board.deck.label}):`);
     io.say(renderBoardMap(board, deps.paintCoord));
-    io.say('  Refer to keys by coordinate, e.g. "replace a8 with an open-Telegram key".');
+    io.say('  Keys have a code like a8: the letter is the row (a is the top), the number is the column from the left.');
   }
+  let focusKey = deps.focusKey;
+  if (focusKey) io.say(`\nWhat should key ${focusKey} do? For example "Telegram", "open github.com" or "my project ~/dev/api".`);
 
   let transcript = '';
   let changed = false;
@@ -341,6 +370,8 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
         io.say(changed ? 'Done.' : 'Nothing written.');
         return 0;
       }
+      // Until a reply lands, every answer is about the pressed key; after that the transcript carries it.
+      if (focusKey) message = `About key ${focusKey}: ${message}`;
     }
     modelTurns++;
 
@@ -361,6 +392,7 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
       continue;
     }
     transcript = `${prompt}\nAssistant: ${reply}`;
+    focusKey = undefined;
 
     const question = clarifyingQuestion(reply);
     if (question) {
@@ -403,7 +435,7 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
       io.say('\nProposed fleet:');
       for (const project of proposal.projects) io.say(`  • ${project.name}: ${project.path}`);
     }
-    if (Object.keys(proposal.settings).length > 0) io.say(`  settings: ${JSON.stringify(proposal.settings)}`);
+    if (Object.keys(proposal.settings).length > 0) io.say(`  Settings: ${describeSettings(proposal.settings)}`);
     if (keyLines.length > 0) {
       io.say(`\nKeys on the ${proposal.layout!.deck.label}:`);
       for (const line of keyLines) io.say(line);
@@ -453,8 +485,13 @@ export async function runChatSetup(deps: ChatDeps): Promise<number> {
           `\nWrote ${fleet.length} project(s) to ${configPath}. ` +
             'The Fleet and Attention keys pick up the new repos once the Stream Deck app restarts.',
         );
-      } else {
-        io.say(`\nUpdated settings in ${configPath}.`);
+      }
+      if (Object.keys(proposal.settings).length > 0) {
+        // The file is only a preset: the plugin reads it at startup, and a value saved on the settings key wins.
+        io.say(
+          `\nSaved the settings to ${configPath}. Stream Deck uses them after it restarts. ` +
+            'A setting you changed on the Jetstream settings key wins over this file, so change that one there.',
+        );
       }
       changed = true;
     }

@@ -422,8 +422,8 @@ describe('applyLayout', () => {
     const b = board({ '0,0': slot({ kind: 'empty' }, '·') });
     const d = deps({ board: b, confirm: async () => false, sendSlot: async () => 401 });
     await applyLayout([place(0, 0, 'gg.pim.jetstream.slot', { kind: 'fleet' })], d);
-    expect(d.said.join('\n')).toContain('a plugin older than this CLI');
-    expect(d.said.join('\n')).toContain('update the plugin');
+    expect(d.said.join('\n')).toContain('Jetstream on your Stream Deck did not accept this change');
+    expect(d.said.join('\n')).toContain('run jetstream update');
   });
 
   it('applies nothing, live or by restart, when the deck switched page since the preview', async () => {
@@ -459,9 +459,9 @@ describe('applyLayout', () => {
     const outcome = await applyLayout([place(0, 0, 'gg.pim.jetstream.slot', { kind: 'url', url: 'https://x.dev' })], d);
     expect(bodies[0]).toMatchObject({ coord: 'a1', kind: 'url', expect: A });
     expect(bodies).toHaveLength(1); // a 409 changed nothing, so there is nothing to roll back
-    expect(d.said.join('\n')).toContain('changed since the plan');
-    expect(d.said.join('\n')).toContain('may not have saved a recent edit yet (from another chat or on the deck itself)');
-    expect(d.said.join('\n')).toContain('wait a few seconds, decline the restart, then send the request again');
+    expect(d.said.join('\n')).toContain('a1: that key changed on your deck after I made this plan');
+    expect(d.said.join('\n')).toContain('Stream Deck may not have saved a recent edit yet');
+    expect(d.said.join('\n')).toContain('Wait 5 seconds, choose "Not now" at the next question, then send your request again.');
     expect(d.said.join('\n')).not.toContain('may still hold the new settings');
     expect(outcome).toBe('declined'); // fell through to the restart write, which the user declined
   });
@@ -557,7 +557,7 @@ describe('applyLayout', () => {
     const b = board({ '0,0': slot({ kind: 'empty' }, '·') });
     const d = deps({ board: b, confirm: async () => false, sendSlot: async () => 404 });
     await applyLayout([place(0, 0, SLOT, { kind: 'fleet' })], d);
-    expect(d.said.join('\n')).toContain('a1: that key is not on the Stream Deck page on screen, or is on two Stream Decks of the same model');
+    expect(d.said.join('\n')).toContain('a1: that key is not on the Stream Deck page you have open (or you have two Stream Decks of the same model)');
   });
 
   it('tells onConflict the keys the plugin refused with a 409, and only those', async () => {

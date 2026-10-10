@@ -3,7 +3,7 @@ import { action, SingletonAction, type KeyDownEvent } from '@elgato/streamdeck';
 import { longWindowLabel, resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
 import { usageStatuslineWired } from '../doctor';
 import { defaultSettingsPath } from '../hooks-install';
-import { formatNextReset, keyFace, type Face } from '../render';
+import { formatCountdown, formatNextReset, keyFace, type Face } from '../render';
 import { paintKey } from '../paint';
 import { DANGER_RED } from '@pimmesz/jetstream-status';
 
@@ -86,8 +86,19 @@ export function usageFace(feed: UsageFeed | undefined, now: number, provider: Us
     ...(top ? { top } : {}),
     label: feed.sevenDay ? `${longWindowLabel(feed.sevenDay)} ${Math.round(feed.sevenDay.usedPct)}%` : (five ?? 'usage'),
     subMax: 18,
-    sub: formatNextReset(feed.fiveHour?.resetsAt, feed.sevenDay?.resetsAt, now),
+    sub: usageSub(feed, now),
   };
+}
+
+/** A reading older than this misses any use since then (claude.ai, Codex cloud, another machine). */
+const STALE_READING_MS = 60 * 60_000;
+
+/** Both gauges count used, never left, and say so. A stale reading shows its age instead of the reset. */
+function usageSub(feed: UsageFeed, now: number): string {
+  const age = feed.readAt === undefined ? 0 : now - feed.readAt;
+  if (age > STALE_READING_MS) return `used·${formatCountdown(age)} old`;
+  const reset = formatNextReset(feed.fiveHour?.resetsAt, feed.sevenDay?.resetsAt, now);
+  return reset ? `used·${reset}` : 'used';
 }
 
 /** Green while under half the budget, amber from 50%, red once either window is close to full

@@ -20,6 +20,20 @@ function status(text, isError = false) {
   byId('status').dataset.error = String(isError);
 }
 
+// Point a screen reader and the keyboard at the input an error is about; clear every other mark.
+function markInvalid(fieldId) {
+  for (const id of ['target', 'color']) {
+    if (id === fieldId) {
+      byId(id).setAttribute('aria-invalid', 'true');
+      byId(id).setAttribute('aria-errormessage', 'status');
+    } else {
+      byId(id).removeAttribute('aria-invalid');
+      byId(id).removeAttribute('aria-errormessage');
+    }
+  }
+  if (fieldId) byId(fieldId).focus();
+}
+
 function controls() {
   const isConnected = ws?.readyState === WebSocket.OPEN;
   byId('fields').disabled = !isConnected || !hasLoaded || isReadOnly || !!pending;
@@ -37,13 +51,13 @@ function showKind() {
   byId('target').placeholder = kind === 'project' ? '/Users/you/projects/repo' : kind === 'app' ? '/Applications/Telegram.app' : 'https://example.com';
   byId('target').required = hasTarget && !isReadOnly;
   byId('kindHint').textContent = isReadOnly
-    ? 'This slot is read-only here. Use jetstream chat to change it.'
+    ? "You can't change this key here. To change it, run jetstream chat in Terminal."
     : kind === 'project'
       ? 'Shows live project status. Press to open the folder; hold while working to stop the current turn.'
       : kind === 'empty'
         ? 'Save to make this key blank.'
         : kind === 'app'
-          ? 'Use a full path. Existing Run-key permissions still apply to executable targets.'
+          ? 'Enter the full path, such as /Applications/Telegram.app. A script or program only runs when run keys are turned on.'
           : 'Changes apply only when you choose Save. Leave Label blank for the default.';
 }
 
@@ -75,7 +89,7 @@ function request(slot, edit) {
   const timer = setTimeout(() => {
     pending = undefined;
     hasLoaded = false;
-    status('No confirmation from Jetstream. Choose Cancel to reload before trying again.', true);
+    status('No answer from Jetstream. Choose Cancel to load the key again, then check it.', true);
     controls();
   }, 8000);
   pending = { requestId, slot, timer };
@@ -106,17 +120,19 @@ function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, action
     pending = undefined;
     if (result.ok) {
       populate(result.settings);
+      markInvalid(undefined);
       status(slot === 'save' ? 'Saved.' : 'Ready. Edits are saved only when you choose Save.');
     } else {
       status(result.error, true);
-      controls();
+      controls(); // a disabled input cannot take focus
+      markInvalid(result.field);
     }
   };
   const disconnected = () => {
     if (pending) clearTimeout(pending.timer);
     pending = undefined;
     hasLoaded = false;
-    status('Disconnected. Close and reopen this inspector to reconnect.', true);
+    status('Lost the connection to Jetstream. Click another key, then click this key again.', true);
     controls();
   };
   ws.onclose = disconnected;

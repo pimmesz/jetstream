@@ -21,6 +21,8 @@ export interface UsageFeed {
   sevenDay?: UsageWindow;
   available: boolean;
   note?: string;
+  /** When the newest reading was taken (epoch ms), when known. Use elsewhere is not in it yet. */
+  readAt?: number;
 }
 
 /** Clamp a used-% to 0–100; undefined when not a finite number. */
@@ -211,6 +213,22 @@ function newerWindow(a: UsageWindow | undefined, b: UsageWindow | undefined): Us
   return a.usedPct >= b.usedPct ? a : b;
 }
 
+/** When the kept reading of a window was taken: a snapshot that repeats it confirms it again, and one that
+ * supplied a newer reading dates it. */
+function readingAt(
+  kept: UsageWindow | undefined,
+  previous: UsageWindow | undefined,
+  fromFile: UsageWindow | undefined,
+  previousAt: number,
+  mtime: number,
+): number {
+  if (!kept || !fromFile) return previousAt;
+  if (previous && previous.usedPct === fromFile.usedPct && previous.resetsAt === fromFile.resetsAt) {
+    return Math.max(previousAt, mtime);
+  }
+  return kept === fromFile ? mtime : previousAt;
+}
+
 /** Merge every session snapshot (and the legacy shared file) into one feed. Never throws. */
 export async function readMergedCache(
   dir = defaultCacheDir(),
@@ -225,6 +243,8 @@ export async function readMergedCache(
   }
   let merged: UsageFeed | null = null;
   let newest = -1;
+  let fiveHourAt = 0;
+  let sevenDayAt = 0;
   for (const path of paths) {
     let mtime: number;
     try {
@@ -238,12 +258,19 @@ export async function readMergedCache(
     const base: UsageFeed = merged ?? { source: feed.source, available: true };
     const fiveHour = newerWindow(base.fiveHour, feed.fiveHour);
     const sevenDay = newerWindow(base.sevenDay, feed.sevenDay);
+    fiveHourAt = readingAt(fiveHour, base.fiveHour, feed.fiveHour, fiveHourAt, mtime);
+    sevenDayAt = readingAt(sevenDay, base.sevenDay, feed.sevenDay, sevenDayAt, mtime);
     merged = { ...base, ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) };
     // The model is whatever the most recently written snapshot used.
     if (feed.model && mtime > newest) {
       merged.model = feed.model;
       newest = mtime;
     }
+  }
+  // The face shows both windows, so the older one dates the whole reading.
+  if (merged) {
+    const times = [...(merged.fiveHour ? [fiveHourAt] : []), ...(merged.sevenDay ? [sevenDayAt] : [])];
+    merged.readAt = Math.min(...times);
   }
   return merged;
 }
@@ -406,7 +433,7 @@ export async function resolveCodexUsage(deps: CodexDeps = {}): Promise<UsageFeed
       filesWithReading++;
       if (!best || found.at > best.at) best = found;
     }
-    if (best) return freshen(parseCodexRateLimits(best.limits), deps.now);
+    if (best) return freshen({ ...parseCodexRateLimits(best.limits), ...(best.at > 0 ? { readAt: best.at } : {}) }, deps.now);
   } catch {
     // unreadable logs: report no data below
   }

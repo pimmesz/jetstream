@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   boardContext,
   describeKeyForModel,
+  devicesOfModel,
   labelForAction,
   parsePreferredProfiles,
   pruneCustomProfiles,
@@ -13,6 +14,7 @@ import {
   toSlotKey,
 } from './board-layout';
 import { existsSync } from 'node:fs';
+import { DECK_MODELS } from './profile';
 
 describe('labelForAction', () => {
   // Slot labels are settable through the unauthenticated /slot endpoint and land in the terminal
@@ -292,7 +294,7 @@ type StoredKeys = Record<string, { UUID: string; Settings?: unknown }>;
 /** Build a fake ProfilesV3 store in the Stream Deck 7 shape: profile i shows page `page<i>` (`actions`),
  * and `otherPage` adds a second page `page<i>-2` it does not show. `isLegacy` omits the `Pages` listing. */
 function fakeStore(
-  profiles: Array<{ name: string; model: string; actions: StoredKeys; otherPage?: StoredKeys; isLegacy?: boolean }>,
+  profiles: Array<{ name: string; model: string; actions: StoredKeys; otherPage?: StoredKeys; isLegacy?: boolean; device?: string }>,
 ): string {
   const dir = mkdtempSync(join(tmpdir(), 'jetstream-store-'));
   tmpDirs.push(dir);
@@ -309,11 +311,36 @@ function fakeStore(
     const listing = p.isLegacy ? {} : { Pages: { Current: `page${i}`, Pages: pages.map(([id]) => id) } };
     writeFileSync(
       join(prof, 'manifest.json'),
-      JSON.stringify({ Name: p.name, Device: { Model: p.model, UUID: 'dev' }, Version: '3.0', ...listing }),
+      JSON.stringify({ Name: p.name, Device: { Model: p.model, UUID: p.device ?? 'dev' }, Version: '3.0', ...listing }),
     );
   });
   return dir;
 }
+
+describe('devicesOfModel', () => {
+  const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+
+  it('counts one XL however many profiles it has, and ignores other models', () => {
+    const store = fakeStore([
+      { name: 'Default Profile', model: '20GAT9902', actions: {}, device: 'xl-1' },
+      { name: 'Jetstream', model: '20GAT9902', actions: {}, device: 'xl-1' },
+      { name: 'Mini', model: '20GAI9901', actions: {}, device: 'mini-1' },
+    ]);
+    expect(devicesOfModel(xl, store)).toBe(1);
+  });
+
+  it('counts two XLs, so a key code alone cannot say which one was pressed', () => {
+    const store = fakeStore([
+      { name: 'Jetstream', model: '20GAT9902', actions: {}, device: 'xl-1' },
+      { name: 'Other', model: '20GAT9902', actions: {}, device: 'xl-2' },
+    ]);
+    expect(devicesOfModel(xl, store)).toBe(2);
+  });
+
+  it('is 0 when the store cannot be read', () => {
+    expect(devicesOfModel(xl, join(tmpdir(), 'jetstream-no-store-here'))).toBe(0);
+  });
+});
 
 describe('readBoardLayout', () => {
   it('reads the Jetstream board (most configured projects), maps coords, matches XL by model prefix', () => {

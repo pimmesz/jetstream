@@ -89,7 +89,7 @@ export function formatElapsed(ms: number): string {
 
 /** Countdown to an epoch-seconds reset: `2h14m`, `14m`, `3d`. Empty when unknown/past. */
 /** Compact remaining time: `3h33m`, `2h`, `45m`, `2d`. Minimum `1m`; empty for ≤0 / NaN. */
-function formatCountdown(ms: number): string {
+export function formatCountdown(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '';
   const minutes = Math.max(1, Math.round(ms / 60_000));
   const d = Math.floor(minutes / 1440);

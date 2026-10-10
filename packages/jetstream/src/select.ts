@@ -60,7 +60,7 @@ const clamp = (i: number, count: number): number => Math.min(Math.max(i, 0), cou
 
 /** Numbered-list fallback (also the off-TTY / test path). Re-asks on invalid input; empty = default. */
 async function numbered<T>(rl: Rl, prompt: string, choices: Choice<T>[], defaultIndex: number): Promise<T> {
-  choices.forEach((c, i) => console.log(`  ${i + 1}. ${c.label}${c.hint ? ` — ${c.hint}` : ''}`));
+  choices.forEach((c, i) => console.log(`  ${i + 1}. ${c.label}${c.hint ? `: ${c.hint}` : ''}`));
   for (;;) {
     const answer = (await rl.question(`${prompt} [${defaultIndex + 1}]: `)).trim();
     const index = answer === '' ? defaultIndex : Number(answer) - 1;
@@ -100,7 +100,7 @@ export async function selectOne<T>(
         const active = i === index;
         const ptr = active ? cyan('▸') : ' ';
         const label = active ? bold(c.label) : c.label;
-        return `  ${ptr} ${label}${c.hint ? dim(` — ${c.hint}`) : ''}`;
+        return `  ${ptr} ${label}${c.hint ? dim(`: ${c.hint}`) : ''}`;
       });
       lines.push(dim(`  ${prompt}  ·  ↑/↓ move · ⏎ select`));
       const reset = first ? '' : `\x1b[${prevRows}A\x1b[J`;
@@ -148,7 +148,7 @@ export async function selectOne<T>(
  * `rl.question`, returns values IN PICK ORDER. Empty = none; 'all' = everything; numbers like
  * "3,1,5" select those in the order typed (so the caller controls order without a TTY). */
 async function numberedMany<T>(rl: Rl, prompt: string, choices: Choice<T>[]): Promise<T[]> {
-  choices.forEach((c, i) => console.log(`  ${i + 1}. ${c.label}${c.hint ? ` — ${c.hint}` : ''}`));
+  choices.forEach((c, i) => console.log(`  ${i + 1}. ${c.label}${c.hint ? `: ${c.hint}` : ''}`));
   const answer = (await rl.question(`${prompt} (numbers in order e.g. 3,1,5; 'all'; Enter for none): `))
     .trim()
     .toLowerCase();
@@ -204,7 +204,7 @@ export async function selectMany<T>(
         const order = picked.indexOf(i);
         const box = order >= 0 ? cyan(`[${order + 1}]`) : dim('[ ]');
         const label = active ? bold(c.label) : c.label;
-        return `  ${ptr} ${box} ${label}${c.hint ? dim(` — ${c.hint}`) : ''}`;
+        return `  ${ptr} ${box} ${label}${c.hint ? dim(`: ${c.hint}`) : ''}`;
       });
       lines.push(dim(`  ${prompt}  ·  ${hint}`));
       const reset = first ? '' : `\x1b[${prevRows}A\x1b[J`;

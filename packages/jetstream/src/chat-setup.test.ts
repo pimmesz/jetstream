@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from '@pimmesz/jetstream-status';
-import { clarifyingQuestion, parseProposal, runChatSetup, SETUP_SYSTEM } from './chat-setup';
+import { clarifyingQuestion, focusKeyFrom, parseProposal, runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { pendingStore, type PendingEdit, type PendingStore } from './chat-pending';
 import { applyLayout, SLOT, type ApplyDeps, type ApplyOutcome } from './chat-apply';
 import type { StoredAction } from './profile-store';
@@ -185,6 +185,91 @@ describe('runChatSetup', () => {
     expect(write.mock.calls[0]![0]).toHaveLength(1);
     // The plugin reads projects.json only at startup, so the user is told the keys need a restart.
     expect(said.some((l) => /Wrote 1 project\(s\) .*once the Stream Deck app restarts/.test(l))).toBe(true);
+  });
+
+  it('says a settings change needs a restart and loses to the Jetstream settings key', async () => {
+    const { io, said } = makeIo(['high contrast please', 'y']);
+    const replies = ['{"projects":[],"settings":{"theme":"highContrast"}}'];
+    let r = 0;
+    const write = vi.fn();
+    await runChatSetup({ io, ask: async () => replies[r++] ?? null, write, configPath: absentConfigPath() });
+    expect(write).toHaveBeenCalledTimes(1);
+    const text = said.join('\n');
+    expect(text).toContain('Stream Deck uses them after it restarts');
+    expect(text).toContain('A setting you changed on the Jetstream settings key wins over this file, so change that one there.');
+  });
+
+  it('previews settings in words, not as JSON', async () => {
+    const { io, said } = makeIo(['high contrast, slower long press', 'n']);
+    const replies = ['{"settings":{"theme":"highContrast","longPressMs":800,"usageRefreshSec":60,"escalateAfterSec":120}}'];
+    let r = 0;
+    await runChatSetup({ io, ask: async () => replies[r++] ?? null, write: vi.fn(), configPath: absentConfigPath() });
+    const text = said.join('\n');
+    expect(text).toContain('Settings: theme high contrast, long press 800 ms, usage refresh every 60 s, escalate after 120 s');
+    expect(text).not.toContain('{"theme"');
+  });
+
+  it('a chat opened from an empty key asks what that key should do and ties the first answer to it', async () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+    const board: BoardLayout = { profileName: 'Jetstream', profileDir: '/p.sdProfile', deck: xl, keys: new Map(), allUuids: [] };
+    const { io, said } = makeIo(['Telegram', 'and make it blue']);
+    const prompts: string[] = [];
+    const ask = async (prompt: string): Promise<string> => {
+      prompts.push(prompt);
+      return 'ANSWER: ok';
+    };
+    await runChatSetup({ io, ask, board, focusKey: 'c3', configPath: absentConfigPath() });
+    expect(said.join('\n')).toContain('What should key c3 do? For example "Telegram", "open github.com" or "my project ~/dev/api".');
+    expect(prompts[0]).toContain('About key c3: Telegram');
+    expect(prompts[1]).toContain('User: and make it blue'); // only the first answer is tied to the key
+    expect(prompts[1]).not.toContain('About key c3: and make it blue');
+  });
+
+  it('keeps the pressed key for a retry when the first model call fails', async () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+    const board: BoardLayout = { profileName: 'Jetstream', profileDir: '/p.sdProfile', deck: xl, keys: new Map(), allUuids: [] };
+    const { io } = makeIo(['Telegram', 'Telegram']);
+    const prompts: string[] = [];
+    const replies: Array<string | { error: string }> = [{ error: 'rate limited' }, 'ANSWER: ok'];
+    const ask = async (prompt: string): Promise<string | { error: string }> => {
+      prompts.push(prompt);
+      return replies.shift() ?? 'ANSWER: ok';
+    };
+    await runChatSetup({ io, ask, board, focusKey: 'c3', configPath: absentConfigPath() });
+    expect(prompts[1]).toContain('About key c3: Telegram');
+  });
+
+  it('accepts a --key only when it is a key code on the board', () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!; // 8 columns, 4 rows
+    const board: BoardLayout = { profileName: 'Jetstream', profileDir: '/p.sdProfile', deck: xl, keys: new Map(), allUuids: [] };
+    expect(focusKeyFrom('c3', 'xl', board, 1)).toBe('c3');
+    expect(focusKeyFrom('d8', 'xl', board, 1)).toBe('d8');
+    expect(focusKeyFrom('c3', 'xl', board, 2)).toBeUndefined(); // two XLs: the code alone cannot say which was pressed
+    expect(focusKeyFrom('c3', 'standard', board, 1)).toBeUndefined(); // pressed on another deck than this board
+    expect(focusKeyFrom('c3', undefined, board, 1)).toBeUndefined();
+    expect(focusKeyFrom('e1', 'xl', board, 1)).toBeUndefined(); // row e is off an XL
+    expect(focusKeyFrom('a9', 'xl', board, 1)).toBeUndefined();
+    expect(focusKeyFrom('c3; id', 'xl', board, 1)).toBeUndefined();
+    expect(focusKeyFrom('c3', 'xl', null, 1)).toBeUndefined(); // no board to edit
+    expect(focusKeyFrom(undefined, 'xl', board, 1)).toBeUndefined();
+  });
+
+  it('explains the key codes under the board map', async () => {
+    const xl = DECK_MODELS.find((d) => d.key === 'xl')!;
+    const board: BoardLayout = { profileName: 'Jetstream', profileDir: '/p.sdProfile', deck: xl, keys: new Map(), allUuids: [] };
+    const { io, said } = makeIo(['quit']);
+    await runChatSetup({ io, ask: async () => null, board, configPath: absentConfigPath() });
+    expect(said.join('\n')).toContain('Keys have a code like a8: the letter is the row (a is the top), the number is the column from the left.');
+  });
+
+  it('tells about the settings too when one proposal changes the fleet and the settings', async () => {
+    const { io, said } = makeIo(['add falcon, high contrast', 'y']);
+    const replies = ['{"projects":[{"name":"Falcon","path":"/dev/falcon"}],"settings":{"theme":"highContrast"}}'];
+    let r = 0;
+    await runChatSetup({ io, ask: async () => replies[r++] ?? null, write: vi.fn(), configPath: absentConfigPath() });
+    const text = said.join('\n');
+    expect(text).toContain('Wrote 1 project(s)');
+    expect(text).toContain('Jetstream settings key wins over this file');
   });
 
   it('places a copy of a catalogued third-party key (Hue) with the settings from disk', async () => {

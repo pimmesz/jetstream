@@ -196,6 +196,29 @@ describe('writeInPlace', () => {
     expect(readCurrentPage(dir)?.actions).toEqual({});
   });
 
+  it('names an open Stream Deck dialog when the app refuses to quit, and writes nothing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'js-store-'));
+    const dir = makeProfile(root, {});
+    const app = fakeApp();
+    app.quit = () => {
+      app.log.push('quit');
+      throw new Error('Command failed: osascript\n0:35: execution error: Elgato Stream Deck got an error: User cancelled. (-128)\n');
+    };
+    const result = await writeInPlace(dir, [placement({})], {
+      jetstreamVersion: '3.1.0.0',
+      app,
+      backupRoot: join(root, 'backups'),
+      lockPath: join(root, 'write.lock'),
+      changedSincePlan: () => [],
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'Stream Deck refused to close, which usually means a dialog or its editor window is open. Close it, then send your request again',
+    });
+    expect(app.log).toEqual(['quit', 'launch']);
+    expect(readCurrentPage(dir)?.actions).toEqual({});
+  });
+
   /** A fake app whose quit saves `a1` the way Stream Deck saves its in-memory state on the way out. */
   function appSavingOnQuit(page: string, a1: StoredAction): AppControl & { log: string[] } {
     const app = fakeApp();

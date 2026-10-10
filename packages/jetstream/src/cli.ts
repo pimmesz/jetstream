@@ -4,7 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { runClaude } from '@pimmesz/jetstream-claude';
-import { runChatSetup, SETUP_SYSTEM } from './chat-setup';
+import { focusKeyFrom, runChatSetup, SETUP_SYSTEM } from './chat-setup';
 import { pendingEditsPath, pendingStore } from './chat-pending';
 import { hookCommands, installHooks } from './hooks-install';
 import { recordShellDirs } from './shell-dirs';
@@ -22,6 +22,7 @@ import {
 import {
   activeProfileUuids,
   defaultProfilesDir,
+  devicesOfModel,
   mergeBoard,
   pruneCustomProfiles,
   readBoardLayout,
@@ -44,16 +45,16 @@ import { errorMessage } from './errors';
  * back-compat alias onto `hooks install`.
  */
 
-const USAGE = `jetstream — Stream Deck plugin CLI
+const USAGE = `jetstream: Stream Deck plugin CLI
 
-New here? Run \`chat\` — describe your repos and arrange your board in plain English.
+New here? Run \`chat\`: describe your repos and arrange your board in plain English.
 
 Usage:
   jetstream <command> [options]
 
 Commands:
   chat                            Conversational setup: describe your repos AND arrange keys in
-                                  plain English — add app/URL/run shortcuts, recolour, rename, set
+                                  plain English: add app/URL/run shortcuts, recolour, rename, set
                                   emoji/logo icons; applied LIVE to your deck (uses your subscription)
   init                            Guided setup: build projects.json (your whole fleet) +
                                   settings, wire the Claude hooks, print next steps
@@ -61,7 +62,7 @@ Commands:
                                   (~/.claude, or $CLAUDE_CONFIG_DIR when set)
     [--replace-statusline]        …and take the statusline slot from another tool, so the
                                   usage gauge works (your statusline is kept without this)
-  doctor [--json]                 Read-only health check — why isn't my board lighting up?
+  doctor [--json]                 Read-only health check: why isn't my board lighting up?
   setup                           hooks install + create a projects.json template, then next steps
   board                           Print your current Stream Deck board as a coordinate map (a1…hN)
   install                         Hand the packed plugin to the Stream Deck app (npm CLI)
@@ -109,7 +110,7 @@ async function runHooks(args: string[], binDir: string): Promise<number> {
       }
       console.log('Restart any running `claude` sessions to pick them up.');
     } else {
-      console.log('Jetstream hooks were already installed — nothing changed.');
+      console.log('Jetstream hooks were already installed, so nothing changed.');
     }
     // Never leave the gauge dark without saying why: a foreign statusline is kept on purpose,
     // so name it and give the one flag that takes it (this command stays scriptable — `setup`
@@ -135,10 +136,10 @@ async function runSetup(binDir: string): Promise<number> {
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, PROJECTS_TEMPLATE, { flag: 'wx' }); // wx: never overwrite an existing config
-    console.log(`Created a starter projects config at ${path} — edit it with your repos.`);
+    console.log(`Created a starter projects config at ${path}. Edit it with your repos.`);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      console.log(`Projects config already exists at ${path} — left as-is.`);
+      console.log(`Projects config already exists at ${path}, so it was left as it is.`);
     } else {
       // A real write failure (EACCES/EROFS/…): don't claim success or print next steps.
       console.error(
@@ -235,7 +236,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           detectDeck: detectConnectedDeck,
         });
       } catch {
-        console.error('\nAborted — nothing further was written.');
+        console.error('\nStopped. Nothing more was written.');
         return 130;
       } finally {
         rl.close();
@@ -259,9 +260,14 @@ export async function run(argv: string[], binDir: string): Promise<number> {
       };
       try {
         const board = readBoardLayout();
+        // A press on an empty deck key opens chat with `--key c3`; only a key code on this board is kept.
+        const { values } = parseArgs({ args: rest, options: { key: { type: 'string' }, deck: { type: 'string' } }, strict: false });
+        const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+        const focusKey = focusKeyFrom(str(values.key), str(values.deck), board, board ? devicesOfModel(board.deck) : 0);
         return await runChatSetup({
           io: chatIo,
           board,
+          ...(focusKey ? { focusKey } : {}),
           readBoard: () => readBoardLayout(),
           // Unsaved live edits outlive this chat, so the next one plans against them too.
           pending: pendingStore(pendingEditsPath()),
@@ -300,9 +306,13 @@ export async function run(argv: string[], binDir: string): Promise<number> {
           onLayout: async (placements, { deck, board: current, onConflict }) => {
             const outcome = await applyLayout(placements, {
               say: chatIo.say,
+              // The same menu as "Apply this?", so Enter does not silently mean no right after choosing Apply.
               confirm: async (question) => {
-                const answer = (await chatIo.ask(`\n${question} [y/N] `)).trim().toLowerCase();
-                return answer === 'y' || answer === 'yes';
+                chatIo.say(`\n${question}`);
+                return chatIo.select('Restart Stream Deck now?', [
+                  { label: 'Restart now', value: true },
+                  { label: 'Not now', hint: 'nothing changes', value: false },
+                ]);
               },
               board: current,
               onConflict,
@@ -363,7 +373,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
         // "nothing written" one line after "Wrote 3 project(s)" — a false claim, the wrong cause,
         // and the only diagnostic thrown away. `init`'s twin already says "nothing FURTHER".
         if (isInputAbort(error)) {
-          console.error('\nAborted — nothing further was written.');
+          console.error('\nStopped. Nothing more was written.');
           return 130;
         }
         console.error(`\n${errorMessage(error)}`);
@@ -376,7 +386,7 @@ export async function run(argv: string[], binDir: string): Promise<number> {
       const board = readBoardLayout();
       if (!board) {
         console.log(
-          'No Jetstream board found — if your deck is on another profile, switch to your Jetstream\n' +
+          'No Jetstream board found. If your deck is on another profile, switch to your Jetstream\n' +
             'board and retry, or run `jetstream chat` to build one.',
         );
         return 0;

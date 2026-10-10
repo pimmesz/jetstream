@@ -74,6 +74,19 @@ describe('editSlot', () => {
     expect(current).toEqual({ kind: 'empty' });
   });
 
+  it('names the field an error is about, so the inspector can point at it', () => {
+    expect(editSlot({}, {}, form('url', 'javascript:alert(1)'))).toMatchObject({ ok: false, field: 'target' });
+    expect(editSlot({}, {}, form('app', '-a'))).toMatchObject({ ok: false, field: 'target' });
+    expect(editSlot({}, {}, form('url', 'https://example.com', '', 'constructor'))).toMatchObject({ ok: false, field: 'color' });
+  });
+
+  it('says in plain words where to change a read-only key', () => {
+    const current = { kind: 'run', command: 'echo' } as SlotSettings;
+    expect(editSlot(current, current, form('empty'))).toEqual({
+      ok: false, error: "You can't change this key here. To change it, run jetstream chat in Terminal.",
+    });
+  });
+
   it('requires a snapshot and refuses a stale one, including changes to hidden fields', () => {
     expect(editSlot({}, undefined, form('empty')).ok).toBe(false);
     expect(editSlot({}, [], form('empty')).ok).toBe(false);

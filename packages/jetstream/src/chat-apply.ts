@@ -105,12 +105,13 @@ export type ApplyOutcome = 'unchanged' | 'live' | 'restarted' | 'reloaded' | 'im
 
 /** Why a live edit was refused, in words that point at the real fix. */
 function liveFailure(status: number): string {
+  // 401: a token mismatch, or a plugin older than this CLI.
   if (status === 401)
-    return 'the plugin refused the request (a token mismatch, or a plugin older than this CLI); restart the Stream Deck app or update the plugin';
-  if (status === 404) return 'that key is not on the Stream Deck page on screen, or is on two Stream Decks of the same model';
-  if (status === 409) return 'that key changed since the plan was made';
-  if (status === -1) return 'the plugin did not answer';
-  return `the plugin rejected it (HTTP ${status})`;
+    return 'Jetstream on your Stream Deck did not accept this change; restart the Stream Deck app, and if that does not help, run jetstream update';
+  if (status === 404) return 'that key is not on the Stream Deck page you have open (or you have two Stream Decks of the same model)';
+  if (status === 409) return 'that key changed on your deck after I made this plan';
+  if (status === -1) return 'Jetstream on your Stream Deck did not answer';
+  return `Jetstream on your Stream Deck refused it (error ${status})`;
 }
 
 const isClear = (p: Placement): boolean => p.uuid === SLOT && (p.settings as { kind?: unknown } | null)?.kind === 'empty';
@@ -281,13 +282,13 @@ export async function applyLayout(placements: Placement[], deps: ApplyDeps): Pro
         receipt();
         return 'live';
       }
-      deps.say(`\nCould not apply live (${live.failures.join('; ')}).`);
+      deps.say(`\nCould not change the keys right away (${live.failures.join('; ')}).`);
       if (live.conflicts.length > 0) {
         deps.onConflict?.(live.conflicts);
         // A restart would write the plan over an edit it never saw. Chat re-reads the board once the restart
         // is answered, so waiting before declining lets a late save reach the next plan.
-        deps.say('Stream Deck may not have saved a recent edit yet (from another chat or on the deck itself), or another page is on screen.');
-        deps.say('Safest: wait a few seconds, decline the restart, then send the request again.');
+        deps.say('Stream Deck may not have saved a recent edit yet, or another page is open.');
+        deps.say('Wait 5 seconds, choose "Not now" at the next question, then send your request again.');
       }
       if (live.unrestored.length > 0) {
         deps.say(`Putting these keys back was not confirmed, so they may still hold the new settings: ${live.unrestored.join(', ')}.`);
@@ -302,7 +303,7 @@ export async function applyLayout(placements: Placement[], deps: ApplyDeps): Pro
 
   if (deps.board && deps.writeInPlace) {
     const ok = await deps.confirm(
-      `This needs Stream Deck to restart (about 5 seconds; "${deps.board.profileName}" is backed up first). Go ahead?`,
+      `Stream Deck must restart for about 5 seconds to apply this. "${deps.board.profileName}" is backed up first.`,
     );
     if (!ok) {
       const note = leftoverNote(unrestored, stripped);
@@ -331,7 +332,7 @@ export async function applyLayout(placements: Placement[], deps: ApplyDeps): Pro
     }
     const note = leftoverNote(unrestored, stripped);
     const leftover = note ? `Apart from that nothing changed, but ${note}.` : 'Your board was not changed.';
-    deps.say(`\nCould not update the profile in place: ${result.reason}. ${leftover}`);
+    deps.say(`\nCould not change your board: ${result.reason}. ${leftover}`);
     if (result.changed) {
       deps.say('Stream Deck restarted, but nothing was written. Send the request again to plan it against the board as it is now.');
       return 'reloaded';
