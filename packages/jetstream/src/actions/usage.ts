@@ -90,8 +90,9 @@ export function usageFace(feed: UsageFeed | undefined, now: number, provider: Us
   };
 }
 
-/** A reading older than this misses any use since then (claude.ai, Codex cloud, another machine). */
-const STALE_READING_MS = 60 * 60_000;
+/** A reading older than this misses any use since then (claude.ai, Codex cloud, another machine).
+ * Short, so a gauge that stopped getting readings says so within one break. */
+const STALE_READING_MS = 15 * 60_000;
 
 /** Both gauges count used, never left, and say so. A stale reading shows its age instead of the reset. */
 function usageSub(feed: UsageFeed, now: number): string {

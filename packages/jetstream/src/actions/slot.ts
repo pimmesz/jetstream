@@ -17,6 +17,7 @@ import { config } from '../config';
 import { board } from '../state';
 import { resolveCodexUsage, resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
 import { usageFace } from './usage';
+import { createCodexLivePoll } from '../codex-live';
 import { doorbell } from '../doorbell';
 import { permissions } from '../permissions';
 import { readDiffStat, type DiffStat } from '../diffstat';
@@ -302,7 +303,7 @@ export class SlotKey extends SingletonAction<SlotSettings> {
       // Usage key, an alert when the read fails or the gauge still has no usage.
       let read: ReadonlyMap<'claude' | 'codex', UsageFeed>;
       try {
-        read = await this.refreshUsage();
+        read = await this.refreshUsage(settings.provider === 'codex');
       } catch {
         await ev.action.showAlert();
         return;
@@ -412,9 +413,13 @@ export class SlotKey extends SingletonAction<SlotSettings> {
   private usageFeeds = new Map<'claude' | 'codex', UsageFeed>();
   private usageGeneration = 0;
 
+  /** Asks Codex for its limits every few minutes, so a reset made on the server shows without a Codex turn. */
+  private codexLive = createCodexLivePoll();
+
   /** Re-read usage for the providers that have a gauge on screen, then repaint those gauges. Resolves
-   * with the feeds this call read, even when a newer refresh superseded it, so a press answers from its own read. */
-  async refreshUsage(): Promise<ReadonlyMap<'claude' | 'codex', UsageFeed>> {
+   * with the feeds this call read, even when a newer refresh superseded it, so a press answers from its own read.
+   * `askCodexNow` skips the wait between live Codex reads (a press). */
+  async refreshUsage(askCodexNow = false): Promise<ReadonlyMap<'claude' | 'codex', UsageFeed>> {
     const providers = new Set<'claude' | 'codex'>();
     for (const visible of this.actions) {
       if (!visible.isKey()) continue;
@@ -429,7 +434,10 @@ export class SlotKey extends SingletonAction<SlotSettings> {
     const generation = ++this.usageGeneration;
     const feeds = new Map(
       await Promise.all(
-        [...providers].map(async (p) => [p, p === 'codex' ? await resolveCodexUsage() : await resolveUsage()] as const),
+        [...providers].map(
+          async (p) =>
+            [p, p === 'codex' ? await resolveCodexUsage({ live: await this.codexLive(askCodexNow) }) : await resolveUsage()] as const,
+        ),
       ),
     );
     if (generation !== this.usageGeneration) return feeds; // a newer refresh owns the faces

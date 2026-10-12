@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { link, open, readFile, readdir, writeFile, mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -416,16 +417,18 @@ export function parseCodexRateLimits(raw: unknown): UsageFeed {
 export interface CodexDeps {
   sessionsDir?: string;
   now?: number;
+  /** A reading Codex gave when asked directly (readCodexLive). The newer of it and the logs wins. */
+  live?: UsageFeed;
 }
 
-/** Resolve the current Codex usage from its newest session logs. Never throws. */
-export async function resolveCodexUsage(deps: CodexDeps = {}): Promise<UsageFeed> {
+/** The newest reading in Codex's session logs, or undefined when there is none. Never throws. */
+async function readCodexLogs(sessionsDir: string): Promise<UsageFeed | undefined> {
   try {
     // A file's mtime moves with any event, so among the newest files take the reading that was
     // LOGGED last: another session may have appended tool output after an older reading.
     let best: { limits: Record<string, unknown>; at: number } | undefined;
     let filesWithReading = 0;
-    for (const path of await newestRollouts(deps.sessionsDir ?? codexSessionsDir())) {
+    for (const path of await newestRollouts(sessionsDir)) {
       if (filesWithReading >= ROLLOUT_FILES) break;
       // One file vanishing (rotated or deleted mid-scan) must not cost the readings already found.
       const found = await lastRateLimits(path).catch(() => undefined);
@@ -433,9 +436,110 @@ export async function resolveCodexUsage(deps: CodexDeps = {}): Promise<UsageFeed
       filesWithReading++;
       if (!best || found.at > best.at) best = found;
     }
-    if (best) return freshen({ ...parseCodexRateLimits(best.limits), ...(best.at > 0 ? { readAt: best.at } : {}) }, deps.now);
+    if (best) return { ...parseCodexRateLimits(best.limits), ...(best.at > 0 ? { readAt: best.at } : {}) };
   } catch {
-    // unreadable logs: report no data below
+    // unreadable logs: no reading
   }
+  return undefined;
+}
+
+/** Resolve the current Codex usage from a live reading or its newest session logs, whichever is
+ * newer: the logs miss a reset made on the server, a live reading misses a turn run after it. Never throws. */
+export async function resolveCodexUsage(deps: CodexDeps = {}): Promise<UsageFeed> {
+  const logged = await readCodexLogs(deps.sessionsDir ?? codexSessionsDir());
+  const live = deps.live?.available ? deps.live : undefined;
+  const newest = live && (!logged || (live.readAt ?? 0) >= (logged.readAt ?? 0)) ? live : logged;
+  if (newest) return freshen(newest, deps.now);
   return { source: 'codex', available: false, note: 'no Codex usage yet; run `codex` once' };
+}
+
+/** A live read that takes longer than this counts as failed: the app-server answers in about a second,
+ * and a press waits for it. */
+const LIVE_TIMEOUT_MS = 5_000;
+/** Codex's answer is a few kilobytes; more output than this without a newline is not the app-server. */
+const LIVE_MAX_LINE = 1024 * 1024;
+
+/** Turn an `account/rateLimits/read` result into the feed. The app-server names the same fields as the
+ * session logs in camelCase, so they are renamed and read by the same parser. Pure. */
+export function parseCodexAppServerLimits(result: unknown): UsageFeed {
+  const root = asRecord(result);
+  const byId = asRecord(asRecord(root?.rateLimitsByLimitId)?.codex);
+  const fallback = asRecord(root?.rateLimits);
+  // Only the `codex` bucket is the account's; a per-model bucket would read near 0%.
+  const limits = byId ?? (typeof fallback?.limitId === 'string' && fallback.limitId !== 'codex' ? undefined : fallback);
+  const window = (raw: unknown): Record<string, unknown> | null => {
+    const w = asRecord(raw);
+    return w ? { used_percent: w.usedPercent, window_minutes: w.windowDurationMins, resets_at: w.resetsAt } : null;
+  };
+  return parseCodexRateLimits({ primary: window(limits?.primary), secondary: window(limits?.secondary) });
+}
+
+export interface CodexLiveDeps {
+  /** Path to the `codex` binary. */
+  command: string;
+  env?: NodeJS.ProcessEnv;
+  spawnFn?: typeof spawn;
+  timeoutMs?: number;
+  now?: () => number;
+}
+
+/** Ask Codex for the account's current limits over `codex app-server` (`account/rateLimits/read`).
+ * Codex makes the network call with its own login; this never reads its credentials. Resolves
+ * undefined on any failure, so the caller keeps the session logs. Never throws. */
+export function readCodexLive(deps: CodexLiveDeps): Promise<UsageFeed | undefined> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = (deps.spawnFn ?? spawn)(deps.command, ['app-server'], {
+        stdio: ['pipe', 'pipe', 'ignore'],
+        env: deps.env ?? process.env,
+      });
+    } catch {
+      resolve(undefined);
+      return;
+    }
+    let done = false;
+    const finish = (feed: UsageFeed | undefined): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      child.kill();
+      resolve(feed);
+    };
+    const timer = setTimeout(() => finish(undefined), deps.timeoutMs ?? LIVE_TIMEOUT_MS);
+    const send = (message: Record<string, unknown>): void => {
+      child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+    };
+    child.on('error', () => finish(undefined));
+    // 'close' waits for stdout to drain, so a response written just before exiting is still read.
+    child.on('close', () => finish(undefined));
+    // EPIPE when codex exits early: the close handler above already answers.
+    child.stdin?.on('error', () => {});
+    let buffer = '';
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newline: number;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        let message: Record<string, unknown> | undefined;
+        try {
+          message = asRecord(JSON.parse(line));
+        } catch {
+          continue; // not a protocol line
+        }
+        if (message?.id === 1) {
+          if (message.error !== undefined) return finish(undefined);
+          send({ method: 'initialized' });
+          send({ id: 2, method: 'account/rateLimits/read' });
+        } else if (message?.id === 2) {
+          const feed = message.result === undefined ? undefined : parseCodexAppServerLimits(message.result);
+          return finish(feed?.available ? { ...feed, readAt: (deps.now ?? Date.now)() } : undefined);
+        }
+      }
+      if (buffer.length > LIVE_MAX_LINE) finish(undefined);
+    });
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'jetstream', version: '1' } } });
+  });
 }

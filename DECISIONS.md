@@ -5,6 +5,33 @@ Newest first. A decision here is settled — re-open it only against its stated 
 
 ---
 
+## 2026-10-11: usage gauges stay current
+
+### Codex gauge asks Codex directly (amends "Codex usage gauge" of 2026-10-06)
+
+The session logs only change when Codex runs a turn, so a weekly window reset on the server kept
+showing 93% while Codex itself said 1%. **Decided:** the plugin also starts `codex app-server` and
+sends `account/rateLimits/read`, at most once per 5 minutes and right away on a press of a Codex
+gauge, only while one is on the deck. Codex makes the network call with its own login; Jetstream
+still never reads `~/.codex/auth.json`, so the credential-reuse rejection stands. The newer of the
+live reading and the logs wins (a turn after the last live read logs a newer one). Any failure (no
+`codex` found, not logged in, the experimental protocol changed, 5 s without an answer) leaves the
+log reader as before. The plugin finds `codex` in its PATH, the usual install dirs and nvm's
+`~/.nvm/versions/node/*/bin`, never in a relative PATH entry.
+
+**TRIGGER to reopen:** Codex drops or renames `account/rateLimits/read`, or the call starts costing
+usage or writing session logs.
+
+### Claude gauge stays on the statusline; a reading is "old" after 15 minutes
+
+Claude Code has no equivalent: no command or file gives live limits outside the statusline, and the
+only live route is reading its OAuth token from the Keychain for an undocumented endpoint, the
+credential reuse the v2 roadmap rejected. **Decided:** keep the statusline feed and show a reading's
+age (`used·20m old`) once it is over 15 minutes old instead of an hour, on both gauges, so a gauge
+that is behind says so within one break.
+
+**TRIGGER to reopen:** Claude Code ships a supported way to read the account's rate limits.
+
 ## 2026-10-09: verdicts on the 2026-10-08 audits' needs-decision items
 
 The maintainer walked the needs-decision items of the security, test-suite, concurrency,

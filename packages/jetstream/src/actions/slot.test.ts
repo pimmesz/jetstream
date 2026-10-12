@@ -43,7 +43,10 @@ vi.mock('../hooks-install', async (orig) => ({
   ...(await orig<typeof import('../hooks-install')>()),
   defaultSettingsPath: () => '/nonexistent/jetstream-slot-test/settings.json',
 }));
-import { resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
+// Never start the real `codex app-server`: the live Codex read answers from this spy.
+const codexLivePoll = vi.hoisted(() => vi.fn(async (_askNow?: boolean): Promise<unknown> => undefined));
+vi.mock('../codex-live', () => ({ createCodexLivePoll: () => codexLivePoll }));
+import { resolveCodexUsage, resolveUsage, type UsageFeed } from '@pimmesz/jetstream-usage';
 import { openProject } from '../switchto';
 
 describe('slotFace', () => {
@@ -963,6 +966,28 @@ describe('usage slot kind', () => {
     await press;
     expect(gauge.showOk).toHaveBeenCalled();
     expect(gauge.showAlert).not.toHaveBeenCalled();
+  });
+
+  it('a press on a Codex gauge asks Codex right away; the timer waits its turn', async () => {
+    const gauge = { ...gaugeKey('u-codex'), getSettings: vi.fn(async () => ({ kind: 'usage', provider: 'codex' })) };
+    const live: UsageFeed = { source: 'codex', available: true, readAt: 1, sevenDay: { usedPct: 1 } };
+    codexLivePoll.mockClear().mockResolvedValue(live);
+    vi.mocked(resolveCodexUsage).mockClear();
+    const slot = slotWith([gauge]);
+    await slot.refreshUsage();
+    expect(codexLivePoll).toHaveBeenLastCalledWith(false);
+    await slot.onKeyDown({ payload: { settings: { kind: 'usage', provider: 'codex' } }, action: gauge } as unknown as Parameters<SlotKey['onKeyDown']>[0]);
+    expect(codexLivePoll).toHaveBeenLastCalledWith(true);
+    expect(resolveCodexUsage).toHaveBeenLastCalledWith({ live });
+  });
+
+  it('a press on the Claude gauge leaves Codex to its timer, even with a Codex gauge beside it', async () => {
+    const claude = gaugeKey('u-claude-only');
+    const codex = { ...gaugeKey('u-codex-beside'), getSettings: vi.fn(async () => ({ kind: 'usage', provider: 'codex' })) };
+    codexLivePoll.mockClear();
+    await pressUsage(slotWith([claude, codex]), claude);
+    expect(codexLivePoll).toHaveBeenCalledWith(false);
+    expect(codexLivePoll).not.toHaveBeenCalledWith(true);
   });
 
   it('a press whose usage read fails shows an alert instead of nothing', async () => {

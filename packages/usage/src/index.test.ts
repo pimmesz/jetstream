@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,8 @@ import {
   readMergedCache,
   freshen,
   parseCodexRateLimits,
+  parseCodexAppServerLimits,
+  readCodexLive,
   resolveCodexUsage,
   type UsageFeed,
 } from './index';
@@ -510,5 +513,112 @@ describe('Codex usage', () => {
   it('says so instead of throwing when Codex has never run', async () => {
     const feed = await resolveCodexUsage({ sessionsDir: join(tmpdir(), 'jetstream-no-codex-here') });
     expect(feed).toMatchObject({ source: 'codex', available: false });
+  });
+});
+
+describe('Codex usage asked live', () => {
+  // What `codex app-server` answered for a Pro account on 2026-10-10, trimmed.
+  const result = {
+    rateLimits: { limitId: 'codex', primary: { usedPercent: 1, windowDurationMins: 10080, resetsAt: 1792252358 }, secondary: null },
+    rateLimitsByLimitId: {
+      codex: { limitId: 'codex', primary: { usedPercent: 1, windowDurationMins: 10080, resetsAt: 1792252358 }, secondary: null },
+    },
+  };
+
+  it('reads the account bucket from an account/rateLimits/read result', () => {
+    expect(parseCodexAppServerLimits(result)).toEqual({
+      source: 'codex',
+      available: true,
+      sevenDay: { usedPct: 1, resetsAt: 1792252358, windowMinutes: 10080 },
+    });
+  });
+
+  it('never takes a per-model bucket for the account', () => {
+    const spark = { rateLimits: { limitId: 'codex_bengalfox', primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: 1 } } };
+    expect(parseCodexAppServerLimits(spark).available).toBe(false);
+    expect(parseCodexAppServerLimits(null).available).toBe(false);
+  });
+
+  /** A stand-in for `codex app-server`: a real child process speaking the same line protocol. FAKE_MODE
+   * picks how it misbehaves. */
+  const fakeAppServer = `
+    const mode = process.env.FAKE_MODE;
+    if (mode === 'exit') process.exit(1);
+    console.log(JSON.stringify({ method: 'remoteControl/status/changed', params: {} }));
+    console.log('not json');
+    require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
+      const message = JSON.parse(line);
+      if (mode === 'silent') return;
+      if (message.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
+      if (message.id === 2) {
+        console.log(JSON.stringify(mode === 'error' ? { id: 2, error: { code: -32600, message: 'not logged in' } } : { id: 2, result: ${JSON.stringify(result)} }));
+      }
+    });
+  `;
+  let script = '';
+  beforeEach(async () => {
+    script = join(await mkdtemp(join(tmpdir(), 'jetstream-codex-live-')), 'fake-codex.cjs');
+    await writeFile(script, fakeAppServer);
+  });
+  const live = (mode: string, timeoutMs = 5000) =>
+    readCodexLive({
+      command: 'codex',
+      env: { ...process.env, FAKE_MODE: mode },
+      spawnFn: ((_cmd: string, args: string[], opts: object) => spawn(process.execPath, [script, ...args], opts)) as typeof spawn,
+      timeoutMs,
+      now: () => 1_000,
+    });
+
+  it('returns the live reading, dated when it was asked', async () => {
+    expect(await live('ok')).toEqual({ source: 'codex', available: true, readAt: 1_000, sevenDay: { usedPct: 1, resetsAt: 1792252358, windowMinutes: 10080 } });
+  });
+
+  it('gives up without a reading when codex exits, refuses, or never answers', async () => {
+    expect(await live('exit')).toBeUndefined();
+    expect(await live('error')).toBeUndefined();
+    expect(await live('silent', 300)).toBeUndefined();
+  });
+
+  it('gives up without a reading when there is no codex to start', async () => {
+    expect(await readCodexLive({ command: join(tmpdir(), 'jetstream-no-codex-binary') })).toBeUndefined();
+  });
+
+  describe('the newer of the live reading and the logs wins', () => {
+    const logLine = (usedPct: number, timestamp: string): string =>
+      JSON.stringify({
+        timestamp,
+        type: 'event_msg',
+        payload: { type: 'token_count', rate_limits: { limit_id: 'codex', primary: { used_percent: usedPct, window_minutes: 10080, resets_at: 4_000_000_000 } } },
+      });
+    const sessionsWith = async (line: string): Promise<string> => {
+      const root = await mkdtemp(join(tmpdir(), 'jetstream-codex-merge-'));
+      const day = join(root, '2026', '10', '10');
+      await mkdir(day, { recursive: true });
+      await writeFile(join(day, 'rollout-a.jsonl'), `${line}\n`);
+      return root;
+    };
+    const liveAt = (usedPct: number, readAt: number): UsageFeed => ({
+      source: 'codex',
+      available: true,
+      readAt,
+      sevenDay: { usedPct, resetsAt: 4_100_000_000, windowMinutes: 10080 },
+    });
+
+    it('a reset made on the server shows before the next Codex turn', async () => {
+      const sessionsDir = await sessionsWith(logLine(93, '2026-10-10T14:00:46.474Z'));
+      const feed = await resolveCodexUsage({ sessionsDir, live: liveAt(1, Date.parse('2026-10-10T16:00:00Z')), now: 0 });
+      expect(feed.sevenDay?.usedPct).toBe(1);
+    });
+
+    it('a Codex turn after the last live read shows its own reading', async () => {
+      const sessionsDir = await sessionsWith(logLine(40, '2026-10-10T16:05:00.000Z'));
+      const feed = await resolveCodexUsage({ sessionsDir, live: liveAt(1, Date.parse('2026-10-10T16:00:00Z')), now: 0 });
+      expect(feed.sevenDay?.usedPct).toBe(40);
+    });
+
+    it('a live reading alone is enough when Codex never logged a session', async () => {
+      const feed = await resolveCodexUsage({ sessionsDir: join(tmpdir(), 'jetstream-no-codex-here'), live: liveAt(7, 1), now: 0 });
+      expect(feed).toMatchObject({ available: true, sevenDay: { usedPct: 7 } });
+    });
   });
 });

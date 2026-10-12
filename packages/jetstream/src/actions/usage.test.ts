@@ -69,12 +69,13 @@ describe('usageFace', () => {
     expect(usageFace(feed(12, 40), now, 'claude').sub).toBe('used'); // no reset known, no reading time known
   });
 
-  it('both gauges show the age instead of the reset once the reading is over an hour old', () => {
+  it('both gauges show the age instead of the reset once the reading is over 15 minutes old', () => {
     const now = 1_000_000_000_000;
     const stale: UsageFeed = { ...feed(12, 52), sevenDay: { usedPct: 52, resetsAt: now / 1000 + 3600 }, readAt: now - 15 * 3_600_000 };
     expect(usageFace(stale, now, 'claude').sub).toBe('used·15h old');
     expect(usageFace(stale, now, 'codex').sub).toBe('used·15h old');
-    expect(usageFace({ ...stale, readAt: now - 60 * 60_000 }, now, 'codex').sub).toBe('used·resets 1h'); // exactly an hour is still fresh
+    expect(usageFace({ ...stale, readAt: now - 20 * 60_000 }, now, 'claude').sub).toBe('used·20m old');
+    expect(usageFace({ ...stale, readAt: now - 15 * 60_000 }, now, 'codex').sub).toBe('used·resets 1h'); // exactly 15 minutes is still fresh
   });
 
   it('a Codex free plan names its 30-day window, not 7d', () => {
